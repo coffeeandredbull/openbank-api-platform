@@ -1,9 +1,10 @@
-# Security Design (Planned)
+# Security Design
 
-> This document describes the **planned** security model. **To be explicit:
-> none of this is implemented yet.** The section "Planned vs. Implemented"
-> below distinguishes the two. No credentials, hashes, or secrets exist in this
-> repository, and none will be committed at any point.
+> This document describes the security model of the OpenBank API Platform.
+> **Implemented** functionality is described alongside the **planned** design;
+> the section "Planned vs. Implemented" distinguishes the two. No real
+> credentials, hashes, or secrets exist in this repository, and none will be
+> committed at any point.
 
 ## Authentication Model
 
@@ -32,6 +33,38 @@
 - **Revocation**: because stateless JWTs cannot be recalled, revocation is
   supported via a Redis-backed deny-list of token IDs (or short-lived access
   tokens with refresh flow). Design intent — implementation in Identity phase.
+
+## Access Token — Implemented (Phase 6)
+
+The Identity Service issues a signed **JWT access token** on successful
+`POST /auth/login`. This is the foundation for gateway/service validation; no
+request is authenticated with it yet (see "Planned vs. Implemented").
+
+Implemented behavior:
+
+- **Algorithm:** HS256 (HMAC-SHA256), symmetric signing key.
+- **Signing secret:** configured via the `JWT_SECRET` environment variable,
+  with no default. The service fails to start if the secret is missing, blank,
+  or shorter than 256 bits — it never generates a random secret silently. The
+  secret is never logged, and never returned in any API response.
+- **Expiration:** configured via `JWT_EXPIRATION_SECONDS`
+  (default `3600` = 1 hour), matching the `expiresIn` value in the login
+  response.
+- **Claims:** `sub` (user ID, decimal string), `role` (e.g. `DEVELOPER`,
+  `ADMIN`), `iat`, `exp`. No password, password hash, or secret is ever placed
+  in a token.
+- **Validation:** a token is accepted only if it parses, has a valid signature
+  under the configured secret, is not expired, and carries the required `sub`
+  and `role` claims. Failures raise a generic application-level error without
+  exposing cryptographic details.
+- **Login response:** `POST /auth/login` returns
+  `accessToken`, `tokenType` (`Bearer`), `expiresIn`, `userId`, `email`,
+  `role`. Failed logins (unknown email or wrong password) continue to return
+  `401 AUTHENTICATION_FAILED` and no token.
+
+Not implemented yet (future phases): a Spring Security filter chain or gateway
+filter that consumes these tokens, RBAC/scopes enforcement, refresh tokens, and
+revocation.
 
 ## Authorization / RBAC
 
@@ -108,14 +141,15 @@
 
 | Area | Status |
 | --- | --- |
-| Authentication (login, JWT issuance) | **Planned** — not implemented |
-| JWT validation at gateway | **Planned** — not implemented |
-| RBAC roles & scopes | **Planned** — not implemented |
+| Authentication (login, JWT issuance) | **Implemented (Phase 6)** — login verifies credentials and issues an HS256 JWT; failed logins return `401 AUTHENTICATION_FAILED` |
+| JWT validation at gateway | **Planned** — not implemented (a service-level `JwtTokenService.validateToken` foundation exists) |
+| RBAC roles & scopes | **Planned** — role is carried in the JWT claim; no enforcement filters exist |
 | Subscription enforcement | **Planned** — not implemented |
 | Rate limiting | **Planned** — not implemented |
-| Password hashing | **Planned** — not implemented (no users or passwords exist) |
-| Secret management / env-config | **Planned** — not implemented (no config files exist) |
+| Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
+| Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 1 there is **no running security mechanism of any kind** — the
-> repository contains only documentation.
+> As of Phase 6 only user registration, password hashing, login, and JWT
+> issuance exist. There is **no request authentication mechanism** yet — no
+> filter, no protected endpoints, and no gateway validation.
