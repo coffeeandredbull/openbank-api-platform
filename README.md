@@ -58,10 +58,10 @@ to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC) and the API Management Service (API catalog
-> foundation) are implemented. The remaining services, the gateway, and the
-> portal are planned. See the [architecture document](docs/architecture.md) for
-> details and each file in [`docs/`](docs/) for requirements, database design,
-> security model, and API design.
+> foundation + API versioning) are implemented. The remaining services, the
+> gateway, and the portal are planned. See the [architecture
+> document](docs/architecture.md) for details and each file in [`docs/`](docs/)
+> for requirements, database design, security model, and API design.
 
 ## Technology Stack
 
@@ -89,14 +89,19 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   complete unit + integration test suite.
 - **Phase 8 — API Management Service (API catalog foundation):** the service
   validates identity-service-issued JWTs locally, allows an `ADMIN` to register
-  an API, and lets `ADMIN`/`DEVELOPER` browse the catalog. Only the API catalog
-  exists — no versions, lifecycle, applications, subscriptions, credentials, or
-  gateway routing yet.
-- **Planned phases (subject to change):** API versioning/lifecycle,
-  subscriptions, the remaining services, the API Gateway, the Developer Portal,
-  shared infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub
-  Actions) and Kubernetes manifests will be built in small, explicitly
-  requested phases and verified (compile + tests) at each step.
+  an API, and lets `ADMIN`/`DEVELOPER` browse the catalog.
+- **Phase 9 — API Management Service (API versioning):** multiple versions per
+  logical API over a many-to-one `ApiVersion` entity. `ADMIN`/`DEVELOPER` can
+  create versions (`POST /apis/{apiId}/versions`), list them
+  (`GET /apis/{apiId}/versions`), and fetch one
+  (`GET /apis/{apiId}/versions/{versionId}`). Version strings are unique per API
+  (duplicates → `409`), and reading a version through the wrong API returns
+  `404`. No lifecycle, subscriptions, credentials, or gateway routing yet.
+- **Planned phases (subject to change):** subscriptions, the remaining services,
+  the API Gateway, the Developer Portal, shared infrastructure (PostgreSQL/Redis
+  via Docker Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be
+  built in small, explicitly requested phases and verified (compile + tests) at
+  each step.
 
 ## Planned Features
 
@@ -156,5 +161,5 @@ docs/
 ├── security.md
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
-api-management-service/  (implemented — Phase 8, API catalog foundation)
+api-management-service/  (implemented — Phases 8–9, API catalog + versioning)
 ```

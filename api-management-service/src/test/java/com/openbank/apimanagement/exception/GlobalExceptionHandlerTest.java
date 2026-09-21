@@ -50,6 +50,42 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void apiVersionNotFoundProducesStructured404() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleApiVersionNotFound(
+                        new ApiVersionNotFoundException(1L, 9L), request("GET", "/apis/1/versions/9"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.path()).isEqualTo("/apis/1/versions/9");
+        assertThat(body.code()).isEqualTo("API_VERSION_NOT_FOUND");
+        assertThat(body.message()).contains("9").contains("1");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
+    void duplicateApiVersionProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleApiVersionAlreadyExists(
+                        new ApiVersionAlreadyExistsException(1L, "v1"), request("POST", "/apis/1/versions"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.code()).isEqualTo("API_VERSION_ALREADY_EXISTS");
+        assertThat(body.message()).contains("v1").contains("1");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("unique constraint")
+                .doesNotContain("SQL")
+                .doesNotContain("DataIntegrityViolation");
+    }
+
+    @Test
     void malformedJsonProducesSafe400WithoutInternals() {
         HttpMessageNotReadableException ex = new HttpMessageNotReadableException(
                 "JSON parse error: Unexpected character (',' (code 44)): expected a valid value",

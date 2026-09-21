@@ -36,6 +36,16 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "CONTEXT_PATH_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(ApiVersionNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleApiVersionNotFound(ApiVersionNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "API_VERSION_NOT_FOUND", ex.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(ApiVersionAlreadyExistsException.class)
+    public ResponseEntity<ErrorResponse> handleApiVersionAlreadyExists(ApiVersionAlreadyExistsException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "API_VERSION_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

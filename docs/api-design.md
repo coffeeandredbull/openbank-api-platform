@@ -117,8 +117,18 @@
 - `GET  /apis` — public catalog (light/no auth).
 - `GET  /apis/{apiId}` — detail incl. versions (public).
 - `POST /apis` — admin: publish API.
-- `POST /apis/{apiId}/versions` — admin: add version.
+- `POST /apis/{apiId}/versions` — admin/developer: add version.
 - `GET  /apis/{apiId}/versions/{versionId}` — include lifecycle state.
+- `GET  /apis/{apiId}/versions` — list versions of an API.
+
+**Implemented so far (Phase 9):** the service exposes `POST /apis/{apiId}/versions`,
+`GET /apis/{apiId}/versions/{versionId}`, and `GET /apis/{apiId}/versions`.
+A version belongs to exactly one API; duplicate versions under the same API
+return `409 API_VERSION_ALREADY_EXISTS`, and reading a version through the wrong
+API returns `404 API_VERSION_NOT_FOUND` (no cross-API leak). Reading these
+endpoints requires an `ADMIN` or `DEVELOPER` bearer token; unauthenticated or
+expired tokens get `401 UNAUTHENTICATED`. Lifecycle state is **not** part of
+Phase 9 — every catalog version is simply present in the list.
 
 ### Subscription Service
 - `GET    /applications` — list own applications.
