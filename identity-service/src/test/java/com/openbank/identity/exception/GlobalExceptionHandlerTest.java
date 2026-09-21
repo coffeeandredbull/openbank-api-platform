@@ -91,6 +91,21 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void authenticationFailedProducesStructured401() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleAuthenticationFailed(new AuthenticationFailedException(), request("POST", "/auth/login"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(401);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.status()).isEqualTo(401);
+        assertThat(body.error()).isEqualTo("Unauthorized");
+        assertThat(body.path()).isEqualTo("/auth/login");
+        assertThat(body.code()).isEqualTo("AUTHENTICATION_FAILED");
+        assertThat(body.message()).isEqualTo("Invalid email or password");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
     void unexpectedExceptionProducesGeneric500WithoutInternalsOrSecrets() {
         RuntimeException ex = new RuntimeException(
                 "could not execute statement; SQL [insert into users]; constraint; passwordHash=abc123; secret",
