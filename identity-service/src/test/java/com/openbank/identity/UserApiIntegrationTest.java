@@ -151,6 +151,75 @@ class UserApiIntegrationTest {
     }
 
     @Test
+    void createRejectsInvalidRoleWith400AndIdentifiesField() throws Exception {
+        mockMvc.perform(post("/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "bogusrole@example.com",
+                                  "password": "some-password",
+                                  "role": "SUPERUSER"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.path").value("/users"))
+                .andExpect(jsonPath("$.fieldErrors.role").exists())
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    org.assertj.core.api.Assertions.assertThat(body)
+                            .doesNotContain("SUPERUSER")
+                            .doesNotContain("InvalidFormatException")
+                            .doesNotContain("com.fasterxml");
+                });
+    }
+
+    @Test
+    void createRejectsMalformedJsonWith400AndSafeMessage() throws Exception {
+        mockMvc.perform(post("/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "broken@example.com",
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MALFORMED_REQUEST"))
+                .andExpect(jsonPath("$.message").value("Request body is missing or malformed"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    org.assertj.core.api.Assertions.assertThat(body)
+                            .doesNotContain("Unexpected character")
+                            .doesNotContain("JsonParseException")
+                            .doesNotContain("com.fasterxml")
+                            .doesNotContain("\tat ")
+                            .doesNotContain("java.lang");
+                });
+    }
+
+    @Test
+    void createRejectsMissingRoleWith400AndIdentifiesField() throws Exception {
+        mockMvc.perform(post("/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "norole@example.com",
+                                  "password": "some-password"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.role").exists());
+    }
+
+    @Test
+    void unknownRouteReturns404Not500() throws Exception {
+        mockMvc.perform(get("/definitely/not/a/route"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+    }
+
+    @Test
     void repositoryPersistsAllFields() {
         User saved = userRepository.save(new User("repo@example.com", "some-hash", UserRole.ADMIN));
 
