@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -42,34 +43,55 @@ class UserApiIntegrationTest {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
     @Test
-    void createThenGetPersistsAndNeverExposesPasswordHash() throws Exception {
+    void createHashesPasswordThenGetNeverReturnsSecrets() throws Exception {
         mockMvc.perform(post("/users")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "email": "roundtrip@example.com",
-                                  "passwordHash": "super-secret-hash",
+                                  "password": "SuperSecret!123",
                                   "role": "DEVELOPER"
                                 }
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.email").value("roundtrip@example.com"))
                 .andExpect(jsonPath("$.role").value("DEVELOPER"))
+                .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist());
 
-        long id = userRepository.findByEmail("roundtrip@example.com").orElseThrow().getId();
+        User stored = userRepository.findByEmail("roundtrip@example.com").orElseThrow();
+        String storedHash = stored.getPasswordHash();
 
-        mockMvc.perform(get("/users/{id}", id))
+        assertThat(storedHash)
+                .as("the stored value must be a BCrypt hash, never the plaintext password")
+                .isNotEqualTo("SuperSecret!123")
+                .startsWith("$2");
+        assertThat(passwordEncoder.matches("SuperSecret!123", storedHash))
+                .as("the plaintext password must verify against the stored hash")
+                .isTrue();
+        assertThat(passwordEncoder.matches("WrongPassword", storedHash)).isFalse();
+
+        mockMvc.perform(get("/users/{id}", stored.getId()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(id))
+                .andExpect(jsonPath("$.id").value(stored.getId()))
                 .andExpect(jsonPath("$.email").value("roundtrip@example.com"))
                 .andExpect(jsonPath("$.role").value("DEVELOPER"))
-                .andExpect(jsonPath("$.passwordHash").doesNotExist());
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.passwordHash").doesNotExist())
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    org.assertj.core.api.Assertions.assertThat(body)
+                            .as("response must not contain the plaintext password or the stored hash")
+                            .doesNotContain("SuperSecret!123")
+                            .doesNotContain(storedHash);
+                });
 
-        assertThat(userRepository.findById(id).orElseThrow().getPasswordHash())
-                .as("passwordHash must exist in the database but never in the response")
-                .isEqualTo("super-secret-hash");
+        assertThat(userRepository.findById(stored.getId()).orElseThrow().getPasswordHash())
+                .isEqualTo(storedHash);
     }
 
     @Test
@@ -77,7 +99,7 @@ class UserApiIntegrationTest {
         String body = """
                 {
                   "email": "duplicate@example.com",
-                  "passwordHash": "some-hash",
+                  "password": "some-password",
                   "role": "DEVELOPER"
                 }
                 """;
@@ -97,26 +119,44 @@ class UserApiIntegrationTest {
     }
 
     @Test
-    void createRejectsInvalidPayloadWith400() throws Exception {
+    void createRejectsMissingPasswordWith400() throws Exception {
         mockMvc.perform(post("/users")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "passwordHash": "some-hash"
+                                  "email": "nopass@example.com",
+                                  "role": "DEVELOPER"
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
-                .andExpect(jsonPath("$.fieldErrors.email").exists());
+                .andExpect(jsonPath("$.fieldErrors.password").exists());
+    }
+
+    @Test
+    void createRejectsBlankPasswordAndMissingEmailWith400() throws Exception {
+        mockMvc.perform(post("/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "   ",
+                                  "password": "   ",
+                                  "role": "DEVELOPER"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.email").exists())
+                .andExpect(jsonPath("$.fieldErrors.password").exists());
     }
 
     @Test
     void repositoryPersistsAllFields() {
-        User saved = userRepository.save(new User("repo@example.com", "hash", UserRole.ADMIN));
+        User saved = userRepository.save(new User("repo@example.com", "some-hash", UserRole.ADMIN));
 
         assertThat(saved.getId()).isNotNull();
         assertThat(saved.getEmail()).isEqualTo("repo@example.com");
-        assertThat(saved.getPasswordHash()).isEqualTo("hash");
+        assertThat(saved.getPasswordHash()).isEqualTo("some-hash");
         assertThat(saved.getRole()).isEqualTo(UserRole.ADMIN);
         assertThat(saved.getCreatedAt()).isNotNull();
     }

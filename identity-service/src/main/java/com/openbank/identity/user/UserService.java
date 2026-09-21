@@ -2,6 +2,7 @@ package com.openbank.identity.user;
 
 import com.openbank.identity.exception.EmailAlreadyExistsException;
 import com.openbank.identity.exception.UserNotFoundException;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -9,9 +10,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserService {
 
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
-    public UserService(UserRepository userRepository) {
+    public UserService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Transactional
@@ -20,7 +23,8 @@ public class UserService {
             throw new EmailAlreadyExistsException(request.email());
         }
 
-        User user = new User(request.email(), request.passwordHash(), request.role());
+        String encodedPassword = passwordEncoder.encode(request.password());
+        User user = new User(request.email(), encodedPassword, request.role());
         return UserResponse.from(userRepository.save(user));
     }
 

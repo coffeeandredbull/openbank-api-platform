@@ -10,8 +10,8 @@ public record CreateUserRequest(
         @Email(message = "email must be a valid email address")
         String email,
 
-        @NotBlank(message = "passwordHash is required")
-        String passwordHash,
+        @NotBlank(message = "password is required")
+        String password,
 
         @NotNull(message = "role is required")
         UserRole role

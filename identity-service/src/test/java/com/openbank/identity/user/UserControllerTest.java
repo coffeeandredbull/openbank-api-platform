@@ -30,7 +30,7 @@ class UserControllerTest {
     private UserService userService;
 
     @Test
-    void createReturns201WithUserAndNeverIncludesPasswordHash() throws Exception {
+    void createReturns201AndNeverReturnsPasswordOrHash() throws Exception {
         when(userService.create(any(CreateUserRequest.class)))
                 .thenReturn(new UserResponse(1L, "dev@example.com", UserRole.DEVELOPER,
                         Instant.parse("2026-09-21T10:00:00Z")));
@@ -40,7 +40,7 @@ class UserControllerTest {
                         .content("""
                                 {
                                   "email": "dev@example.com",
-                                  "passwordHash": "secret-hash-value",
+                                  "password": "SuperSecret!123",
                                   "role": "DEVELOPER"
                                 }
                                 """))
@@ -48,13 +48,13 @@ class UserControllerTest {
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.email").value("dev@example.com"))
                 .andExpect(jsonPath("$.role").value("DEVELOPER"))
+                .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist())
-                .andExpect(jsonPath("$.password_passwordHash").doesNotExist())
                 .andExpect(r -> {
                     String body = r.getResponse().getContentAsString();
                     org.assertj.core.api.Assertions.assertThat(body)
-                            .as("response body must never contain the password hash")
-                            .doesNotContain("secret-hash-value")
+                            .as("response body must never contain the password or its hash")
+                            .doesNotContain("SuperSecret!123")
                             .doesNotContain("passwordHash");
                 });
     }
@@ -65,7 +65,7 @@ class UserControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "passwordHash": "some-hash",
+                                  "password": "some-password",
                                   "role": "DEVELOPER"
                                 }
                                 """))
@@ -76,18 +76,35 @@ class UserControllerTest {
     }
 
     @Test
-    void createRejectsBlankPasswordHashWith400() throws Exception {
+    void createRejectsBlankPasswordWith400() throws Exception {
         mockMvc.perform(post("/users")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "email": "dev@example.com",
-                                  "passwordHash": "   ",
+                                  "password": "   ",
                                   "role": "DEVELOPER"
                                 }
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+
+        verify(userService, never()).create(any(CreateUserRequest.class));
+    }
+
+    @Test
+    void createRejectsMissingPasswordWith400() throws Exception {
+        mockMvc.perform(post("/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "dev@example.com",
+                                  "role": "DEVELOPER"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.password").exists());
 
         verify(userService, never()).create(any(CreateUserRequest.class));
     }
@@ -99,7 +116,7 @@ class UserControllerTest {
                         .content("""
                                 {
                                   "email": "dev@example.com",
-                                  "passwordHash": "some-hash",
+                                  "password": "some-password",
                                   "role": "SUPERUSER"
                                 }
                                 """))
