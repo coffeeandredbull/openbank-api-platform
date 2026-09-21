@@ -2,8 +2,11 @@ package com.openbank.identity;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openbank.identity.auth.JwtIdentity;
+import com.openbank.identity.auth.JwtTokenService;
 import com.openbank.identity.user.User;
 import com.openbank.identity.user.UserRepository;
+import com.openbank.identity.user.UserRole;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -12,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -27,7 +31,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers
 @SpringBootTest
 @AutoConfigureMockMvc
+@TestPropertySource(properties = "app.jwt.secret=integration-test-jwt-secret-value-0123456789-ab")
 class AuthLoginIntegrationTest {
+
+    private static final String TEST_JWT_SECRET = "integration-test-jwt-secret-value-0123456789-ab";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -48,6 +55,12 @@ class AuthLoginIntegrationTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private JwtTokenService jwtTokenService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
     private static final AtomicLong EMAIL_SEQUENCE = new AtomicLong(0);
 
     private static final String PASSWORD = "Correct-Horse-42";
@@ -66,22 +79,32 @@ class AuthLoginIntegrationTest {
                 .startsWith("$2");
         assertThat(passwordEncoder.matches(PASSWORD, stored.getPasswordHash())).isTrue();
 
-        mockMvc.perform(post("/auth/login")
+        String responseBody = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody(email, PASSWORD)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.expiresIn").value(3600))
                 .andExpect(jsonPath("$.userId").value(stored.getId()))
                 .andExpect(jsonPath("$.email").value(email))
                 .andExpect(jsonPath("$.role").value("DEVELOPER"))
                 .andExpect(jsonPath("$.password").doesNotExist())
                 .andExpect(jsonPath("$.passwordHash").doesNotExist())
-                .andExpect(r -> {
-                    String body = r.getResponse().getContentAsString();
-                    org.assertj.core.api.Assertions.assertThat(body)
-                            .doesNotContain(PASSWORD)
-                            .doesNotContain(stored.getPasswordHash())
-                            .doesNotContain("passwordHash");
-                });
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(responseBody)
+                .doesNotContain(PASSWORD)
+                .doesNotContain(stored.getPasswordHash())
+                .doesNotContain("passwordHash")
+                .doesNotContain(TEST_JWT_SECRET);
+
+        String accessToken = objectMapper.readTree(responseBody).get("accessToken").asText();
+        JwtIdentity identity = jwtTokenService.validateToken(accessToken);
+        assertThat(identity.userId()).isEqualTo(stored.getId());
+        assertThat(identity.role()).isEqualTo(UserRole.DEVELOPER);
     }
 
     @Test
@@ -95,7 +118,8 @@ class AuthLoginIntegrationTest {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.status").value(401))
                 .andExpect(jsonPath("$.code").value("AUTHENTICATION_FAILED"))
-                .andExpect(jsonPath("$.message").value("Invalid email or password"));
+                .andExpect(jsonPath("$.message").value("Invalid email or password"))
+                .andExpect(jsonPath("$.accessToken").doesNotExist());
     }
 
     @Test
@@ -130,6 +154,7 @@ class AuthLoginIntegrationTest {
                 .doesNotContain("ghost@example.com")
                 .doesNotContain("Some-Password")
                 .doesNotContain("passwordHash")
+                .doesNotContain(TEST_JWT_SECRET)
                 .doesNotContain("at com.openbank")
                 .doesNotContain("java.lang")
                 .doesNotContain("SQL")

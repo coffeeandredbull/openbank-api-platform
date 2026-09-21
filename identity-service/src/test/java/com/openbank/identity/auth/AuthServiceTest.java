@@ -17,6 +17,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -25,6 +27,9 @@ class AuthServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private JwtTokenService jwtTokenService;
 
     @Spy
     private PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
@@ -37,17 +42,24 @@ class AuthServiceTest {
         User user = new User("dev@example.com", passwordEncoder.encode("Correct-Horse-42"), UserRole.DEVELOPER);
         setId(user, 123L);
         when(userRepository.findByEmail("dev@example.com")).thenReturn(Optional.of(user));
+        when(jwtTokenService.generateAccessToken(123L, UserRole.DEVELOPER)).thenReturn("header.payload.signature");
+        when(jwtTokenService.expiresInSeconds()).thenReturn(3600L);
 
         LoginResponse response = authService.login(new LoginRequest("dev@example.com", "Correct-Horse-42"));
 
+        assertThat(response.accessToken()).isEqualTo("header.payload.signature");
+        assertThat(response.tokenType()).isEqualTo("Bearer");
+        assertThat(response.expiresIn()).isEqualTo(3600L);
         assertThat(response.userId()).isEqualTo(123L);
         assertThat(response.email()).isEqualTo("dev@example.com");
         assertThat(response.role()).isEqualTo(UserRole.DEVELOPER);
         assertThat(response.toString())
                 .as("no password or hash may appear in the login response")
                 .doesNotContain("Correct-Horse-42")
-                .doesNotContain("passwordHash");
+                .doesNotContain("passwordHash")
+                .doesNotContain(user.getPasswordHash());
         verify(passwordEncoder).matches("Correct-Horse-42", user.getPasswordHash());
+        verify(jwtTokenService).generateAccessToken(123L, UserRole.DEVELOPER);
     }
 
     @Test
@@ -58,6 +70,7 @@ class AuthServiceTest {
         assertThatThrownBy(() -> authService.login(new LoginRequest("dev@example.com", "Wrong-Password")))
                 .isInstanceOf(AuthenticationFailedException.class)
                 .hasMessage(AuthenticationFailedException.MESSAGE);
+        verify(jwtTokenService, never()).generateAccessToken(any(), any());
     }
 
     @Test
@@ -67,6 +80,7 @@ class AuthServiceTest {
         assertThatThrownBy(() -> authService.login(new LoginRequest("ghost@example.com", "Any-Password")))
                 .isInstanceOf(AuthenticationFailedException.class)
                 .hasMessage(AuthenticationFailedException.MESSAGE);
+        verify(jwtTokenService, never()).generateAccessToken(any(), any());
     }
 
     @Test

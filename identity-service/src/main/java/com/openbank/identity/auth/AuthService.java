@@ -17,10 +17,12 @@ public class AuthService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final JwtTokenService jwtTokenService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.jwtTokenService = jwtTokenService;
     }
 
     @Transactional(readOnly = true)
@@ -34,6 +36,7 @@ public class AuthService {
         if (!passwordEncoder.matches(request.password(), existing.getPasswordHash())) {
             throw new AuthenticationFailedException();
         }
-        return LoginResponse.from(existing);
+        String accessToken = jwtTokenService.generateAccessToken(existing.getId(), existing.getRole());
+        return LoginResponse.from(existing, accessToken, jwtTokenService.expiresInSeconds());
     }
 }

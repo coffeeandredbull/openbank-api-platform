@@ -35,14 +35,17 @@ class AuthControllerTest {
             """;
 
     @Test
-    void loginReturns200WithSafeIdentityOnly() throws Exception {
+    void loginReturns200WithSafeIdentityAndToken() throws Exception {
         when(authService.login(any(LoginRequest.class)))
-                .thenReturn(new LoginResponse(123L, "dev@example.com", UserRole.DEVELOPER));
+                .thenReturn(new LoginResponse("header.payload.signature", "Bearer", 3600L, 123L, "dev@example.com", UserRole.DEVELOPER));
 
         mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("header.payload.signature"))
+                .andExpect(jsonPath("$.tokenType").value("Bearer"))
+                .andExpect(jsonPath("$.expiresIn").value(3600))
                 .andExpect(jsonPath("$.userId").value(123))
                 .andExpect(jsonPath("$.email").value("dev@example.com"))
                 .andExpect(jsonPath("$.role").value("DEVELOPER"))
@@ -52,7 +55,8 @@ class AuthControllerTest {
                     String body = r.getResponse().getContentAsString();
                     assertThat(body)
                             .doesNotContain("Correct-Horse-42")
-                            .doesNotContain("passwordHash");
+                            .doesNotContain("passwordHash")
+                            .doesNotContain("test-jwt-secret-value");
                 });
     }
 
@@ -68,6 +72,7 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.code").value("AUTHENTICATION_FAILED"))
                 .andExpect(jsonPath("$.message").value("Invalid email or password"))
                 .andExpect(jsonPath("$.path").value("/auth/login"))
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
                 .andExpect(r -> {
                     String body = r.getResponse().getContentAsString();
                     assertThat(body)
