@@ -105,6 +105,32 @@ Implemented behavior:
 Not implemented yet (future phases): authentication at the API Gateway,
 subscription enforcement, and scopes.
 
+## Shared JWT Validation — Implemented (Phase 8)
+
+The API Management Service validates the same identity-service-issued JWT
+locally, using the identical secret configuration approach. No login,
+registration, or user database exists in that service — it only verifies tokens
+signed by the platform secret.
+
+Implemented behavior:
+
+- **Configuration:** `JWT_SECRET` environment variable (no default; fail-fast
+  if missing or shorter than 256 bits). It must be the same secret the Identity
+  Service uses to sign tokens.
+- **Validation:** the service's `JwtTokenService` reuses the semantics of the
+  Identity Service validator — HMAC signature check, expiry, and the required
+  `sub` and `role` claims. Validation is purely local; no remote call to the
+  Identity Service is made per request.
+- **Authorization:** `POST /apis` is `ADMIN`-only; `GET /apis` and
+  `GET /apis/{id}` allow `ADMIN` or `DEVELOPER`. Missing/invalid/expired
+  credentials → `401 UNAUTHENTICATED`; insufficient role → `403 ACCESS_DENIED`,
+  using the same structured error shape as the Identity Service.
+- **No new authentication architecture:** stateless bearer JWT, CSRF disabled,
+  no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
+
+Not implemented yet (future phases): gateway-level authentication, RS256, and
+credential/subscription checks.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -183,6 +209,7 @@ subscription enforcement, and scopes.
 | Authentication (login, JWT issuance) | **Implemented (Phase 6)** — login verifies credentials and issues an HS256 JWT; failed logins return `401 AUTHENTICATION_FAILED` |
 | Request authentication (bearer filter) | **Implemented (Phase 7)** — `Authorization: Bearer <jwt>` validated per request in the Identity Service; stateless, no DB lookup |
 | RBAC roles & scopes | **Partially implemented (Phase 7)** — `ADMIN`/`DEVELOPER` enforced as `ROLE_ADMIN`/`ROLE_DEVELOPER` on `/test/*` endpoints; scopes still planned |
+| Shared JWT validation & RBAC (other services) | **Partially implemented (Phase 8)** — the API Management Service validates the same JWT locally (`JWT_SECRET`) and enforces `ADMIN`/`DEVELOPER` roles on its catalog endpoints |
 | JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
 | Subscription enforcement | **Planned** — not implemented |
 | Rate limiting | **Planned** — not implemented |
@@ -190,7 +217,8 @@ subscription enforcement, and scopes.
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 7 the Identity Service supports stateless bearer request
-> authentication and role checks on the temporary `/test/*` endpoints. There is
-> **no gateway authentication, subscription enforcement, or scope enforcement**
-> yet.
+> As of Phase 8 the Identity Service supports stateless bearer request
+> authentication and role checks on the temporary `/test/*` endpoints, and the
+> API Management Service validates the same JWT and enforces roles on its
+> catalog endpoints. There is **no gateway authentication, subscription
+> enforcement, or scope enforcement** yet.

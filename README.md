@@ -56,11 +56,12 @@ All client traffic enters through the API Gateway. The Developer Portal is the
 user-facing React application that developers use to discover APIs, subscribe
 to them, and manage credentials.
 
-> **Status note:** This is the *planned* architecture. As of Phase 1 this
-> repository contains only project documentation — no application code exists
-> yet. See the [architecture document](docs/architecture.md) for details and
-> each file in [`docs/`](docs/) for requirements, database design, security
-> model, and API design.
+> **Status note:** The Identity Service (registration, login, JWT issuance,
+> bearer authentication, RBAC) and the API Management Service (API catalog
+> foundation) are implemented. The remaining services, the gateway, and the
+> portal are planned. See the [architecture document](docs/architecture.md) for
+> details and each file in [`docs/`](docs/) for requirements, database design,
+> security model, and API design.
 
 ## Technology Stack
 
@@ -80,15 +81,22 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 
 ## Current Development Status
 
-- **Phase 1 — Project documentation (current):**
-  - Repo initialized, `AGENTS.md` and documentation created.
-  - No application code exists.
-  - Nothing is implemented, deployed, or runnable.
-- **Planned phases (subject to change):** each service, the API Gateway, the
-  Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker
-  Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be built in
-  small, explicitly requested phases and verified (compile + tests) at each
-  step.
+- **Phase 1 — Project documentation:** repo initialized, `AGENTS.md` and
+  documentation created.
+- **Phases 2–7 — Identity Service:** user registration, BCrypt password
+  hashing, login, HS256 JWT access-token issuance, stateless bearer request
+  authentication, and role-based authorization (`ADMIN`/`DEVELOPER`) with a
+  complete unit + integration test suite.
+- **Phase 8 — API Management Service (API catalog foundation):** the service
+  validates identity-service-issued JWTs locally, allows an `ADMIN` to register
+  an API, and lets `ADMIN`/`DEVELOPER` browse the catalog. Only the API catalog
+  exists — no versions, lifecycle, applications, subscriptions, credentials, or
+  gateway routing yet.
+- **Planned phases (subject to change):** API versioning/lifecycle,
+  subscriptions, the remaining services, the API Gateway, the Developer Portal,
+  shared infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub
+  Actions) and Kubernetes manifests will be built in small, explicitly
+  requested phases and verified (compile + tests) at each step.
 
 ## Planned Features
 
@@ -147,4 +155,6 @@ docs/
 ├── database.md
 ├── security.md
 └── api-design.md
+identity-service/    (implemented — Phases 2–7)
+api-management-service/  (implemented — Phase 8, API catalog foundation)
 ```
