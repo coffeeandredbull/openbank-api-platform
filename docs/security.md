@@ -66,6 +66,45 @@ Not implemented yet (future phases): a Spring Security filter chain or gateway
 filter that consumes these tokens, RBAC/scopes enforcement, refresh tokens, and
 revocation.
 
+## Request Authentication & RBAC — Implemented (Phase 7)
+
+The Identity Service now authenticates requests using Spring Security bearer
+tokens and enforces role-based authorization on a small set of verification
+endpoints. This is the foundation for later gateway-level enforcement.
+
+Implemented behavior:
+
+- **Header format:** `Authorization: Bearer <jwt>`. Other schemes (`Basic`,
+  arbitrary strings) and malformed values (`Bearer`, `Bearer `) do not
+  authenticate and fail closed with `401`.
+- **Flow:** a request filter reads the bearer header, validates the JWT with
+  the existing `JwtTokenService` (signature, expiry, required claims), and
+  places an authenticated principal (`userId` + `role`) into the Spring
+  Security context. No database lookup is performed per request — the signed
+  claims are the source of truth for this phase.
+- **Stateless:** session management is `STATELESS`; every protected request is
+  authenticated from its bearer token. There are no server-side sessions.
+  CSRF is disabled because this is a stateless bearer-token API (no cookies are
+  used for authentication).
+- **Roles:** `ADMIN` and `DEVELOPER` map to Spring Security authorities
+  `ROLE_ADMIN` and `ROLE_DEVELOPER` (standard `hasRole` semantics). Roles come
+  from the JWT `role` claim, never from a hardcoded user.
+- **Public endpoints:** `POST /users` and `POST /auth/login` remain public.
+  Everything else remains accessible as before; only the verification
+  endpoints below are protected.
+- **Temporary RBAC verification endpoints** (development only, not business
+  functionality):
+  - `GET /test/authenticated` — requires any authenticated role
+    (`ADMIN` or `DEVELOPER`).
+  - `GET /test/admin` — requires `ADMIN`.
+- **401 vs 403:** missing/invalid/expired credentials → `401` with code
+  `UNAUTHENTICATED`; authenticated but insufficient role → `403` with code
+  `ACCESS_DENIED`. Both use the standard error response shape and never leak
+  framework internals, stack traces, JWTs, or secrets.
+
+Not implemented yet (future phases): authentication at the API Gateway,
+subscription enforcement, and scopes.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -142,14 +181,16 @@ revocation.
 | Area | Status |
 | --- | --- |
 | Authentication (login, JWT issuance) | **Implemented (Phase 6)** — login verifies credentials and issues an HS256 JWT; failed logins return `401 AUTHENTICATION_FAILED` |
-| JWT validation at gateway | **Planned** — not implemented (a service-level `JwtTokenService.validateToken` foundation exists) |
-| RBAC roles & scopes | **Planned** — role is carried in the JWT claim; no enforcement filters exist |
+| Request authentication (bearer filter) | **Implemented (Phase 7)** — `Authorization: Bearer <jwt>` validated per request in the Identity Service; stateless, no DB lookup |
+| RBAC roles & scopes | **Partially implemented (Phase 7)** — `ADMIN`/`DEVELOPER` enforced as `ROLE_ADMIN`/`ROLE_DEVELOPER` on `/test/*` endpoints; scopes still planned |
+| JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
 | Subscription enforcement | **Planned** — not implemented |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 6 only user registration, password hashing, login, and JWT
-> issuance exist. There is **no request authentication mechanism** yet — no
-> filter, no protected endpoints, and no gateway validation.
+> As of Phase 7 the Identity Service supports stateless bearer request
+> authentication and role checks on the temporary `/test/*` endpoints. There is
+> **no gateway authentication, subscription enforcement, or scope enforcement**
+> yet.
