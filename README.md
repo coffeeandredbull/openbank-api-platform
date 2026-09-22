@@ -58,11 +58,12 @@ to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC) and the API Management Service (API catalog
-> foundation, API versioning, API version lifecycle, developer application and
-> subscription management) are implemented. The remaining services, the gateway,
-> and the portal are planned. See the [architecture document](docs/architecture.md)
-> for details and each file in [`docs/`](docs/) for requirements, database
-> design, security model, and API design.
+> foundation, API versioning, API version lifecycle, developer application,
+> subscription and credential management) are implemented. The remaining
+> services, the gateway, and the portal are planned. See the
+> [architecture document](docs/architecture.md) for details and each file in
+> [`docs/`](docs/) for requirements, database design, security model, and API
+> design.
 
 ## Technology Stack
 
@@ -130,11 +131,26 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   a database unique constraint. Each subscription has no lifecycle, credentials,
   rate limit, or gateway state (planned later) — it is the Application →
   Subscription → API Version link only.
-- **Planned phases (subject to change):** subscription credentials (API keys /
-  client secrets) and tiers, the remaining services, the API Gateway, the
+- **Phase 13 — API Management Service (credentials):** applications now get
+  credentials. `POST /credentials` generates a `clientId` (random UUID) and a
+  cryptographically strong `clientSecret` server-side, hashes the secret with
+  BCrypt, and stores **only the hash**. The plaintext secret is returned
+  **exactly once**, in the `201 Created` response; `GET /credentials/{id}` and
+  `GET /credentials` return only the `clientId` and never the secret or its
+  hash. The owner is always derived from the JWT `sub` claim through the
+  owning application (Credential → Application → ownerUserId); `ADMIN` owns
+  what it creates and has no global access (cross-owner → `404
+  CREDENTIAL_NOT_FOUND`, no existence leak). `clientId` is unique (service
+  pre-check + DB unique constraint, retried on collision). The gateway will use
+  these credentials later to authenticate an application — that enforcement is a
+  later phase.
+- **Planned phases (subject to change):** API Gateway client-credential
+  authentication (using these credentials), subscription tiers / rate limits,
+  credential rotation/revocation and status, the remaining services, the
   Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker
   Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be built in
-  small, explicitly requested phases and verified (compile + tests) at each step.
+  small, explicitly requested phases and verified (compile + tests) at each
+  step.
 
 ## Planned Features
 
@@ -143,10 +159,11 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 - **API Management Service:** registry of published APIs, API versions,
   endpoint metadata, documentation, and lifecycle state (e.g. published,
   deprecated).
-- **Subscription Service:** (with the API Management Service) credentials for
-  applications (API keys / client IDs / client secrets), API subscription tiers
-  and rate-limit enforcement. Basic application and subscription management is
-  already implemented in the API Management Service (Phases 11–12).
+- **Subscription Service:** (with the API Management Service) API subscription
+  tiers, rate-limit enforcement, and gateway-side credential verification.
+  Basic application, subscription, and application credential management is
+  already implemented in the API Management Service (Phases 11–13). The API
+  Gateway will later authenticate applications with the issued credentials.
 - **Account Service:** customer bank accounts and balances.
 - **Payment Service:** payment initiation and approval workflows.
 - **Transaction Service:** transaction history for accounts.
@@ -196,5 +213,5 @@ docs/
 ├── security.md
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
-api-management-service/  (implemented — Phases 8–12, API catalog + versioning + lifecycle + applications + subscriptions)
+api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 ```

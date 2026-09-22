@@ -66,6 +66,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(CredentialNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleCredentialNotFound(CredentialNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "CREDENTIAL_NOT_FOUND", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

@@ -220,16 +220,56 @@ request body.
   state, status, tier, credentials (API key / client id+secret), or rate limit.
   Those remain planned under the Subscription Service.
 
+**Implemented so far (Phase 13) — credentials:** an **application** can hold
+**credentials** (`clientId` + hashed `clientSecret`) in the API Management
+Service. These are the credentials an API Gateway will later use to
+authenticate an application; gateway-side authentication is still a later
+phase. The request body carries only `applicationId`; the **owner is always
+derived from the authenticated user's JWT `sub` claim** and is never taken from
+the request body.
+- `POST /credentials` — create a credential for an owned application. Body:
+  `{ "applicationId": long }` (required). `clientId` and `clientSecret` are
+  generated **server-side** and are not accepted from the client (extra body
+  fields are ignored). Returns `201 Created` with a `Location: /credentials/{id}`
+  header and body (`id`, `applicationId`, `clientId`, `clientSecret`,
+  `createdAt`, `updatedAt`). The plaintext `clientSecret` is returned
+  **exactly once**, in this creation response only.
+- `GET /credentials/{credentialId}` — the caller's **own** credential
+  (applications the caller owns). Returns `CredentialResponse` (`id`,
+  `applicationId`, `clientId`, `createdAt`, `updatedAt`) — **never** the
+  `clientSecret` or `clientSecretHash`.
+- `GET /credentials` — list the caller's **own** credentials in ascending `id`
+  order (owner-scoped; other users' credentials never appear, no secrets).
+- Authorization is uniform for `ADMIN` and `DEVELOPER` with owner-based
+  semantics, exactly like applications/subscriptions: `ADMIN` owns what it
+  creates and has **no** global access. Credential ownership is derived through
+  Credential → Application → ownerUserId. Accessing a credential that does not
+  exist **or belongs to an application the caller does not own** returns `404
+  CREDENTIAL_NOT_FOUND` (no existence leak). Creating a credential against an
+  application the caller does not own (or that does not exist) returns `404
+  APPLICATION_NOT_FOUND`.
+- `clientId` uniqueness: generated as a random UUID, unique per credential. A
+  service-level existence check plus a database unique constraint on
+  `client_id`; if a collision somehow occurs, the service regenerates and
+  retries rather than surfacing a database error.
+- Secret hashing: the `clientSecret` is hashed with BCrypt (the same
+  `PasswordEncoder` infrastructure as user passwords) and **only the hash** is
+  stored. The plaintext secret cannot be retrieved after creation.
+- Validation: `applicationId` is required (`@NotNull`); violations return `400
+  VALIDATION_FAILED`, malformed JSON returns `400 MALFORMED_REQUEST`.
+- No credential lifecycle yet: no rotation, revocation, status, expiry, scopes,
+  permissions, or rate limits. Those remain planned.
+
 ### Subscription Service
 
-> `POST /applications` and `GET /applications` below are **implemented** in the
-> `API Management Service` (Phase 11) and the Application → Subscription → API
-> Version link (`POST /subscriptions`, `GET /subscriptions/{id}`,
-> `GET /subscriptions`) is **implemented** in the API Management Service
-> (Phase 12) — see the Phase 11/12 sections above. They are repeated here as the
-> planned contract for the gateway/portal view; the remaining items
-> (credentials, tiers, status, revocation) are not yet implemented.
-- `POST   /applications/{id}/credentials` — issue credential (secret shown once).
+> `POST /applications` and `GET /applications` are **implemented** in the API
+> Management Service (Phase 11), the Application → Subscription → API Version
+> link (`POST /subscriptions`, `GET /subscriptions/{id}`, `GET /subscriptions`)
+> in Phase 12, and application **credentials** (`POST /credentials`,
+> `GET /credentials/{id}`, `GET /credentials`) in Phase 13 — see the sections
+> above. They are repeated here as the planned contract for the gateway/portal
+> view; the remaining items (tiers, status, revocation) are not yet implemented.
+- `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
 - `GET    /subscriptions/{id}` — subscription status.
 - `DELETE /applications/{id}/subscriptions/{subId}` — revoke.

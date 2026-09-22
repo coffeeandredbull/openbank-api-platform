@@ -33,7 +33,9 @@
 
 - Applications are **implemented** (Phase 11, in the API Management Service);
   subscriptions are **implemented** (Phase 12, in the API Management Service);
-  credentials and tiers below remain planned.
+  application credentials are **implemented** (Phase 13, in the API Management
+  Service); tiers, credential lifecycle, and gateway enforcement remain
+  planned.
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
   link (`applicationId` + `apiVersionId`), `GET /subscriptions/{subscriptionId}`
@@ -42,13 +44,19 @@
   (application, API version) — duplicates are rejected with `409`. Each
   subscription is metadata-only: no lifecycle, status, credentials, rate limit,
   or tier yet.
+- Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
+  issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
+  hash is stored; the plaintext secret is returned exactly once at creation.
+  `GET /credentials/{id}` and `GET /credentials` never return the secret or its
+  hash. Ownership flows Credential → Application → owner (JWT `sub`).
 - An application can be **subscribed** to an API version under a rate-limit
   **tier** (planned).
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned).
-- Credentials (API key / client ID/secrets) are issued per application and can
-  be rotated (planned).
+- Credential rotation, revocation, and status are **planned** (Phase 13 has no
+  credential lifecycle).
 - The Subscription Service decides whether a given application may call a given
-  API version (planned; the gateway enforcement layer).
+  API version (planned; the gateway enforcement layer, which will authenticate
+  applications with the Phase 13 credentials).
 
 ### Accounts (banking domain)
 

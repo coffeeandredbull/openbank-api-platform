@@ -232,6 +232,27 @@ class GlobalExceptionHandlerTest {
                 .doesNotContain("DataIntegrityViolation");
     }
 
+    @Test
+    void credentialNotFoundProducesStructured404() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleCredentialNotFound(
+                        new CredentialNotFoundException(7L), request("GET", "/credentials/7"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.path()).isEqualTo("/credentials/7");
+        assertThat(body.code()).isEqualTo("CREDENTIAL_NOT_FOUND");
+        assertThat(body.message()).contains("7");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("clientSecretHash")
+                .doesNotContain("clientSecret")
+                .doesNotContain("at com.openbank");
+    }
+
     private MockHttpServletRequest request(String method, String path) {
         return new MockHttpServletRequest(method, path);
     }

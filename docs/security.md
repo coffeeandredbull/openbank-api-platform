@@ -155,8 +155,9 @@ Implemented behavior:
 - **Defense in depth:** authorization lives in the service layer (and DB lookup
   keys), not in the route matcher; the security filter only authenticates.
 
-Not implemented yet (future phases): application credentials (client
-id/secret/API keys), subscription checks, and profile/scope enforcement.
+Not implemented yet (future phases): subscription-level checks and
+profile/scope enforcement. Application credentials are **implemented** (Phase 13
+— see below).
 
 ## Subscription Ownership — Implemented (Phase 12)
 
@@ -194,9 +195,65 @@ Implemented behavior:
 - **Defense in depth:** authorization lives in the service layer and DB lookup
   keys, not in the route matcher; the security filter only authenticates.
 
-Not implemented yet (future phases): subscription credentials (API
-key/client id+secret issuance), tiers, status/lifecycle, revocation, and
-gateway-level subscription enforcement.
+Not implemented yet (future phases): subscription-specific credentials (the
+OAuth2-style client registry in the Identity Service), tiers, status/lifecycle,
+revocation, and gateway-level subscription enforcement.
+
+## Credential Ownership & Disclosure — Implemented (Phase 13)
+
+The API Management Service issues **application credentials** (`clientId` +
+`clientSecret`, the future gateway authentication material) and stores
+**only** a BCrypt hash of the secret.
+
+Implemented behavior:
+
+- **Server-side generation:** the client never supplies `clientId` or
+  `clientSecret`. `clientId` is a fresh random UUID per credential; the plaintext
+  `clientSecret` is 32 bytes from `SecureRandom`, base64url-encoded (256 bits of
+  entropy). Exhaustive guessability analysis:
+  - 256-bit entropy — brute-force is infeasible regardless of hashing.
+  - `SecureRandom` on Windows/Java 21 uses `/dev/urandom`-equivalent
+    CSPRNG seeding (`NativePRNG`/`DRBG`); no `Random` (predictable) or
+    `ThreadLocalRandom` (not fork-safe) anywhere in credential generation.
+- **Hashing & storage:** the secret is hashed with the same `PasswordEncoder`
+  (BCrypt) infrastructure as user passwords. The DB stores
+  `client_secret_hash` only — the plaintext secret exists in memory only
+  between generation and hashing, is returned in the `201 Created` body
+  **exactly once**, and is never persisted, logged, or retrievable afterward.
+  `CredentialResponse` (used by the two GET endpoints) structurally cannot
+  contain a secret (it has no secret fields; a unit test asserts the serialized
+  JSON contains neither `clientSecret` nor `clientSecretHash`).
+- **Owner derivation:** ownership is never client-supplied. Credential →
+  Application → `ownerUserId` — the application is looked up keyed by `id`
+  **and** the authenticated caller's JWT `sub` before issuing
+  (`findByIdAndOwnerUserId`). A non-existent or cross-owner `applicationId`
+  returns `404 APPLICATION_NOT_FOUND` (no existence leak).
+- **Owner-scoped access:** `GET /credentials`, `GET /credentials/{id}`
+  operate only on credentials whose **application** belongs to the caller
+  (repository lookups keyed by credential `id`/owner and application owner,
+  respectively). A credential that does not exist **or belongs to another
+  user's application** returns `404 CREDENTIAL_NOT_FOUND` exactly as if it did
+  not exist (no existence leak).
+- **Roles:** both `ADMIN` and `DEVELOPER` bearer tokens are accepted with
+  uniform owner semantics. An `ADMIN` owns what it creates and has **no**
+  global access to other users' credentials. Unknown/insufficient roles fail
+  closed with `401 UNAUTHENTICATED`; missing/invalid/expired tokens also map to
+  `401 UNAUTHENTICATED`. These early 401s never include tokens, stack traces, or
+  secrets.
+- **clientId uniqueness:** enforced in the service (existence pre-check against
+  `existsByClientId`) **and** by a DB unique constraint (`uc_credential_client_id`)
+  — defense in depth against race conditions; a collision triggers regeneration
+  and a retry rather than a sensitive constraint violation leaking into a
+  response. `DataIntegrityViolationException` during save is caught and retried
+  (bounded retry loop); a persistent failure surfaces as a generic `500`.
+- **Defense in depth:** authorization lives in the service layer and DB lookup
+  keys, not in the route matcher; the security filter only authenticates.
+  Error responses (all 4xx, including 500) never expose `client_secret_hash`,
+  SQL, constraint names, or the plaintext secret.
+
+Not implemented yet (future phases): credential rotation, revocation, status,
+expiry, scopes, gateway-side verification/authentication of these credentials,
+and profile/scope enforcement.
 
 ## Authorization / RBAC
 
@@ -221,11 +278,18 @@ gateway-level subscription enforcement.
 
 ## Credential Security
 
-- **Application credentials** (API keys / client IDs and client secrets):
-  - Client IDs are public identifiers.
-  - Secrets/keys are **not stored plaintext** — only hashes are persisted.
-  - Secrets are displayed once at creation (or regenerable) and never logged.
-  - Rotation is supported.
+- **Application credentials** (`clientId` + `clientSecret`, issued per
+  application since Phase 13):
+  - Client IDs are public identifiers (random UUIDs, unique per credential).
+  - Secrets are **not stored plaintext** — only BCrypt hashes are persisted
+    (reusing the same `PasswordEncoder` infrastructure as user passwords).
+  - The plaintext secret is generated server-side from `SecureRandom` (256-bit
+    entropy), shown **once** at creation, and never logged, retrievable, or
+    exposed by later responses.
+  - Rotation/revocation/status are **planned** (Phase 13 intentionally has no
+    credential lifecycle).
+  - The gateway **authentication** step that consumes these credentials is a
+    later phase.
 - **Refresh tokens**: stored as hashes only.
 - No credential is ever printed in logs, responses, or exceptions.
 
@@ -279,15 +343,19 @@ gateway-level subscription enforcement.
 | Shared JWT validation & RBAC (other services) | **Partially implemented (Phase 8)** — the API Management Service validates the same JWT locally (`JWT_SECRET`) and enforces `ADMIN`/`DEVELOPER` roles on its catalog endpoints |
 | Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
 | Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
+| Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level |
 | JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
-| Subscription enforcement | **Planned** — not implemented (only the subscription registry itself exists; gateway/runtime enforcement and credentials are future phases) |
+| Subscription enforcement | **Planned** — not implemented (only the subscription and credential registries exist; gateway/runtime enforcement is a future phase) |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
+| Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 8 the Identity Service supports stateless bearer request
+> As of Phase 13 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, and the
 > API Management Service validates the same JWT and enforces roles on its
-> catalog endpoints. There is **no gateway authentication, subscription
-> enforcement, or scope enforcement** yet.
+> catalog, application, subscription, and credential endpoints, with full
+> owner-scoping for applications/subscriptions/credentials. There is **no
+> gateway authentication, subscription enforcement, or scope enforcement**
+> yet.
