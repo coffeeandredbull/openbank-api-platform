@@ -127,8 +127,34 @@ A version belongs to exactly one API; duplicate versions under the same API
 return `409 API_VERSION_ALREADY_EXISTS`, and reading a version through the wrong
 API returns `404 API_VERSION_NOT_FOUND` (no cross-API leak). Reading these
 endpoints requires an `ADMIN` or `DEVELOPER` bearer token; unauthenticated or
-expired tokens get `401 UNAUTHENTICATED`. Lifecycle state is **not** part of
-Phase 9 — every catalog version is simply present in the list.
+expired tokens get `401 UNAUTHENTICATED`.
+
+**Implemented so far (Phase 10) — API version lifecycle:** API version lifecycle
+is a persisted property of the **API version** (not the API) with the states
+`CREATED → PUBLISHED → DEPRECATED → RETIRED`. New versions start in `CREATED`;
+the caller cannot choose the initial state when creating a version.
+- `PATCH /apis/{apiId}/versions/{versionId}/lifecycle`
+  with body `{ "lifecycle": "PUBLISHED" }` moves a version to the requested
+  state (HTTP `200` with the updated version).
+- Allowed transitions: `CREATED → PUBLISHED`, `CREATED → RETIRED`,
+  `PUBLISHED → DEPRECATED`, `DEPRECATED → RETIRED`. Every other transition —
+  including an "update" to the state already held — is rejected with
+  `409 INVALID_LIFECYCLE_TRANSITION`.
+- Same ownership rules as Phase 9 apply: the version must belong to the API in
+  the URL, otherwise `404 API_VERSION_NOT_FOUND` (no leak about whether the
+  version exists under another API); a missing API returns
+  `404 API_NOT_FOUND`. An invalid lifecycle value in the JSON body returns
+  `400 VALIDATION_FAILED`; a missing `lifecycle` field returns the same.
+- The lifecycle endpoint is **ADMIN-only**; `DEVELOPER` and other roles get
+  `403 ACCESS_DENIED` (or `401 UNAUTHENTICATED` when not authenticated). The
+  existing `POST`/`GET` version endpoints keep their `ADMIN`+`DEVELOPER`
+  access.
+- The lifecycle value is persisted as a string (`CREATED`, `PUBLISHED`,
+  `DEPRECATED`, `RETIRED`), never as an ordinal. `updatedAt` changes on a
+  lifecycle change; `createdAt` never changes.
+- The lifecycle is currently **metadata/state only**: it does not yet control
+  gateway routing, subscriptions, or traffic. Enforcement of deprecation or
+  retirement is intentionally out of scope until those components exist.
 
 ### Subscription Service
 - `GET    /applications` — list own applications.

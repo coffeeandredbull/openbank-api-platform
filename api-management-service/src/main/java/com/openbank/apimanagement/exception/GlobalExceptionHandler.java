@@ -46,6 +46,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "API_VERSION_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(InvalidLifecycleTransitionException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidLifecycleTransition(InvalidLifecycleTransitionException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "INVALID_LIFECYCLE_TRANSITION", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

@@ -42,6 +42,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/apis/{apiId}/versions").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/apis/{apiId}/versions").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/apis/{apiId}/versions/{versionId}").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.PATCH, "/apis/{apiId}/versions/{versionId}/lifecycle").hasRole("ADMIN")
                         .anyRequest().permitAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

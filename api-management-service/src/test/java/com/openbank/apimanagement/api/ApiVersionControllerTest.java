@@ -3,6 +3,7 @@ package com.openbank.apimanagement.api;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ApiVersionAlreadyExistsException;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
+import com.openbank.apimanagement.exception.InvalidLifecycleTransitionException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -19,6 +20,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -45,7 +47,7 @@ class ApiVersionControllerTest {
     @Test
     void createReturns201WithBodyAndLocationHeader() throws Exception {
         when(apiVersionService.create(eq(1L), any(CreateApiVersionRequest.class)))
-                .thenReturn(new ApiVersionResponse(1L, 1L, "v1", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new ApiVersionResponse(1L, 1L, "v1", ApiVersionLifecycle.CREATED, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/apis/1/versions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -55,6 +57,7 @@ class ApiVersionControllerTest {
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.apiId").value(1))
                 .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.lifecycle").value("CREATED"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.status").doesNotExist())
@@ -152,13 +155,14 @@ class ApiVersionControllerTest {
     @Test
     void getReturns200WithVersionDetails() throws Exception {
         when(apiVersionService.get(eq(1L), eq(5L)))
-                .thenReturn(new ApiVersionResponse(5L, 1L, "v1", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new ApiVersionResponse(5L, 1L, "v1", ApiVersionLifecycle.PUBLISHED, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(get("/apis/1/versions/5"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(5))
                 .andExpect(jsonPath("$.apiId").value(1))
-                .andExpect(jsonPath("$.version").value("v1"));
+                .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.lifecycle").value("PUBLISHED"));
     }
 
     @Test
@@ -194,16 +198,18 @@ class ApiVersionControllerTest {
     void listReturns200WithVersions() throws Exception {
         when(apiVersionService.list(eq(1L)))
                 .thenReturn(List.of(
-                        new ApiVersionResponse(1L, 1L, "v1", TIMESTAMP, TIMESTAMP),
-                        new ApiVersionResponse(2L, 1L, "v2", TIMESTAMP, TIMESTAMP)));
+                        new ApiVersionResponse(1L, 1L, "v1", ApiVersionLifecycle.CREATED, TIMESTAMP, TIMESTAMP),
+                        new ApiVersionResponse(2L, 1L, "v2", ApiVersionLifecycle.DEPRECATED, TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/apis/1/versions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].id").value(1))
                 .andExpect(jsonPath("$[0].version").value("v1"))
+                .andExpect(jsonPath("$[0].lifecycle").value("CREATED"))
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].version").value("v2"))
+                .andExpect(jsonPath("$[1].lifecycle").value("DEPRECATED"))
                 .andExpect(jsonPath("$[0].api").doesNotExist());
     }
 
@@ -214,6 +220,113 @@ class ApiVersionControllerTest {
         mockMvc.perform(get("/apis/999/versions"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("API_NOT_FOUND"));
+    }
+
+    @Test
+    void changeLifecycleReturns200WithUpdatedVersion() throws Exception {
+        when(apiVersionService.changeLifecycle(eq(1L), eq(5L), any(UpdateApiVersionLifecycleRequest.class)))
+                .thenReturn(new ApiVersionResponse(5L, 1L, "v1", ApiVersionLifecycle.PUBLISHED, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/apis/1/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "lifecycle": "PUBLISHED"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(5))
+                .andExpect(jsonPath("$.apiId").value(1))
+                .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.lifecycle").value("PUBLISHED"));
+    }
+
+    @Test
+    void changeLifecycleRejectsMissingLifecycleWith400() throws Exception {
+        mockMvc.perform(patch("/apis/1/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.lifecycle").value("lifecycle is required"));
+    }
+
+    @Test
+    void changeLifecycleRejectsInvalidLifecycleValueWith400() throws Exception {
+        mockMvc.perform(patch("/apis/1/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "lifecycle": "NOT_A_LIFECYCLE"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.lifecycle").value("invalid value"));
+    }
+
+    @Test
+    void changeLifecycleRejectsMalformedJsonWith400() throws Exception {
+        mockMvc.perform(patch("/apis/1/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{not json"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MALFORMED_REQUEST"));
+    }
+
+    @Test
+    void changeLifecycleReturns404WhenApiDoesNotExist() throws Exception {
+        when(apiVersionService.changeLifecycle(eq(999L), eq(5L), any(UpdateApiVersionLifecycleRequest.class)))
+                .thenThrow(new ApiNotFoundException(999L));
+
+        mockMvc.perform(patch("/apis/999/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "lifecycle": "PUBLISHED"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_NOT_FOUND"));
+    }
+
+    @Test
+    void changeLifecycleReturns404WhenVersionDoesNotExist() throws Exception {
+        when(apiVersionService.changeLifecycle(eq(1L), eq(404L), any(UpdateApiVersionLifecycleRequest.class)))
+                .thenThrow(new ApiVersionNotFoundException(1L, 404L));
+
+        mockMvc.perform(patch("/apis/1/versions/404/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "lifecycle": "PUBLISHED"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_VERSION_NOT_FOUND"));
+    }
+
+    @Test
+    void changeLifecycleReturns409WhenTransitionIsInvalid() throws Exception {
+        when(apiVersionService.changeLifecycle(eq(1L), eq(5L), any(UpdateApiVersionLifecycleRequest.class)))
+                .thenThrow(new InvalidLifecycleTransitionException(ApiVersionLifecycle.PUBLISHED, ApiVersionLifecycle.CREATED));
+
+        mockMvc.perform(patch("/apis/1/versions/5/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "lifecycle": "CREATED"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_LIFECYCLE_TRANSITION"))
+                .andExpect(jsonPath("$.message").value("Lifecycle transition from PUBLISHED to CREATED is not allowed"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body)
+                            .doesNotContain("at com.openbank")
+                            .doesNotContain("exception");
+                });
     }
 
     @Test

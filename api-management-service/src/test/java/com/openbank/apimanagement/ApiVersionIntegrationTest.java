@@ -8,6 +8,7 @@ import com.nimbusds.jwt.SignedJWT;
 import com.openbank.apimanagement.api.Api;
 import com.openbank.apimanagement.api.ApiRepository;
 import com.openbank.apimanagement.api.ApiVersion;
+import com.openbank.apimanagement.api.ApiVersionLifecycle;
 import com.openbank.apimanagement.api.ApiVersionRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -33,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -65,6 +68,9 @@ class ApiVersionIntegrationTest {
     @Autowired
     private ApiVersionRepository apiVersionRepository;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     @Test
     void createVersionPersistsApiIdAndTimestamps() throws Exception {
         Long apiId = createApi();
@@ -77,6 +83,7 @@ class ApiVersionIntegrationTest {
                 .andExpect(jsonPath("$.id").isNumber())
                 .andExpect(jsonPath("$.apiId").value(apiId))
                 .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.lifecycle").value("CREATED"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(r -> {
@@ -89,7 +96,9 @@ class ApiVersionIntegrationTest {
         assertThat(stored).hasSize(1);
         assertThat(stored.get(0).getApi().getId()).isEqualTo(apiId);
         assertThat(stored.get(0).getVersion()).isEqualTo("v1");
+        assertThat(stored.get(0).getLifecycle()).isEqualTo(ApiVersionLifecycle.CREATED);
         assertThat(stored.get(0).getCreatedAt()).isEqualTo(stored.get(0).getUpdatedAt());
+        assertThat(lifecycleInDb(apiId)).isEqualTo("CREATED");
     }
 
     @Test
@@ -283,6 +292,163 @@ class ApiVersionIntegrationTest {
         assertThat(apiVersionRepository.findByApiIdOrderByIdAsc(apiId)).isEmpty();
     }
 
+    @Test
+    void changeLifecycleFromCreatedToPublishedPersistsNewState() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(versionId))
+                .andExpect(jsonPath("$.apiId").value(apiId))
+                .andExpect(jsonPath("$.version").value("v1"))
+                .andExpect(jsonPath("$.lifecycle").value("PUBLISHED"));
+
+        assertThat(lifecycleInDb(apiId)).isEqualTo("PUBLISHED");
+    }
+
+    @Test
+    void lifecycleFollowsAllowedChainFromCreatedToRetired() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+
+        assertThat(patchLifecycle(apiId, versionId, "PUBLISHED")).isEqualTo(200);
+        assertThat(patchLifecycle(apiId, versionId, "DEPRECATED")).isEqualTo(200);
+        assertThat(patchLifecycle(apiId, versionId, "RETIRED")).isEqualTo(200);
+
+        assertThat(lifecycleInDb(apiId)).isEqualTo("RETIRED");
+    }
+
+    @Test
+    void changeLifecycleUpdatesUpdatedAtButKeepsCreatedAt() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+
+        String createdAtBefore = jdbcTemplate.queryForObject(
+                "select created_at::text from api_versions where api_id = ?", String.class, apiId);
+        String updatedAtBefore = jdbcTemplate.queryForObject(
+                "select updated_at::text from api_versions where api_id = ?", String.class, apiId);
+
+        assertThat(patchLifecycle(apiId, versionId, "PUBLISHED")).isEqualTo(200);
+
+        String createdAtAfter = jdbcTemplate.queryForObject(
+                "select created_at::text from api_versions where api_id = ?", String.class, apiId);
+        String updatedAtAfter = jdbcTemplate.queryForObject(
+                "select updated_at::text from api_versions where api_id = ?", String.class, apiId);
+        assertThat(createdAtAfter).isEqualTo(createdAtBefore);
+        assertThat(updatedAtAfter).isNotEqualTo(updatedAtBefore);
+    }
+
+    @Test
+    void sameStateTransitionReturns409AndLeavesStateUnchanged() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("CREATED")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_LIFECYCLE_TRANSITION"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body)
+                            .doesNotContain("EnumMap")
+                            .doesNotContain("AllowedTransitions")
+                            .doesNotContain("at com.openbank");
+                });
+
+        assertThat(lifecycleInDb(apiId)).isEqualTo("CREATED");
+    }
+
+    @Test
+    void backwardsTransitionReturns409WithoutChangingStateOrTimestamp() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+        assertThat(patchLifecycle(apiId, versionId, "PUBLISHED")).isEqualTo(200);
+        String updatedAtBefore = jdbcTemplate.queryForObject(
+                "select updated_at::text from api_versions where api_id = ?", String.class, apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("CREATED")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_LIFECYCLE_TRANSITION"));
+
+        assertThat(lifecycleInDb(apiId)).isEqualTo("PUBLISHED");
+        String updatedAtAfter = jdbcTemplate.queryForObject(
+                "select updated_at::text from api_versions where api_id = ?", String.class, apiId);
+        assertThat(updatedAtAfter).isEqualTo(updatedAtBefore);
+    }
+
+    @Test
+    void changeLifecycleAcrossApisReturnsVersionNotFoundWithoutLeaking() throws Exception {
+        Long ownerApi = createApi();
+        Long otherApi = createApi();
+        assertThat(postVersion(ownerApi, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(ownerApi).get(0).getId();
+
+        mockMvc.perform(patch("/apis/" + otherApi + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_VERSION_NOT_FOUND"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body).doesNotContain("\"v1\"");
+                });
+    }
+
+    @Test
+    void changeLifecycleUnderNonexistentApiReturnsApiNotFound() throws Exception {
+        mockMvc.perform(patch("/apis/98765/versions/1/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_NOT_FOUND"));
+    }
+
+    @Test
+    void changeLifecycleUnknownVersionReturnsVersionNotFound() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/98765/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("API_VERSION_NOT_FOUND"));
+    }
+
+    @Test
+    void changeLifecycleInvalidLifecycleValueReturns400ValidationFailed() throws Exception {
+        Long apiId = createApi();
+        assertThat(postVersion(apiId, "v1")).isEqualTo(201);
+        Long versionId = apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("NOT_A_LIFECYCLE")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.lifecycle").value("invalid value"));
+
+        assertThat(lifecycleInDb(apiId)).isEqualTo("CREATED");
+    }
+
     private Long createApi() throws Exception {
         String contextPath = "/version-api-" + SEQUENCE.incrementAndGet();
         mockMvc.perform(post("/apis")
@@ -311,6 +477,21 @@ class ApiVersionIntegrationTest {
                 .getStatus();
     }
 
+    private int patchLifecycle(Long apiId, Long versionId, String lifecycle) throws Exception {
+        return mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody(lifecycle)))
+                .andReturn()
+                .getResponse()
+                .getStatus();
+    }
+
+    private String lifecycleInDb(Long apiId) {
+        return jdbcTemplate.queryForObject(
+                "select lifecycle from api_versions where api_id = ?", String.class, apiId);
+    }
+
     private String readJsonPath(org.springframework.test.web.servlet.MvcResult r, String path) throws Exception {
         return com.jayway.jsonpath.JsonPath.read(r.getResponse().getContentAsString(), path);
     }
@@ -321,6 +502,14 @@ class ApiVersionIntegrationTest {
                   "version": "%s"
                 }
                 """.formatted(version);
+    }
+
+    private String lifecycleBody(String lifecycle) {
+        return """
+                {
+                  "lifecycle": "%s"
+                }
+                """.formatted(lifecycle);
     }
 
     private String apiBody(String contextPath) {

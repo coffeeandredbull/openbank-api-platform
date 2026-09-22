@@ -3,6 +3,7 @@ package com.openbank.apimanagement.api;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -33,6 +34,14 @@ public class ApiVersionController {
     @GetMapping("/{versionId}")
     public ApiVersionResponse get(@PathVariable Long apiId, @PathVariable Long versionId) {
         return apiVersionService.get(apiId, versionId);
+    }
+
+    @PatchMapping("/{versionId}/lifecycle")
+    public ApiVersionResponse changeLifecycle(
+            @PathVariable Long apiId,
+            @PathVariable Long versionId,
+            @Valid @RequestBody UpdateApiVersionLifecycleRequest request) {
+        return apiVersionService.changeLifecycle(apiId, versionId, request);
     }
 
     @GetMapping

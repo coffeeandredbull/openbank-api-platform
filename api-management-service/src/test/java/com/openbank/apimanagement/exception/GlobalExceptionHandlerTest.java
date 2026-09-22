@@ -122,6 +122,29 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void invalidLifecycleTransitionProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleInvalidLifecycleTransition(
+                        new InvalidLifecycleTransitionException(
+                                com.openbank.apimanagement.api.ApiVersionLifecycle.PUBLISHED,
+                                com.openbank.apimanagement.api.ApiVersionLifecycle.CREATED),
+                        request("PATCH", "/apis/1/versions/5/lifecycle"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.path()).isEqualTo("/apis/1/versions/5/lifecycle");
+        assertThat(body.code()).isEqualTo("INVALID_LIFECYCLE_TRANSITION");
+        assertThat(body.message()).contains("PUBLISHED").contains("CREATED");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("EnumMap")
+                .doesNotContain("AllowedTransitions")
+                .doesNotContain("at com.openbank");
+    }
+
+    @Test
     void unsupportedMethodProduces405() {
         HttpRequestMethodNotSupportedException ex =
                 new HttpRequestMethodNotSupportedException("PATCH", java.util.List.of("GET", "POST"));

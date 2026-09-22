@@ -41,17 +41,29 @@
 | `apis` | id, name, description, base_path, owner, created_at | top-level catalog item |
 | `api_versions` | id, api_id, version (e.g. `1.0`, `2.0`), version_base_path, backend_url/route, status (PUBLISHED/DEPRECATED/RETIRED), documentation_url, created_at | routing target metadata |
 
-**Implemented so far (Phases 8–9):** `apis` and `api_versions` exist as JPA
-entities (`name`/`description`/`context_path`/`created_at`/`updated_at` and
-`id`/`api_id`/`version`/`created_at`/`updated_at` respectively). One logical API
-can have **multiple versions**; an `api_versions` row belongs to exactly one
-`apis` row via a many-to-one `api_id` foreign key. Version strings are unique
-**scoped to the API** (DB unique constraint on `(api_id, version)`), so the same
-version value may exist under different APIs. Lifecycle state
-(PUBLISHED/DEPRECATED/RETIRED), version base paths, backend routing, and
-documentation links are **not** part of Phase 9 — they remain planned fields.
-The `subscriptions` reference `api_versions` by ID (cross-service reference,
-consistent with the ownership model).
+**Implemented so far (Phases 8–10):** `apis` and `api_versions` exist as JPA
+entities. `apis`: `name`/`description`/`context_path`/`created_at`/`updated_at`.
+`api_versions`: `id`/`api_id`/`version`/`lifecycle`/`created_at`/`updated_at`.
+One logical API can have **multiple versions**; an `api_versions` row belongs to
+exactly one `apis` row via a many-to-one `api_id` foreign key. Version strings
+are unique **scoped to the API** (DB unique constraint on `(api_id, version)`),
+so the same version value may exist under different APIs.
+
+The `api_versions` **lifecycle** column (Phase 10) stores the version lifecycle
+as a **string** (`CREATED`, `PUBLISHED`, `DEPRECATED`, `RETIRED`), never as an
+ordinal, and defaults to `CREATED` for every new row. New versions always start
+in `CREATED`; a caller cannot pick the initial state. Lifecycle transitions are
+validated in the service layer, not by the database: `CREATED → PUBLISHED`,
+`CREATED → RETIRED`, `PUBLISHED → DEPRECATED`, `DEPRECATED → RETIRED`.
+Persisting the state is metadata-only — the database has no logic about whether
+deprecation or retirement affects routing or access (those components do not
+exist yet). A lifecycle change updates `updated_at`; `created_at` is
+write-once (`updatable = false`).
+
+Version base paths, backend routing, and documentation links are **not** part of
+Phase 9/10 — they remain planned fields. The `subscriptions` reference
+`api_versions` by ID (cross-service reference, consistent with the ownership
+model).
 
 ### Subscription Service
 

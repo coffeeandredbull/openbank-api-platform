@@ -3,6 +3,7 @@ package com.openbank.apimanagement.api;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ApiVersionAlreadyExistsException;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
+import com.openbank.apimanagement.exception.InvalidLifecycleTransitionException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +50,18 @@ public class ApiVersionService {
         return apiVersionRepository.findByApiIdOrderByIdAsc(apiId).stream()
                 .map(ApiVersionResponse::from)
                 .toList();
+    }
+
+    @Transactional
+    public ApiVersionResponse changeLifecycle(Long apiId, Long versionId, UpdateApiVersionLifecycleRequest request) {
+        requireApiExists(apiId);
+        ApiVersion apiVersion = apiVersionRepository.findByApiIdAndId(apiId, versionId)
+                .orElseThrow(() -> new ApiVersionNotFoundException(apiId, versionId));
+        if (!apiVersion.getLifecycle().canTransitionTo(request.lifecycle())) {
+            throw new InvalidLifecycleTransitionException(apiVersion.getLifecycle(), request.lifecycle());
+        }
+        apiVersion.changeLifecycle(request.lifecycle());
+        return ApiVersionResponse.from(apiVersionRepository.save(apiVersion));
     }
 
     private void requireApiExists(Long apiId) {

@@ -58,10 +58,11 @@ to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC) and the API Management Service (API catalog
-> foundation + API versioning) are implemented. The remaining services, the
-> gateway, and the portal are planned. See the [architecture
-> document](docs/architecture.md) for details and each file in [`docs/`](docs/)
-> for requirements, database design, security model, and API design.
+> foundation, API versioning, and API version lifecycle) are implemented. The
+> remaining services, the gateway, and the portal are planned. See the
+> [architecture document](docs/architecture.md) for details and each file in
+> [`docs/`](docs/) for requirements, database design, security model, and API
+> design.
 
 ## Technology Stack
 
@@ -97,6 +98,16 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   (`GET /apis/{apiId}/versions/{versionId}`). Version strings are unique per API
   (duplicates → `409`), and reading a version through the wrong API returns
   `404`. No lifecycle, subscriptions, credentials, or gateway routing yet.
+- **Phase 10 — API Management Service (API version lifecycle):** lifecycle
+  management for API versions. Every version carries a lifecycle state
+  (`CREATED → PUBLISHED → DEPRECATED → RETIRED`) persisted as a string and
+  starting at `CREATED` (the caller cannot choose the initial state). An
+  ADMIN-only endpoint `PATCH /apis/{apiId}/versions/{versionId}/lifecycle`
+  moves a version along the allowed transitions; any other transition — including
+  re-applying the current state — returns `409 INVALID_LIFECYCLE_TRANSITION`.
+  Ownership rules carry over from Phase 9 (cross-API reads/updates → `404`
+  without leaking existence). Lifecycle is metadata-only for now; it does not yet
+  control gateway routing, subscriptions, or deprecation/retirement enforcement.
 - **Planned phases (subject to change):** subscriptions, the remaining services,
   the API Gateway, the Developer Portal, shared infrastructure (PostgreSQL/Redis
   via Docker Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be
@@ -161,5 +172,5 @@ docs/
 ├── security.md
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
-api-management-service/  (implemented — Phases 8–9, API catalog + versioning)
+api-management-service/  (implemented — Phases 8–10, API catalog + versioning + lifecycle)
 ```

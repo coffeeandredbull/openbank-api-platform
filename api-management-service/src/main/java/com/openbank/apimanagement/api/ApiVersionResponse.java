@@ -6,6 +6,7 @@ public record ApiVersionResponse(
         Long id,
         Long apiId,
         String version,
+        ApiVersionLifecycle lifecycle,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -15,6 +16,7 @@ public record ApiVersionResponse(
                 apiVersion.getId(),
                 apiVersion.getApi().getId(),
                 apiVersion.getVersion(),
+                apiVersion.getLifecycle(),
                 apiVersion.getCreatedAt(),
                 apiVersion.getUpdatedAt()
         );

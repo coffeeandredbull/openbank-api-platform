@@ -7,6 +7,7 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.openbank.apimanagement.api.Api;
 import com.openbank.apimanagement.api.ApiRepository;
+import com.openbank.apimanagement.api.ApiVersionLifecycle;
 import com.openbank.apimanagement.api.ApiVersionRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +29,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -190,6 +192,112 @@ class ApiVersionSecurityIntegrationTest {
                 });
     }
 
+    @Test
+    void adminCanChangeVersionLifecycle() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("PUBLISHED"));
+
+        assertThat(apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getLifecycle())
+                .isEqualTo(ApiVersionLifecycle.PUBLISHED);
+    }
+
+    @Test
+    void developerCannotChangeVersionLifecycle() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getLifecycle())
+                .isEqualTo(ApiVersionLifecycle.CREATED);
+    }
+
+    @Test
+    void changeLifecycleWithoutTokenReturns401() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body)
+                            .doesNotContain("at com.openbank")
+                            .doesNotContain(TEST_JWT_SECRET);
+                });
+    }
+
+    @Test
+    void changeLifecycleWithInvalidTokenReturns401() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer not.a.valid.jwt")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void changeLifecycleWithExpiredTokenReturns401() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + token("999", "ADMIN", -3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void changeLifecycleWithTamperedSignatureReturns401() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + tokenWithDifferentSecret("1", "ADMIN"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void changeLifecycleWithUnknownRoleReturns401() throws Exception {
+        Long apiId = createApi();
+        Long versionId = createVersion(apiId);
+
+        mockMvc.perform(patch("/apis/" + apiId + "/versions/" + versionId + "/lifecycle")
+                        .header("Authorization", "Bearer " + token("77", "CUSTOMER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(lifecycleBody("PUBLISHED")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body).doesNotContain("CUSTOMER");
+                });
+    }
+
     private Long createApi() throws Exception {
         String contextPath = "/version-sec-" + SEQUENCE.incrementAndGet();
         mockMvc.perform(post("/apis")
@@ -200,6 +308,15 @@ class ApiVersionSecurityIntegrationTest {
         return apiRepository.findByContextPath(contextPath)
                 .map(Api::getId)
                 .orElseThrow();
+    }
+
+    private Long createVersion(Long apiId) throws Exception {
+        mockMvc.perform(post("/apis/" + apiId + "/versions")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versionBody("v1")))
+                .andExpect(status().isCreated());
+        return apiVersionRepository.findByApiIdOrderByIdAsc(apiId).get(0).getId();
     }
 
     private String apiBody(String contextPath) {
@@ -218,6 +335,29 @@ class ApiVersionSecurityIntegrationTest {
                   "version": "%s"
                 }
                 """.formatted(version);
+    }
+
+    private String lifecycleBody(String lifecycle) {
+        return """
+                {
+                  "lifecycle": "%s"
+                }
+                """.formatted(lifecycle);
+    }
+
+    private String tokenWithDifferentSecret(String subject, String role) throws Exception {
+        Instant now = Instant.now();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .subject(subject)
+                .claim("role", role)
+                .issueTime(Date.from(now))
+                .expirationTime(Date.from(now.plusSeconds(3600)))
+                .build();
+        SignedJWT jwt = new SignedJWT(
+                new JWSHeader.Builder(JWSAlgorithm.HS256).build(),
+                claims);
+        jwt.sign(new MACSigner("a-completely-different-secret-value-123456789".getBytes(StandardCharsets.UTF_8)));
+        return jwt.serialize();
     }
 
     private String tokenWithoutRole(String subject) throws Exception {
