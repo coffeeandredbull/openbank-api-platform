@@ -60,22 +60,42 @@
 
 ### Accounts (banking domain)
 
-- Account entities (number, type, owner, currency) and balances are stored and
-  exposed.
-- Balance reads and writes are authorized.
-- Accounts validate against business rules relevant to payment operations.
+**Implemented (Phase 14, Payment Service — Account domain):**
+- Each user has exactly **one** account (`owner_user_id` unique). It carries a
+  currency (default `LKR`, value must match `[A-Z]{3}`) and **no balance**.
+- `POST /accounts` (409 on duplicate), `GET /accounts/{id}` (404 on missing or
+  not owned), `GET /accounts` (own accounts only, empty when none).
+- The owner is always derived from the JWT `sub` claim; the body never supplies
+  an owner. No update, no delete, no balance endpoints yet.
+- **Planned extension:** account numbers/types/status, balances, balance
+  authorization, and business rules for payments.
 
 ### Payments
 
-- Payment instructions (from account, to account/beneficiary, amount, currency,
-  reference) can be initiated.
-- Payment approval/validation business rules are applied before funds move.
-- Successful payments update balances and produce transaction records.
+**Implemented (Phase 14, Payment Service — Payment domain):**
+- `POST /payments` creates a payment against an **owned** account (404
+  `ACCOUNT_NOT_FOUND` otherwise) with an amount and optional description. The
+  status is always `PENDING` and the currency always the account's — the client
+  cannot choose either. No real payment is processed. A payment does **not**
+  create a transaction.
+- `GET /payments/{id}` (404 if not owned) and `GET /payments` (own, ordered by
+  id).
+- **Planned extension:** real processing/approval workflows, `to_account`/
+  beneficiary, reference, completion timestamps, and status transitions.
 
 ### Transactions
 
-- Every balance-affecting event produces a transaction record.
-- Transaction history can be queried per account with paging and date filters.
+**Implemented (Phase 14, Payment Service — Transaction domain):**
+- `POST /transactions` records that a payment was made: it requires an account
+  the caller owns (404 `ACCOUNT_NOT_FOUND` otherwise) and a payment that
+  belongs to exactly that account (404 `PAYMENT_NOT_FOUND` otherwise, no
+  existence leak). The type is always `PAYMENT` and the currency the account's —
+  the client cannot choose either.
+- `GET /transactions/{id}` (404 if not owned) and `GET /transactions` (own
+  accounts, ordered by id).
+- **Planned extension:** balances `balance_after`, debit/credit direction,
+  paging, and date filters, plus automatic ledger entries when payments are
+  processed for real.
 
 ### Analytics
 
@@ -128,10 +148,13 @@
   administrative vs. self-service operations.
 - **Resource ownership:** users may only act on resources they own (their own
   apps, subscriptions, accounts) unless their role allows otherwise. For
-  subscriptions (Phase 12) the owner is always derived from the JWT `sub`
-  claim — the service verifies the target application belongs to the caller and
-  exposes cross-owner access as `404` (no existence leak). `ADMIN` owns what it
-  creates and has no global access.
+  subscriptions (Phase 12) and credentials (Phase 13) the owner is always
+  derived from the JWT `sub` claim — the service verifies the target application
+  belongs to the caller and exposes cross-owner access as `404` (no existence
+  leak). The same rule applies to accounts, payments, and transactions in the
+  Payment Service (Phase 14): the caller's `sub` resolves the owned account and
+  everything (payments, transactions) hangs off it; `ADMIN` owns what it creates
+  and has no global access in any service.
 - **Scopes in tokens:** JWT scopes gate specific operations (e.g.
   `accounts:read`, `payments:write`).
 - **Subscription-based authorization:** even a valid token cannot invoke an API

@@ -7,12 +7,22 @@
 ## Overview
 
 The platform is a microservice system with a single entry point (the API
-Gateway) and a user-facing frontend (the Developer Portal). Seven Spring Boot
+Gateway) and a user-facing frontend (the Developer Portal). Four Spring Boot
 backend services implement business capabilities. Two shared infrastructure
 components — PostgreSQL and Redis — are used by those services. Note that
-`AGENTS.md` describes six services; this document reflects the **corrected**
-seven-service architecture: Identity, API Management, **Subscription**, Account,
-Payment, Transaction, and Analytics.
+`AGENTS.md` describes six services; this document reflects the **evolved**
+architecture: earlier plans separated Subscription, Account, Payment, and
+Transaction into dedicated services, but the implementation deliberately
+consolidates them to keep each service cohesive and each phase small and
+verifiable:
+- the API Management Service absorbed the developer application, subscription,
+  and credential domains (Phases 11–13);
+- the Payment Service hosts the Account, Payment, and Transaction domains
+  (Phase 14), because they share one PostgreSQL database and money rules, and
+  can be split later if a concrete engineering reason emerges.
+
+Current services: Identity, API Management (incl. applications, subscriptions,
+credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ```
                         +-----------------------+
@@ -31,25 +41,26 @@ Payment, Transaction, and Analytics.
                     |               |                |
                     v               v                v
             +---------------+   +---------------+   +---------------+
-            | Identity      |   | API Mgmt      |   | Subscription  |
+            | Identity      |   | API Mgmt      |   | Analytics     |
             | Service       |   | Service       |   | Service       |
-            +-------+-------+   +-------+-------+   +-------+-------+
-                    |               |                |
-                    v               v                v
-            +---------------+   +---------------+   +---------------+
-            | Account       |   | Payment       |   | Transaction   |
-            | Service       |   | Service       |   | Service       |
-            +-------+-------+   +-------+-------+   +-------+-------+
-                    |               |                |
-                    +-------+-------+----------------+
-                            |
-                            v
-                    +-------|-----------+   +-------|-------+
-                    |  PostgreSQL       |   |  Redis        |
-                    |  (system of       |   |  (cache,      |
-                    |   record)         |   |   tokens,     |
-                    |                   |   |   rate limits)|
-                    +-------------------+   +--------------+
+            +-------+-------+   +-------+-------+   +-------^-------+
+                    |               |                        |
+                    |               +--------+               |
+                    |                        |               |
+                    v                        v               |
+            +---------------+   +-----------------------+   |
+            | PostgreSQL    |   | Payment Service       |   |
+            | (system of    |   | (Account + Payment +  |---+
+            |  record)      |   |  Transaction domains) |
+            +---------------+   +-----------+-----------+
+                                            |
+                                            v
+                                    +---------------+
+                                    | Redis         |
+                                    | (cache,       |
+                                    |  tokens,      |
+                                    |  rate limits) |
+                                    +---------------+
 ```
 
 ## Service Responsibilities
@@ -57,11 +68,8 @@ Payment, Transaction, and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that a future gateway authenticates. Ownership of all of these is enforced from JWT claims — the service never trusts a client-supplied owner. |
-| **Subscription Service** | Owns subscription **tiers** and **rate-limit** enforcement, and will verify the **credentials issued in Phase 13** when the API Gateway authenticates an application. The Application → Subscription → API Version link (Phase 12) and credential issuance (Phase 13) live in the API Management Service. |
-| **Account Service** | Owns bank account entities and balances. Authorizes balance reads and updates. Payment and Transaction services consult it for balance effects. |
-| **Payment Service** | Initiates and processes payments. Validates payment instructions against accounts, applies business rules, and records payment outcomes. |
-| **Transaction Service** | Owns the ledger of transactions. Records and queries transaction history for accounts, including the entries produced by payments. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that a future gateway authenticates. Subscription **tiers** and **rate-limit** enforcement remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
+| **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Collects and aggregates API usage and performance data (request counts, latency, status-code distribution) published by the gateway and services, and exposes queries for the Developer Portal. |
 
 ## Communication Between Services
@@ -70,8 +78,11 @@ Payment, Transaction, and Analytics.
   from the Developer Portal and direct API consumer calls both go through the
   gateway.
 - **Between services**, services may call each other over HTTP using internal
-  (gateway-routed or direct) calls, e.g. Payment → Account (validate/apply
-  balance) and Payment → Transaction (record ledger entries).
+  (gateway-routed or direct) calls. Today the Id/IAM→Payment relationship is
+  logical only: the Payment Service validates identity-service-issued JWTs
+  locally and references `ownerUserId` rather than holding user rows. A future
+  Payment → Account or Payment → Transaction network call is deliberately not
+  needed today because those domains share one service (and one database).
 - **No message broker** (Kafka / RabbitMQ) is used. Any asynchronous need will
   be addressed with Redis or direct calls unless explicitly requested
   otherwise.
@@ -114,8 +125,8 @@ Payment, Transaction, and Analytics.
 ## PostgreSQL Role
 
 - **System of record.** Holds persistent business data: users/roles, API
-  catalog and versions, applications, subscriptions, accounts, balances,
-  payments, and transactions.
+  catalog and versions, applications, subscriptions, credentials, accounts,
+  payments, and transactions (no balances yet — accounts have none).
 - One shared PostgreSQL instance is planned (as in the architecture goal),
   with each service owning its own schema/tables (data ownership, see
   `database.md`).
@@ -145,11 +156,10 @@ Payment, Transaction, and Analytics.
 4. The gateway applies **rate limiting** for the application, incrementing a
    Redis counter; on exceed it responds `429`.
 5. The gateway **routes** the request to the owning backend service
-   (e.g. Transaction Service for `GET /accounts/{id}/transactions`), passing
-   through the validated identity and application context.
+   (e.g. the Payment Service's Transaction domain for `GET /transactions`),
+   passing through the validated identity and application context.
 6. The backend service executes business logic (database reads/writes against
-   PostgreSQL), possibly calling other services (e.g. Payment → Account,
-   Payment → Transaction) and using Redis for caching.
+   PostgreSQL), using Redis for caching where applicable.
 7. The gateway returns the response and emits **telemetry** for analytics.
 
 ## Guiding Trade-offs

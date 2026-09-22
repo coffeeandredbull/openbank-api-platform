@@ -255,6 +255,65 @@ Not implemented yet (future phases): credential rotation, revocation, status,
 expiry, scopes, gateway-side verification/authentication of these credentials,
 and profile/scope enforcement.
 
+## Account/Payment/Transaction Ownership — Implemented (Phase 14)
+
+The **Payment Service** (Account, Payment, and Transaction domains) validates
+the same identity-service-issued JWT locally and enforces per-user financial
+ownership.
+
+Implemented behavior:
+
+- **Configuration & validation:** identical to Phase 8 — `JWT_SECRET`
+  environment variable (no default; fail-fast if missing or shorter than 256
+  bits), HS256, and the same `JwtTokenService` semantics (signature, expiry,
+  required `sub` + `role` claims). Validation is purely local; no remote call to
+  the Identity Service per request. The service keeps **no user rows** — it
+  references users by `ownerUserId` (a logical ID from the JWT `sub`) only.
+- **Fail closed by default:** all nine endpoints (`POST/GET /accounts`,
+  `GET /accounts/{id}`, `POST/GET /payments`, `GET /payments/{id}`,
+  `POST/GET /transactions`, `GET /transactions/{id}`) require an `ADMIN` or
+  `DEVELOPER` bearer token; the security config permits nothing else
+  (`.anyRequest().denyAll()`). There are **no public endpoints** in this
+  service. Missing/malformed/expired/tampered tokens → `401 UNAUTHENTICATED`.
+- **Unknown roles fail closed to `401`:** a token whose `role` claim is not a
+  known role (`ADMIN`/`DEVELOPER`) is rejected as unauthenticated — it never
+  grants access and never reaches the endpoints (a future `CUSTOMER` role gets
+  `401`, not a partial allowance).
+- **Owner derivation:** an account, payment, or transaction is always created
+  against the authenticated caller's identity. The request body never supplies
+  an owner; a client-supplied `ownerUserId` is ignored. Account creation is keyed
+  to `sub` and one account per user is enforced by a DB unique constraint on
+  `owner_user_id`.
+- **Owner-scoped access (404, no existence leak):** every read and every
+  create-time parent lookup is keyed by `id` **and** the caller's `ownerUserId`
+  (`findByIdAndOwnerUserId`, `findByIdAndAccount_OwnerUserId`). A resource that
+  does not exist **or belongs to another user** returns the same `404` (with
+  codes `ACCOUNT_NOT_FOUND`, `PAYMENT_NOT_FOUND`, `TRANSACTION_NOT_FOUND`) — it
+  is impossible to distinguish "not yours" from "missing", so other users'
+  resources are never confirmed.
+- **Cross-resource consistency without leaks:** creating a transaction requires
+  (1) an account the caller owns (`ACCOUNT_NOT_FOUND` otherwise) and (2) a
+  payment whose `account_id` exactly matches that account (`PAYMENT_NOT_FOUND`
+  otherwise) — a payment on any other account, or that does not exist, is
+  indistinguishable.
+- **Server-derived financial fields:** payment `status` always starts `PENDING`
+  and payment `currency` always comes from the account; transaction `type` is
+  always `PAYMENT` and its currency always the account's. The client cannot set
+  status, type, or currency (extra body fields are ignored) — preventing
+  forged "completed" payments or currency confusion.
+- **Roles:** both `ADMIN` and `DEVELOPER` bearer tokens are accepted with
+  uniform owner semantics. An `ADMIN` owns what it creates and has **no** global
+  access to other users' accounts, payments, or transactions — the admin's list
+  view is empty unless the admin created the resources.
+- **No sensitive material:** there are no balances, no secrets, and no other
+  users' records exposed anywhere. Error responses (4xx/5xx) never expose SQL,
+  constraint names, stack traces, JWTs, or the signing secret.
+- **Defense in depth:** authorization lives in the service layer and DB lookup
+  keys, not in the route matcher; the security filter only authenticates.
+
+Not implemented yet (future phases): balance authorization, real payment
+processing/approval, subscription/scope enforcement, and gateway integration.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -344,6 +403,7 @@ and profile/scope enforcement.
 | Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
 | Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
 | Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level |
+| Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
 | Subscription enforcement | **Planned** — not implemented (only the subscription and credential registries exist; gateway/runtime enforcement is a future phase) |
 | Rate limiting | **Planned** — not implemented |
@@ -352,10 +412,12 @@ and profile/scope enforcement.
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 13 the Identity Service supports stateless bearer request
-> authentication and role checks on the temporary `/test/*` endpoints, and the
+> As of Phase 14 the Identity Service supports stateless bearer request
+> authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
-> catalog, application, subscription, and credential endpoints, with full
-> owner-scoping for applications/subscriptions/credentials. There is **no
+> catalog, application, subscription, and credential endpoints with full
+> owner-scoping, and the Payment Service validates the same JWT and enforces
+> owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
+> transaction endpoints (fail closed, no public endpoints). There is **no
 > gateway authentication, subscription enforcement, or scope enforcement**
 > yet.

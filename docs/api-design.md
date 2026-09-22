@@ -1,10 +1,11 @@
 # API Design (Planned)
 
 > This document describes the **planned** REST API conventions for the OpenBank
-> API Platform. No endpoints are implemented yet. Consistent conventions apply
-> to the Developer Portal-facing APIs and the consumer-facing APIs routed by the
-> gateway. OpenAPI documents for each service will be produced in the relevant
-> service phases.
+> API Platform. Early phases already implemented endpoint sets (Identity,
+> API Management, Payment Service) — each is marked "Implemented so far" below.
+> Consistent conventions apply to the Developer Portal-facing APIs and the
+> consumer-facing APIs routed by the gateway. OpenAPI documents for each service
+> will be produced in the relevant service phases.
 
 ## REST Conventions
 
@@ -275,19 +276,62 @@ the request body.
 - `DELETE /applications/{id}/subscriptions/{subId}` — revoke.
 - `GET    /subscriptions?apiVersionId=...` — admin: who holds this version.
 
-### Account Service
-- `GET  /accounts` — list own accounts with balances.
-- `GET  /accounts/{id}` — account detail + balance.
-- `POST /accounts` — open an account.
+### Account Service (Payment Service — Account domain)
 
-### Payment Service
-- `POST /payments` — initiate payment.
-- `GET  /payments/{id}` — payment status.
-- `POST /payments/{id}/approve` — approved flow (per business rules).
+**Implemented so far (Phase 14):**
+- `POST /accounts` — open the caller's account. Body: `{ "currency": "LKR" }`
+  (optional; must match `[A-Z]{3}` if present, default `LKR`). The owner is
+  always derived from the JWT `sub` claim — never from the body. Returns `201
+  Created` with a `Location: /accounts/{id}` header and the account body (`id`,
+  `ownerUserId`, `currency`, `createdAt`, `updatedAt`). Duplicate (one account
+  per user) returns `409 ACCOUNT_ALREADY_EXISTS`.
+- `GET /accounts/{id}` — the caller's **own** account. Missing or not owned →
+  `404 ACCOUNT_NOT_FOUND` (no existence leak).
+- `GET /accounts` — the caller's **own** accounts (empty list when none).
+- Authorization is uniform for `ADMIN` and `DEVELOPER`: `ADMIN` owns what it
+  creates and has no global access. Unauthenticated/invalid/expired tokens →
+  `401 UNAUTHENTICATED`; unknown roles fail closed to `401`.
+- No update, no delete, **no balance**, no account number/type yet.
 
-### Transaction Service
-- `GET /accounts/{accountId}/transactions?from=...&to=...&page=1&size=20`
-  — paged, filtered history.
+### Payment Service (Payment domain)
+
+**Implemented so far (Phase 14):**
+- `POST /payments` — create payment instructions against the caller's account.
+  Body: `{ "accountId": long, "amount": decimal, "description": string? }`.
+  Amount must be > 0 with at most 2 fraction digits and 17 integer digits;
+  description ≤ 500 chars. A missing/unowned `accountId` → `404
+  ACCOUNT_NOT_FOUND`. Returns `201 Created` with `Location: /payments/{id}` and
+  the payment body (`id`, `accountId`, `amount`, `currency`, `description`,
+  `status` = `PENDING`, `createdAt`, `updatedAt`). The status is **always**
+  `PENDING` and the currency **always the account's** — the client cannot choose
+  either (extra body fields are ignored). No payment is actually processed, and
+  **no transaction is created**.
+- `GET /payments/{id}` — the caller's **own** payment. Missing or not owned →
+  `404 PAYMENT_NOT_FOUND`.
+- `GET /payments` — the caller's **own** payments in ascending `id` order.
+- No approval/processing/lifecycle endpoints yet (planned:
+  `POST /payments/{id}/approve`, status transitions).
+
+### Transaction Service (Payment Service — Transaction domain)
+
+**Implemented so far (Phase 14):**
+- `POST /transactions` — record that a payment was made for the caller's
+  account. Body: `{ "accountId": long, "paymentId": long, "amount": decimal }`.
+  The account must be owned by the caller (else `404 ACCOUNT_NOT_FOUND`) and the
+  payment must belong to exactly that account (else `404 PAYMENT_NOT_FOUND` — a
+  payment on another account is indistinguishable from a missing one). Amount
+  validation as for payments. Returns `201 Created` with
+  `Location: /transactions/{id}` and the transaction body (`id`, `accountId`,
+  `paymentId`, `type` = `PAYMENT`, `amount`, `currency` = the account's,
+  `createdAt`). The type and currency are **always** derived server-side; the
+  client cannot choose them.
+- `GET /transactions/{id}` — the caller's **own** transaction (via account
+  ownership). Missing or not owned → `404 TRANSACTION_NOT_FOUND`.
+- `GET /transactions` — the caller's **own** transactions in ascending `id`
+  order.
+- No paging, no date filters, no `balance_after`, no debit/credit direction
+  yet; a transaction is immutable (no `updatedAt`).
+- Planned (later): `GET /accounts/{accountId}/transactions?from=...&to=...&page=1&size=20`.
 
 ### Analytics Service
 - `GET /analytics/applications/{appId}/usage?since=...&until=...` — counts

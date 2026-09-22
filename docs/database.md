@@ -1,9 +1,12 @@
 # Database Design (Planned)
 
-> This document describes the **planned** database design. No actual database
-> code, JPA entities, schemas, or migrations exist yet. Design notes here guide
-> later phases; the implementation may refine names and detail when built in
-> each service phase.
+> This document describes the **planned** database design. Early implementation
+> phases created initial tables (see "Implemented so far" notes throughout):
+> Identity Service tables, API Management tables (`apis`, `api_versions`,
+> `applications`, `subscriptions`, `credentials`), and Payment Service tables
+> (`accounts`, `payments`, `transactions`). Design notes here guide later
+> phases; the implementation may refine names and detail when built in each
+> service phase.
 
 ## Strategy
 
@@ -132,22 +135,26 @@ equal at creation time). Ownership is logical: Credential → Application →
 
 ### Account Service
 
-| Entity | Key fields (planned) | Notes |
+The Account domain is **implemented** (Phase 14) in the **Payment Service**
+(not a separate service). It previously appeared as a planned standalone
+service below; the implementation deliberately hosts Account, Payment, and
+Transaction together because they share one database and money rules.
+
+| Entity | Implemented columns | Notes |
 | --- | --- | --- |
-| `accounts` | id, owner_user_id, account_number, type (e.g. CURRENT/SAVINGS), currency, status, created_at | |
-| `account_balances` | id, account_id, available, booked/current, currency, version | version for optimistic locking on balance updates |
+| `accounts` | id, owner_user_id, currency, created_at, updated_at | one account per user: `owner_user_id` is `NOT NULL` with a **unique constraint** (`uc_account_owner_user_id`) — no null owner, no duplicate accounts for one user. `currency` is `NOT NULL`, default `LKR`, client-supplied value must match `[A-Z]{3}`. **No balance** and no balance table (deliberately out of scope; balances are planned future work). `owner_user_id` is a logical reference to an Identity Service user — no `users` table, no cross-service foreign key |
 
 ### Payment Service
 
-| Entity | Key fields (planned) | Notes |
+| Entity | Implemented columns | Notes |
 | --- | --- | --- |
-| `payments` | id, from_account_id, to_account_id/beneficiary, amount, currency, status (INITIATED/APPROVED/COMPLETED/REJECTED), reference, created_at, completed_at | references accounts owned by Account Service |
+| `payments` | id, account_id, amount, currency, description, status, created_at, updated_at | created against an owned account. `account_id` is a `NOT NULL` **foreign key** to `accounts` (same service). `amount` is `numeric(19,2)`; `currency` is `NOT NULL` and taken from the account — the client cannot choose it. `description` is nullable (length ≤ 500). `status` is a persisted **string** (`PENDING`/`COMPLETED`/`FAILED`) always starting `PENDING` — no lifecycle endpoints yet; `COMPLETED`/`FAILED` values exist only as future transition targets. `created_at`/`updated_at` timestamps (UTC). No processing/approval/gateway/lifecycle fields yet |
 
 ### Transaction Service
 
-| Entity | Key fields (planned) | Notes |
+| Entity | Implemented columns | Notes |
 | --- | --- | --- |
-| `transactions` | id, account_id, payment_id, amount, direction (DEBIT/CREDIT), currency, balance_after, type, occurred_at | ledger; the record of every balance-affecting event |
+| `transactions` | id, account_id, payment_id, type, amount, currency, created_at | the record that a payment was made. `account_id` and `payment_id` are `NOT NULL` **foreign keys** to `accounts` and `payments` (same service); the service requires the payment to belong exactly to that account. `type` is a persisted **string**, always `PAYMENT` (client cannot choose it). `amount` is `numeric(19,2)`; `currency` comes from the account. `created_at` only (no `updated_at` — a transaction is immutable). A payment does **not** automatically create a transaction; a transaction must be created explicitly. No `direction`/`balance_after`/`occurred_at` columns yet — those await balance support |
 
 ### Analytics Service
 
@@ -172,15 +179,18 @@ equal at creation time). Ownership is logical: Credential → Application →
   and one API version). Implemented (Phase 12) with real DB-level foreign keys
   from `subscriptions` to both tables plus a unique constraint on
   `(application_id, api_version_id)`. Tier binding remains planned.
-- `users` **n—m** `accounts` — the Account Service resolves ownership by
-  owner user id.
-- `accounts` **1—n** `account_balances` (one active balance row, versioned for
-  optimistic locking; history/normalization decided in the Account phase).
-- `payments` **n—1** `accounts` — a payment references source and destination
-  accounts (cross-service reference by ID only).
-- `payments` **1—n** `transactions` — a completed payment yields transaction
-  entries (typically a debit and a credit).
-- `accounts` **1—n** `transactions` — transaction history per account.
+- `users` **1—1/n** `accounts` — one account per user; `accounts.owner_user_id`
+  is unique and references an Identity Service user ID with no foreign key,
+  since the tables live in different services. Implemented (Phase 14).
+- `accounts` **1—n** `payments` — a payment references one account via a
+  DB-level foreign key (same service). Implemented (Phase 14); the planned
+  destination/beneficiary account reference remains future work.
+- `payments` **1—n** `transactions` — a transaction records exactly one
+  payment and must reference the same account as that payment (enforced in the
+  service, plus a DB-level FK to `payments`). Implemented (Phase 14); the
+  planned debit/credit balance-affecting entries remain future work.
+- `accounts` **1—n** `transactions` — transaction history per account (DB-level
+  FK). Implemented (Phase 14).
 - Analytics rows reference API versions and applications **by ID** (cross
   service; ingested via telemetry).
 
@@ -191,9 +201,9 @@ equal at creation time). Ownership is logical: Credential → Application →
 | Users, roles, credentials, refresh tokens | Identity |
 | API catalog, versions, tiers, developer applications, subscriptions, credentials | API Management |
 | Credential verification (gateway), tiers, rate limiting | Subscription |
-| Accounts, balances | Account |
+| Accounts | Payment (Account domain) |
 | Payments | Payment |
-| Transactions / ledger | Transaction |
+| Transactions / ledger | Payment (Transaction domain) |
 | Request logs, aggregates | Analytics |
 | Caches, tokens, rate-limit counters | Redis (ephemeral — owned by platform infrastructure, not a system of record) |
 
@@ -201,15 +211,18 @@ equal at creation time). Ownership is logical: Credential → Application →
 
 - Shared instance; per-service schemas; only the owning service writes its own
   tables.
-- ACID transactions are used for money-adjacent flows (payment → balance →
-  ledger). Since cross-service references have no DB-level FK, multi-service
-  flows may need compensating/validation steps in the (shared) transaction
-  boundary or explicit order of operations — the concrete approach is decided
-  during the Payment/Transaction phases with root-cause-first diligence.
+- ACID transactions are used for money-adjacent flows. Within one service
+  (e.g. Payment Service create-payment/create-transaction) DB-level foreign
+  keys and unique constraints are used; **cross-service** references (e.g.
+  `owner_user_id`, application → API version before Phase 12) are plain ID
+  columns with **no cross-schema FK** and are validated in the service layer —
+  root-cause-first, keeping services decoupled.
 - Constraints, unique keys, and indexes (e.g. unique `username`, unique
-  `account_number`, index on `transactions(account_id, occurred_at)`,
-  index on `request_logs(occurred_at)`) are defined per service phase.
+  `owner_user_id` per account, FK index on `payments(account_id)`,
+  FK index on `transactions(account_id)` and `transactions(payment_id)`) are
+  defined per service phase.
 - DB migrations will be versioned and reproducible (e.g. Flyway/Liquibase)
   unless a lighter approach is justified; decision is pending and will be
-  proposed before the first service phase.
+  proposed before the first migration-heavy phase. Today services use Hibernate
+  `ddl-auto: update` for development.
 - Consistent timezone handling (UTC) for timestamps.

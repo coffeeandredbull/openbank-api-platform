@@ -45,11 +45,8 @@ Developer Portal (frontend, React + TypeScript)
    Backend microservices (Spring Boot)
    1. Identity Service
    2. API Management Service
-   3. Subscription Service
-   4. Account Service
-   5. Payment Service
-   6. Transaction Service
-   7. Analytics Service
+   3. Payment Service (Account + Payment + Transaction domains)
+   4. Analytics Service
 ```
 
 All client traffic enters through the API Gateway. The Developer Portal is the
@@ -57,10 +54,11 @@ user-facing React application that developers use to discover APIs, subscribe
 to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
-> bearer authentication, RBAC) and the API Management Service (API catalog
+> bearer authentication, RBAC), the API Management Service (API catalog
 > foundation, API versioning, API version lifecycle, developer application,
-> subscription and credential management) are implemented. The remaining
-> services, the gateway, and the portal are planned. See the
+> subscription and credential management), and the Payment Service foundation
+> (Account, Payment, and Transaction domains, Phases 14–) are implemented. The
+> remaining services, the gateway, and the portal are planned. See the
 > [architecture document](docs/architecture.md) for details and each file in
 > [`docs/`](docs/) for requirements, database design, security model, and API
 > design.
@@ -144,6 +142,21 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   pre-check + DB unique constraint, retried on collision). The gateway will use
   these credentials later to authenticate an application — that enforcement is a
   later phase.
+- **Phase 14 — Payment Service (Account, Payment, and Transaction
+  foundations):** a new `payment-service` hosts three related financial domains.
+  An **Account** belongs to exactly one user (`owner_user_id` unique — one
+  account per user), has no balance, and defaults its currency to `LKR`.
+  **Payments** are created against an owned account and always start as
+  `PENDING`; the currency is taken from the account (never the client), and no
+  real payment is processed. **Transactions** record payments: creating one
+  requires an account owned by the caller and a payment that belongs to exactly
+  that account, always records `PAYMENT` type and the account's currency, and
+  never changes any account balance (there is none). Ownership is always derived
+  from the JWT `sub` claim; the service keeps no user rows. All reads are
+  owner-scoped (`404`, no existence leak), `ADMIN` owns what it creates with no
+  global access, and the API never exposes balances, client secrets, or other
+  users' data. No real payment processing, balances/wallets, refunds,
+  settlement, or lifecycle endpoints yet (planned).
 - **Planned phases (subject to change):** API Gateway client-credential
   authentication (using these credentials), subscription tiers / rate limits,
   credential rotation/revocation and status, the remaining services, the
@@ -164,9 +177,11 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   Basic application, subscription, and application credential management is
   already implemented in the API Management Service (Phases 11–13). The API
   Gateway will later authenticate applications with the issued credentials.
-- **Account Service:** customer bank accounts and balances.
-- **Payment Service:** payment initiation and approval workflows.
-- **Transaction Service:** transaction history for accounts.
+- **Account / Payment / Transaction:** the `payment-service` already hosts the
+  Account, Payment, and Transaction foundations (Phase 14) — one account per
+  user, `PENDING` payment creation, and transaction records of type `PAYMENT`.
+  Planned extensions: real payment processing, balances/wallets, refunds,
+  settlement, and richer transaction history.
 - **Analytics Service:** aggregated request usage and performance metrics
   published from gateway/service activity.
 - **API Gateway:** central entry point — routing, JWT validation, rate
@@ -214,4 +229,5 @@ docs/
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
+payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
 ```
