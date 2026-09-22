@@ -32,14 +32,23 @@
 ### Subscriptions
 
 - Applications are **implemented** (Phase 11, in the API Management Service);
-  credentials and subscriptions below remain planned.
+  subscriptions are **implemented** (Phase 12, in the API Management Service);
+  credentials and tiers below remain planned.
+- An application can be **subscribed** to an API version (implemented, Phase 12):
+  `POST /subscriptions` creates the Application → Subscription → API Version
+  link (`applicationId` + `apiVersionId`), `GET /subscriptions/{subscriptionId}`
+  and `GET /subscriptions` read it back. Owner is derived from the JWT `sub`
+  claim (never from the request body); a subscription is unique per
+  (application, API version) — duplicates are rejected with `409`. Each
+  subscription is metadata-only: no lifecycle, status, credentials, rate limit,
+  or tier yet.
 - An application can be **subscribed** to an API version under a rate-limit
-  **tier**.
-- Subscriptions can be approved/denied (per tier policy) and revoked.
+  **tier** (planned).
+- Subscriptions can be approved/denied (per tier policy) and revoked (planned).
 - Credentials (API key / client ID/secrets) are issued per application and can
-  be rotated.
+  be rotated (planned).
 - The Subscription Service decides whether a given application may call a given
-  API version.
+  API version (planned; the gateway enforcement layer).
 
 ### Accounts (banking domain)
 
@@ -110,7 +119,11 @@
 - **RBAC:** users have roles (e.g. `USER`, `ADMIN`) that grant access to
   administrative vs. self-service operations.
 - **Resource ownership:** users may only act on resources they own (their own
-  apps, subscriptions, accounts) unless their role allows otherwise.
+  apps, subscriptions, accounts) unless their role allows otherwise. For
+  subscriptions (Phase 12) the owner is always derived from the JWT `sub`
+  claim — the service verifies the target application belongs to the caller and
+  exposes cross-owner access as `404` (no existence leak). `ADMIN` owns what it
+  creates and has no global access.
 - **Scopes in tokens:** JWT scopes gate specific operations (e.g.
   `accounts:read`, `payments:write`).
 - **Subscription-based authorization:** even a valid token cannot invoke an API
@@ -126,10 +139,14 @@
 
 ## Subscription Requirements
 
-- Applications and subscriptions keyed to API version + tier.
-- Tier defines allowed rates (requests/second or per hour, burst).
-- Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED`.
-- Credentials are bound to an application, not a user.
+- Applications and subscriptions are implemented in the API Management Service
+  (Phases 11–12). Subscriptions reference the owning application and an API
+  version; the link is unique per (application, API version).
+- Tier defines allowed rates (requests/second or per hour, burst) — planned,
+  bound to credentials issued per application.
+- Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — planned;
+  Phase 12 subscriptions carry no lifecycle state.
+- Credentials are bound to an application, not a user — planned.
 
 ## Rate Limiting Requirements
 

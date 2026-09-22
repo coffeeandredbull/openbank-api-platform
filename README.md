@@ -58,11 +58,11 @@ to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC) and the API Management Service (API catalog
-> foundation, API versioning, API version lifecycle, and developer application
-> management) are implemented. The remaining services, the gateway, and the
-> portal are planned. See the [architecture document](docs/architecture.md) for
-> details and each file in [`docs/`](docs/) for requirements, database design,
-> security model, and API design.
+> foundation, API versioning, API version lifecycle, developer application and
+> subscription management) are implemented. The remaining services, the gateway,
+> and the portal are planned. See the [architecture document](docs/architecture.md)
+> for details and each file in [`docs/`](docs/) for requirements, database
+> design, security model, and API design.
 
 ## Technology Stack
 
@@ -118,11 +118,23 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   `404 APPLICATION_NOT_FOUND` with no existence leak. Names are not unique.
   `ADMIN` owns what it creates and has no global access. No credentials,
   subscriptions, or deletion yet (planned).
-- **Planned phases (subject to change):** subscriptions, the remaining services,
-  the API Gateway, the Developer Portal, shared infrastructure (PostgreSQL/Redis
-  via Docker Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be
-  built in small, explicitly requested phases and verified (compile + tests) at
-  each step.
+- **Phase 12 — API Management Service (subscriptions):** applications now link
+  to API versions. `POST /subscriptions` subscribes an owned application to an
+  API version, `GET /subscriptions/{subscriptionId}` and `GET /subscriptions`
+  read them back. The owner is always derived from the JWT `sub` claim — the
+  request body only carries `applicationId` / `apiVersionId` and the service
+  verifies that the application belongs to the caller; `ADMIN` owns what it
+  creates and has no global access (cross-owner access → `404`, no existence
+  leak). A subscription is unique per (application, API version): duplicates
+  return `409 SUBSCRIPTION_ALREADY_EXISTS`, enforced both in the service and by
+  a database unique constraint. Each subscription has no lifecycle, credentials,
+  rate limit, or gateway state (planned later) — it is the Application →
+  Subscription → API Version link only.
+- **Planned phases (subject to change):** subscription credentials (API keys /
+  client secrets) and tiers, the remaining services, the API Gateway, the
+  Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker
+  Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be built in
+  small, explicitly requested phases and verified (compile + tests) at each step.
 
 ## Planned Features
 
@@ -131,8 +143,10 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 - **API Management Service:** registry of published APIs, API versions,
   endpoint metadata, documentation, and lifecycle state (e.g. published,
   deprecated).
-- **Subscription Service:** developer applications, credentials (API keys /
-  client IDs / client secrets), API subscriptions with tiers.
+- **Subscription Service:** (with the API Management Service) credentials for
+  applications (API keys / client IDs / client secrets), API subscription tiers
+  and rate-limit enforcement. Basic application and subscription management is
+  already implemented in the API Management Service (Phases 11–12).
 - **Account Service:** customer bank accounts and balances.
 - **Payment Service:** payment initiation and approval workflows.
 - **Transaction Service:** transaction history for accounts.
@@ -182,5 +196,5 @@ docs/
 ├── security.md
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
-api-management-service/  (implemented — Phases 8–11, API catalog + versioning + lifecycle + applications)
+api-management-service/  (implemented — Phases 8–12, API catalog + versioning + lifecycle + applications + subscriptions)
 ```

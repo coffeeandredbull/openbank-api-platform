@@ -56,6 +56,16 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.NOT_FOUND, "APPLICATION_NOT_FOUND", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(SubscriptionNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleSubscriptionNotFound(SubscriptionNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "APPLICATION_SUBSCRIPTION_NOT_FOUND", ex.getMessage(), request, Map.of());
+    }
+
+    @ExceptionHandler(SubscriptionAlreadyExistsException.class)
+    public ResponseEntity<ErrorResponse> handleSubscriptionAlreadyExists(SubscriptionAlreadyExistsException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "SUBSCRIPTION_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

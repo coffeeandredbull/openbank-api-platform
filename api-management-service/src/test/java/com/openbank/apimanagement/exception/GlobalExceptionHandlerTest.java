@@ -195,6 +195,43 @@ class GlobalExceptionHandlerTest {
                 .doesNotContain("Caused by");
     }
 
+    @Test
+    void subscriptionNotFoundProducesStructured404() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionNotFound(
+                        new SubscriptionNotFoundException(7L), request("GET", "/subscriptions/7"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.path()).isEqualTo("/subscriptions/7");
+        assertThat(body.code()).isEqualTo("APPLICATION_SUBSCRIPTION_NOT_FOUND");
+        assertThat(body.message()).contains("7");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
+    void duplicateSubscriptionProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionAlreadyExists(
+                        new SubscriptionAlreadyExistsException(1L, 2L), request("POST", "/subscriptions"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.code()).isEqualTo("SUBSCRIPTION_ALREADY_EXISTS");
+        assertThat(body.message()).contains("1").contains("2");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("unique constraint")
+                .doesNotContain("SQL")
+                .doesNotContain("DataIntegrityViolation");
+    }
+
     private MockHttpServletRequest request(String method, String path) {
         return new MockHttpServletRequest(method, path);
     }

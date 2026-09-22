@@ -184,14 +184,53 @@ Service stores no user record and no cross-service foreign key.
   applications yet; those remain planned under the Subscription Service.
   Application deletion is intentionally not part of this phase.
 
+**Implemented so far (Phase 12) — subscriptions:** an application can be
+**subscribed** to an **API version** in the API Management Service. This
+implements the Application → Subscription → API Version link. The request body
+carries only `applicationId` and `apiVersionId`; the **owner is always derived
+from the authenticated user's JWT `sub` claim** and is never taken from the
+request body.
+- `POST /subscriptions` — subscribe an owned application to an API version.
+  Body: `{ "applicationId": long, "apiVersionId": long }` (both required).
+  Returns `201 Created` with a `Location: /subscriptions/{id}` header and the
+  subscription body (`id`, `applicationId`, `apiVersionId`, `createdAt`,
+  `updatedAt`).
+- `GET /subscriptions/{subscriptionId}` — the caller's **own** subscription.
+- `GET /subscriptions` — list the caller's **own** subscriptions in ascending
+  `id` order (owner-scoped; other users' subscriptions never appear).
+- Authorization is uniform for `ADMIN` and `DEVELOPER` with owner-based
+  semantics, exactly like applications: `ADMIN` owns what it creates and has
+  **no** global access to other users' subscriptions. Accessing a subscription
+  that does not exist **or belongs to an application the caller does not own**
+  returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak).
+- Cross-owner or missing target resources: an `applicationId` the caller does
+  not own (or that does not exist) returns `404 APPLICATION_NOT_FOUND`; a
+  non-existent `apiVersionId` returns `404 API_VERSION_NOT_FOUND`. Both are
+  checked before the subscription is created.
+- Duplicate subscriptions (same application + same API version) → `409
+  SUBSCRIPTION_ALREADY_EXISTS`. Enforced in the service up front **and** by a
+  database unique constraint on `(application_id, api_version_id)`; the
+  resulting `DataIntegrityViolationException` from a race condition is mapped to
+  the same `409` response. Two different applications may subscribe to the same
+  API version, and one application may subscribe to multiple versions.
+- Validation: `applicationId` and `apiVersionId` are required (`@NotNull`);
+  violations return `400 VALIDATION_FAILED`, malformed JSON returns `400
+  MALFORMED_REQUEST`.
+- A subscription is currently **metadata/link only**: it carries no lifecycle
+  state, status, tier, credentials (API key / client id+secret), or rate limit.
+  Those remain planned under the Subscription Service.
+
 ### Subscription Service
 
 > `POST /applications` and `GET /applications` below are **implemented** in the
-> `API Management Service` (Phase 11) — see the Phase 11 section above. They are
-> repeated here as the planned contract for the gateway/portal view; the
-> remaining items (credentials, subscriptions) are not yet implemented.
+> `API Management Service` (Phase 11) and the Application → Subscription → API
+> Version link (`POST /subscriptions`, `GET /subscriptions/{id}`,
+> `GET /subscriptions`) is **implemented** in the API Management Service
+> (Phase 12) — see the Phase 11/12 sections above. They are repeated here as the
+> planned contract for the gateway/portal view; the remaining items
+> (credentials, tiers, status, revocation) are not yet implemented.
 - `POST   /applications/{id}/credentials` — issue credential (secret shown once).
-- `POST   /applications/{id}/subscriptions` — subscribe app to API version + tier.
+- `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
 - `GET    /subscriptions/{id}` — subscription status.
 - `DELETE /applications/{id}/subscriptions/{subId}` — revoke.
 - `GET    /subscriptions?apiVersionId=...` — admin: who holds this version.

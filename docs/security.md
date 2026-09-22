@@ -158,6 +158,46 @@ Implemented behavior:
 Not implemented yet (future phases): application credentials (client
 id/secret/API keys), subscription checks, and profile/scope enforcement.
 
+## Subscription Ownership — Implemented (Phase 12)
+
+The API Management Service's **subscriptions** endpoints (the Application →
+Subscription → API Version link) enforce the same per-user ownership model as
+applications.
+
+Implemented behavior:
+
+- **Owner derivation:** a subscription is never created against an arbitrary
+  application. The request body carries only `applicationId` and `apiVersionId`;
+  the service looks up the application keyed by `id` **and** the authenticated
+  caller's JWT `sub` (`findByIdAndOwnerUserId`) before creating anything. A
+  non-existent or cross-owner `applicationId` returns `404 APPLICATION_NOT_FOUND`
+  — indistinguishable from a missing application, so resource existence is not
+  leaked.
+- **Owner-scoped access:** `GET /subscriptions`, `GET /subscriptions/{id}`
+  operate only on subscriptions whose **application** belongs to the caller
+  (repository lookup keyed by subscription `id` **and** the application's
+  `ownerUserId`). A subscription that does not exist **or belongs to another
+  user's application** returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` exactly
+  as if it did not exist.
+- **Roles:** both `ADMIN` and `DEVELOPER` bearer tokens are accepted with
+  uniform owner semantics. An `ADMIN` owns what it creates and has **no**
+  global access to other users' subscriptions. Unknown/insufficient roles fail
+  closed with `401 UNAUTHENTICATED`; missing/invalid/expired tokens also map to
+  `401 UNAUTHENTICATED`, with no application stack trace or token material in
+  the response. There is no `DELETE`/`PATCH` endpoint in this phase.
+- **Duplicate prevention:** a subscription is unique per
+  (application, API version). The service pre-checks
+  `existsByApplicationIdAndApiVersionId` **and** a DB unique constraint backs it
+  up; a race condition surfacing as `DataIntegrityViolationException` is mapped
+  to the same `409 SUBSCRIPTION_ALREADY_EXISTS`, never exposed as a constraint
+  violation.
+- **Defense in depth:** authorization lives in the service layer and DB lookup
+  keys, not in the route matcher; the security filter only authenticates.
+
+Not implemented yet (future phases): subscription credentials (API
+key/client id+secret issuance), tiers, status/lifecycle, revocation, and
+gateway-level subscription enforcement.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -238,8 +278,9 @@ id/secret/API keys), subscription checks, and profile/scope enforcement.
 | RBAC roles & scopes | **Partially implemented (Phase 7)** — `ADMIN`/`DEVELOPER` enforced as `ROLE_ADMIN`/`ROLE_DEVELOPER` on `/test/*` endpoints; scopes still planned |
 | Shared JWT validation & RBAC (other services) | **Partially implemented (Phase 8)** — the API Management Service validates the same JWT locally (`JWT_SECRET`) and enforces `ADMIN`/`DEVELOPER` roles on its catalog endpoints |
 | Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
+| Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
 | JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
-| Subscription enforcement | **Planned** — not implemented |
+| Subscription enforcement | **Planned** — not implemented (only the subscription registry itself exists; gateway/runtime enforcement and credentials are future phases) |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
