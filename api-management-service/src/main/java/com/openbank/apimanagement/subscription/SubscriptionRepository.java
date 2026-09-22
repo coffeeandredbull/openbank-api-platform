@@ -12,4 +12,6 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Long
     List<Subscription> findByApplication_OwnerUserIdOrderByIdAsc(Long ownerUserId);
 
     boolean existsByApplicationIdAndApiVersionId(Long applicationId, Long apiVersionId);
+
+    boolean existsByApiVersionIdAndApplication_OwnerUserId(Long apiVersionId, Long ownerUserId);
 }

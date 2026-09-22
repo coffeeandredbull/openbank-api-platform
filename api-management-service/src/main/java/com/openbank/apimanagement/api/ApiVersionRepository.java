@@ -11,5 +11,7 @@ public interface ApiVersionRepository extends JpaRepository<ApiVersion, Long> {
 
     Optional<ApiVersion> findByApiIdAndId(Long apiId, Long versionId);
 
+    Optional<ApiVersion> findByApiIdAndVersion(Long apiId, String version);
+
     boolean existsByApiIdAndVersion(Long apiId, String version);
 }

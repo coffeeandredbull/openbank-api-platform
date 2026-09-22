@@ -2,6 +2,7 @@ package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.api.Api;
 import com.openbank.apimanagement.api.ApiVersion;
+import com.openbank.apimanagement.api.ApiVersionLifecycle;
 import com.openbank.apimanagement.api.ApiVersionRepository;
 import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
@@ -11,6 +12,8 @@ import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -39,6 +42,9 @@ class SubscriptionServiceTest {
 
     @Mock
     private ApiVersionRepository apiVersionRepository;
+
+    @Mock
+    private com.openbank.apimanagement.api.ApiRepository apiRepository;
 
     @InjectMocks
     private SubscriptionService subscriptionService;
@@ -190,6 +196,54 @@ class SubscriptionServiceTest {
                 .containsExactly(4L, 9L);
     }
 
+    @ParameterizedTest
+    @EnumSource(value = ApiVersionLifecycle.class)
+    void isSubscribedIgnoresTheApiVersionLifecycleState(ApiVersionLifecycle lifecycle) {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L, lifecycle)));
+        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(20L, 42L))
+                .thenReturn(true);
+
+        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isTrue();
+    }
+
+    @Test
+    void isSubscribedReturnsFalseWhenThereIsNoMatchingApi() {
+        when(apiRepository.findByContextPath("/no-such-api")).thenReturn(Optional.empty());
+
+        assertThat(subscriptionService.isSubscribed(42L, "/no-such-api", "v1")).isFalse();
+        verify(subscriptionRepository, never())
+                .existsByApiVersionIdAndApplication_OwnerUserId(any(), any());
+    }
+
+    @Test
+    void isSubscribedReturnsFalseWhenTheApiVersionDoesNotExist() {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v9")).thenReturn(Optional.empty());
+
+        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v9")).isFalse();
+        verify(subscriptionRepository, never())
+                .existsByApiVersionIdAndApplication_OwnerUserId(any(), any());
+    }
+
+    @Test
+    void isSubscribedReturnsFalseWhenTheUserHoldsNoSubscriptionForTheApiVersion() {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(20L, 42L))
+                .thenReturn(false);
+
+        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isFalse();
+    }
+
+    private Api api(Long id) {
+        Api api = new Api("Payments API", "Payment operations", "/payments");
+        setField(api, "id", id);
+        return api;
+    }
+
     private Application application(Long id, Long ownerUserId) {
         Application application = new Application("My App", "Demo", ownerUserId);
         setField(application, "id", id);
@@ -203,6 +257,12 @@ class SubscriptionServiceTest {
         setField(apiVersion, "id", id);
         setField(apiVersion, "createdAt", TIMESTAMP);
         setField(apiVersion, "updatedAt", TIMESTAMP);
+        return apiVersion;
+    }
+
+    private ApiVersion apiVersion(Long id, ApiVersionLifecycle lifecycle) {
+        ApiVersion apiVersion = apiVersion(id);
+        setField(apiVersion, "lifecycle", lifecycle);
         return apiVersion;
     }
 

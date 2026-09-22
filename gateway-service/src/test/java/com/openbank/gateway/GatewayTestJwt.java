@@ -69,8 +69,9 @@ public final class GatewayTestJwt {
     }
 
     public static String tampered(String token) {
-        char last = token.charAt(token.length() - 1);
-        char replacement = last == 'A' ? 'B' : 'A';
-        return token.substring(0, token.length() - 1) + replacement;
+        int signatureStart = token.lastIndexOf('.') + 1;
+        char original = token.charAt(signatureStart);
+        char replacement = original == 'A' ? 'B' : 'A';
+        return token.substring(0, signatureStart) + replacement + token.substring(signatureStart + 1);
     }
 }

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -52,6 +53,26 @@ class JwtTokenServiceTest {
     void tamperedSignatureIsRejected() {
         assertThatThrownBy(() -> service.validateToken(GatewayTestJwt.tampered(GatewayTestJwt.admin())))
                 .isInstanceOf(InvalidJwtException.class);
+    }
+
+    @Test
+    void tamperedSignatureIsNeverAcceptedRegardlessOfSignatureBits() {
+        Instant issuedAt = Instant.now().minusSeconds(200);
+        for (int offset = 0; offset < 64; offset++) {
+            String token = GatewayTestJwt.token("ADMIN", "1", 3600, issuedAt.plusSeconds(offset));
+            assertThat(GatewayTestJwt.tampered(token)).isNotEqualTo(token);
+            assertThatThrownBy(() -> service.validateToken(GatewayTestJwt.tampered(token)))
+                    .isInstanceOf(InvalidJwtException.class);
+        }
+    }
+
+    @Test
+    void tamperedSignatureDecodesToDifferentBytes() {
+        String token = GatewayTestJwt.admin();
+        String tampered = GatewayTestJwt.tampered(token);
+        byte[] original = Base64.getUrlDecoder().decode(token.split("\\.")[2]);
+        byte[] corrupted = Base64.getUrlDecoder().decode(tampered.split("\\.")[2]);
+        assertThat(corrupted).isNotEqualTo(original);
     }
 
     @Test

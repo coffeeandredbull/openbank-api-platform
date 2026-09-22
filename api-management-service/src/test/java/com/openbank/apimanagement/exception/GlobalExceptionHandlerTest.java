@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -171,6 +172,22 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(405);
         assertThat(response.getBody().code()).isEqualTo("METHOD_NOT_ALLOWED");
         assertThat(response.getBody().message()).contains("PATCH");
+    }
+
+    @Test
+    void missingRequiredParameterProducesStructured400() {
+        MissingServletRequestParameterException ex =
+                new MissingServletRequestParameterException("version", "String");
+
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleMissingParameter(ex, request("GET", "/internal/subscription-check"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.code()).isEqualTo("VALIDATION_FAILED");
+        assertThat(body.message()).isEqualTo("Request validation failed");
+        assertThat(body.fieldErrors()).containsEntry("version", "version is required");
+        assertThat(body.path()).isEqualTo("/internal/subscription-check");
     }
 
     @Test

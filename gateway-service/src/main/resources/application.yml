@@ -46,6 +46,10 @@ spring:
           uri: ${PAYMENT_SERVICE_URL:http://localhost:8082}
           predicates:
             - Path=/transactions/**
+        - id: managed_api_invocation
+          uri: ${MANAGED_API_TARGET_URL:http://localhost:8084}
+          predicates:
+            - Path=/runtime/apis/**
 
 management:
   endpoints:

@@ -3,8 +3,9 @@
 > This document describes the **planned** architecture of the OpenBank API
 > Platform. It is the design target that later phases build toward, one small
 > step at a time. Implemented parts (the Identity, API Management, and Payment
-> services, and the Phase 15–16 gateway: routing + JWT authentication) are
-> marked in their sections; everything else remains planned.
+> services, and the Phase 15–17 gateway: routing + JWT authentication +
+> subscription enforcement) are marked in their sections; everything else
+> remains planned.
 
 ## Overview
 
@@ -85,6 +86,10 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   locally and references `ownerUserId` rather than holding user rows. A future
   Payment → Account or Payment → Transaction network call is deliberately not
   needed today because those domains share one service (and one database).
+- **Gateway → API Management (Phase 17):** the gateway calls the API
+  Management Service's internal `GET /internal/subscription-check` endpoint
+  directly (not through any gateway route) to verify a caller's subscription
+  against PostgreSQL. This is the only internal service-to-service call today.
 - **No message broker** (Kafka / RabbitMQ) is used. Any asynchronous need will
   be addressed with Redis or direct calls unless explicitly requested
   otherwise.
@@ -94,7 +99,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
-**Implemented (Phases 15–16).** The `gateway-service`
+**Implemented (Phases 15–17).** The `gateway-service`
 (Spring Cloud Gateway) listens on port `8080` and performs:
 
 - **Single entry point**: all requests — from the Developer Portal and from
@@ -102,12 +107,17 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 - **Routing**: routes requests to the correct backend service based on path,
   without rewriting the URI. Method, path, query, body, and headers are
   forwarded untouched. Upstream base URLs are configured per environment with
-  the `IDENTITY_SERVICE_URL`, `API_MANAGEMENT_SERVICE_URL`, and
-  `PAYMENT_SERVICE_URL` variables:
+  the `IDENTITY_SERVICE_URL`, `API_MANAGEMENT_SERVICE_URL`,
+  `PAYMENT_SERVICE_URL`, and `MANAGED_API_TARGET_URL` variables:
   - `/users/**`, `/auth/**` → Identity
   - `/apis/**`, `/applications/**`, `/subscriptions/**`, `/credentials/**` →
     API Management
   - `/accounts/**`, `/payments/**`, `/transactions/**` → Payment
+  - `/runtime/apis/**` → managed API target (`MANAGED_API_TARGET_URL`, default
+    `http://localhost:8084`) — Phase 17. This route represents *consumed*
+    versioned APIs (an API consumer invoking a published API through the
+    gateway) and is where subscription enforcement applies. Platform-management
+    routes are **not** gated by subscriptions.
 - **Authentication (Phase 16)**: a global JWT filter validates the
   `Authorization: Bearer <jwt>` header before routing. Only `POST /users`,
   `POST /auth/login`, and `GET /actuator/health` are public; all other routed
@@ -115,9 +125,31 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   `sub` and `role` (ADMIN or DEVELOPER) claims. Failures return `401` + code
   `UNAUTHENTICATED` with a generic message and never reveal which check failed.
   Valid requests keep their `Authorization` header unchanged. The gateway
-  performs **authentication only** — no business authorization (subscription
-  or credential checks) — and issues no tokens. Each backend service still
-  validates the JWT itself (defense in depth).
+  issues no tokens. Each backend service still validates the JWT itself
+  (defense in depth).
+- **Subscription enforcement (Phase 17)**: after authentication, requests to
+  `/runtime/apis/**` are additionally gated on an **active subscription**. The
+  gateway derives the caller's user id **only** from the JWT `sub` claim (no
+  client-supplied user id is ever trusted), identifies the requested API
+  version from the path (`/runtime/apis/{context}/{version}/...`), and calls
+  the API Management Service's internal
+  `GET /internal/subscription-check?contextPath=...&version=...` endpoint with
+  the same `Authorization` header. That endpoint is authenticated, is **not**
+  reachable through any gateway route, and returns only `{"subscribed": bool}`
+  from a **direct PostgreSQL query** (the system of record — no Redis, no
+  cache). Outcomes:
+  - subscribed → request is forwarded unchanged to the managed API target;
+  - valid JWT but not subscribed (including a subscription owned by another
+    user) → `403` + code `SUBSCRIPTION_REQUIRED`;
+  - the check itself fails (unreachable, timeout, 5xx, malformed) → `503` +
+    code `SUBSCRIPTION_SERVICE_UNAVAILABLE`. The gateway **fails closed**: an
+    unverified or unsubscribed request is never forwarded.
+  The check is **intentionally lifecycle-agnostic**: a subscription to the target
+  API version satisfies the gate in any lifecycle state (`CREATED`, `PUBLISHED`,
+  `DEPRECATED`, `RETIRED`). Lifecycle-based runtime blocking (e.g. only
+  `PUBLISHED` versions invocable, deprecation/retirement sunset handling) is out
+  of scope for Phase 17 and remains a later phase. There is no `ADMIN` bypass,
+  and identity is never taken from query parameters or headers.
 - **Upstream failure handling**: when an upstream is unreachable or exceeds the
   connect (2 s) or response (5 s) timeout, the gateway returns `503` with code
   `UPSTREAM_SERVICE_UNAVAILABLE` and a generic message — never the upstream
@@ -128,16 +160,14 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   logged: the gateway never logs the `Authorization` header, JWT/token
   material, cookies, or any request/response body.
 - **Health**: `GET /actuator/health` is the only exposed actuator endpoint.
-- The Phase 16 gateway performs **no business authorization, subscription
-  enforcement, rate limiting, or CORS handling** — those remain planned
-  (below).
+- The Phase 17 gateway performs **no client-credential enforcement, rate
+  limiting, or CORS handling** — those remain planned (below).
 
 **Planned (later phases):**
 
-- **Authorization**: enforces that the caller is permitted to reach the target
-  API/route (role, scope, or subscription check).
-- **Subscription enforcement**: verifies the calling application's
-  subscription against the target API version.
+- **Client-credential authorization**: authenticates applications with the
+  Phase 13 `clientId`/`clientSecret` credentials (OAuth2-style flows) instead
+  of (or in addition to) a user JWT.
 - **Rate limiting**: applies per-application (and per-tier) request limits,
   backed by Redis counters; returns `429 Too Many Requests` on exceed.
 - **Observability**: emits request telemetry for the Analytics Service.
@@ -183,16 +213,20 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## Planned Request Flow
 
-> Phase 16 status: the gateway already performs steps 1, 2 (JWT validation —
-> signature, expiry, mandatory claims), 5, 6, and 7 (minus the telemetry).
-> Steps 3–4 (subscription check, rate limiting) are planned.
+> Phase 17 status: the gateway already performs steps 1, 2 (JWT validation —
+> signature, expiry, mandatory claims), 3 (subscription check — currently
+> without tier selection), 5, 6, and 7 (minus the telemetry). Step 4 (rate
+> limiting) is planned; tiering and caching for the subscription check remain
+> planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.
 2. The **API Gateway** validates the JWT access token (signature, expiry,
    issuer/audience).
 3. The gateway looks up the requested API version and checks the caller's
-   **subscription** and tier with the Subscription Service (or a cached copy).
+   **subscription** (Phase 17 — implemented via the API Management Service's
+   internal check against PostgreSQL) and tier (planned) with the Subscription
+   Service (or a cached copy — caching planned).
 4. The gateway applies **rate limiting** for the application, incrementing a
    Redis counter; on exceed it responds `429`.
 5. The gateway **routes** the request to the owning backend service

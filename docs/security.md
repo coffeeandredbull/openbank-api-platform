@@ -102,8 +102,9 @@ Implemented behavior:
   `ACCESS_DENIED`. Both use the standard error response shape and never leak
   framework internals, stack traces, JWTs, or secrets.
 
-Not implemented yet (future phases): authentication at the API Gateway,
-subscription enforcement, and scopes.
+Not implemented yet (future phases): authentication at the API Gateway
+(implemented later — Phase 16), subscription enforcement (implemented later —
+Phase 17), and scopes.
 
 ## Shared JWT Validation — Implemented (Phase 8)
 
@@ -128,8 +129,9 @@ Implemented behavior:
 - **No new authentication architecture:** stateless bearer JWT, CSRF disabled,
   no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
 
-Not implemented yet (future phases): gateway-level authentication, RS256, and
-credential/subscription checks.
+Not implemented yet (future phases): RS256, application client-credential
+checks, and subscription tiers/status. (Gateway-level authentication and
+subscription checks are implemented later — Phases 16 and 17; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -314,11 +316,13 @@ Implemented behavior:
 Not implemented yet (future phases): balance authorization, real payment
 processing/approval, subscription/scope enforcement, and gateway integration.
 
-## Gateway Foundations — Implemented (Phases 15–16)
+## Gateway Foundations — Implemented (Phases 15–17)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) is a routing gateway
-that now also **authenticates** callers. It remains deliberately thin: routing
-and authentication are implemented; authorization and rate limiting are not.
+that authenticates callers (Phase 16) and enforces subscriptions for managed
+API invocations (Phase 17). It remains deliberately thin: routing,
+authentication, and subscription enforcement are implemented; application
+client-credential verification and rate limiting are not.
 
 Implemented behavior:
 
@@ -339,9 +343,48 @@ Implemented behavior:
     **never discloses which check failed** — it leaks no token contents,
     exception classes, or parsing internals, and rejecting it never exposes
     the token or secret.
-- **No business authorization at the gateway (yet):** subscription checks,
-  credential/application validation, and rate limiting remain planned. The
-  gateway authenticates only.
+- **Gateway subscription enforcement (Phase 17):** after authentication,
+  requests to `/runtime/apis/**` (the managed-API invocation route →
+  `MANAGED_API_TARGET_URL`, default `http://localhost:8084`) are gated on an
+  **active subscription** before forwarding:
+  - **Identity is derived from the JWT only.** The caller's user id comes
+    exclusively from the validated `sub` claim; a client-supplied `userId`
+    query parameter or `X-User-Id` header is **ignored** (tests assert the
+    check request carries only `contextPath` and `version`). There is no
+    `ADMIN` bypass and no reliance on any unverified client-supplied identity.
+  - **API version identification**: the requested version is parsed from the
+    path (`/runtime/apis/{context}/{version}/...`); the check target is the
+    version registered under that context path in the API Management Service.
+    The check is intentionally lifecycle-agnostic: a subscription to the target
+    API version satisfies the gate in any lifecycle state (CREATED, PUBLISHED,
+    DEPRECATED, RETIRED). Lifecycle-based runtime blocking (PUBLISHED-only
+    invocation, deprecation/retirement sunset rules) is out of scope for Phase 17
+    and remains a later phase. A malformed runtime path (no version segment) is
+    rejected with `403` without contacting the check service.
+  - **The check itself authenticates and is not routable.** The gateway calls
+    the API Management Service's internal
+    `GET /internal/subscription-check` endpoint directly (never through a
+    gateway route) and forwards the same `Authorization` header; the endpoint
+    requires a valid bearer token (`.authenticated()`), returns only
+    `{"subscribed": bool}`, and queries **PostgreSQL directly** — the system of
+    record. No Redis and no caching are used for this decision.
+  - **Fail closed on authorization and on failure.** Not subscribed (including
+    a subscription owned by **another user's** application — the lookup is
+    keyed by the target API version *and* the owning application's
+    `ownerUserId`) → `403` + `SUBSCRIPTION_REQUIRED`; the check service
+    unreachable, timed out (3 s response, 2 s connect), or returning a 5xx /
+    malformed body → `503` + `SUBSCRIPTION_SERVICE_UNAVAILABLE`. An
+    unverified or unsubscribed request is **never** forwarded. A `4xx` from
+    the check is treated as a forbidden result, never as an excuse to bypass.
+  - **Nothing sensitive leaks.** All 401/403/503 rejection bodies are generic
+    (stable shape, no stack traces, no upstream URLs, no token material, no
+    check responses). Gateway logs record only method/path/route id/
+    status/duration for the check and forwarding decisions — never the
+    `Authorization` header, JWT, body, check response, or internal endpoint.
+- **No application-credential enforcement at the gateway (yet):**
+  client-credential/application validation (the Phase 13 `clientId`/
+  `clientSecret`) and rate limiting remain planned. The gateway authenticates
+  callers and checks subscriptions only.
 - **Defense in depth is unchanged:** the gateway forwards the `Authorization`
   header **unchanged** for valid requests, and every backend service still
   validates the JWT locally as in Phases 6–14. Removing or bypassing the
@@ -370,8 +413,8 @@ Implemented behavior:
   material).
 
 Not implemented yet (future phases): application client-credential
-verification (using the Phase 13 credentials), subscription enforcement, rate
-limiting, and gateway-issued telemetry.
+verification (using the Phase 13 credentials), rate limiting, and
+gateway-issued telemetry.
 
 ## Authorization / RBAC
 
@@ -383,16 +426,26 @@ limiting, and gateway-issued telemetry.
   `payments:write`, `subscriptions:manage`).
 - **Subscription enforcement**: authorization for API invocation requires an
   **active subscription** of the caller's application to the target API
-  version, at the gateway using Subscription Service data (with Redis caching).
+  version. **Implemented (Phase 17)** for JWT-authenticated managed-API calls:
+  the gateway checks the API Management Service's internal subscription check
+  (against PostgreSQL, the system of record) and fails closed. Redis caching of
+  the check, subscription tiers/status, and client-credential presentation
+  remain planned.
 
 ## API Subscription Enforcement
 
-- Only requests carrying application credentials with an active subscription
-  reach a versioned API.
-- Subscription state machine (`PENDING → ACTIVE`, `DENIED`, `REVOKED`) is
-  enforced by the Subscription Service; the gateway consults it (or cached)
-  per request.
-- Revoking a subscription immediately de-authorizes subsequent calls.
+- Requests to managed API routes (`/runtime/apis/**`) are de-authorized unless
+  the calling user owns an application with an active subscription to the
+  target API version — **implemented at the gateway (Phase 17)** via the API
+  Management Service's internal check against PostgreSQL (fail closed; no
+  cache).
+- Subscription state machine, tiers, and status (`PENDING → ACTIVE`, `DENIED`,
+  `REVOKED`) are **planned**; today the registry has no status and the gateway
+  check is lifecycle-agnostic (any subscription for the API version counts).
+- Once a subscription status/state machine exists, revoking it will
+  immediately de-authorize subsequent calls; today the gateway queries
+  PostgreSQL on every managed-API request, so registry changes take effect
+  immediately (with no cache to invalidate).
 
 ## Credential Security
 
@@ -465,24 +518,28 @@ limiting, and gateway-issued telemetry.
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
-| Subscription enforcement | **Planned** — not implemented (only the subscription and credential registries exist; gateway/runtime enforcement is a future phase) |
+| Subscription enforcement | **Implemented (Phase 17, JWT-authenticated managed-API calls)** — for `/runtime/apis/**` the gateway verifies (after Phase 16 authentication) that the caller's JWT `sub` owns an application subscribed to the target API version, via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503 SUBSCRIPTION_SERVICE_UNAVAILABLE` (fail closed), identity from the JWT only (no client-supplied user id, no `ADMIN` bypass). Tier/status-based enforcement and client-credential flows remain planned |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 16 the Identity Service supports stateless bearer request
+> As of Phase 17 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
 > catalog, application, subscription, and credential endpoints with full
-> owner-scoping, and the Payment Service validates the same JWT and enforces
+> owner-scoping (and now authenticates the gateway's internal subscription
+> check), and the Payment Service validates the same JWT and enforces
 > owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
 > transaction endpoints (fail closed, no public endpoints). The API Gateway
-> foundation (Phases 15–16) routes requests to the three services, handles
-> upstream failures, and authenticates every caller against the shared
-> `JWT_SECRET` (`POST /users`, `POST /auth/login`, and health remain public),
-> but performs **no gateway authorization, subscription enforcement, rate
-> limiting, or scope enforcement** yet. Each backend service still validates
-> the JWT locally, so the gateway is not a single point of trust for
-> authentication.
+> (Phases 15–17) routes requests to the three services, handles upstream
+> failures, authenticates every caller against the shared `JWT_SECRET`
+> (`POST /users`, `POST /auth/login`, and health remain public), and for
+> managed API invocations (`/runtime/apis/**`) additionally enforces that the
+> caller owns an active subscription to the target API version — rejecting
+> unsubscribed callers with `403 SUBSCRIPTION_REQUIRED` and failing closed
+> (`503 SUBSCRIPTION_SERVICE_UNAVAILABLE`) when the check is unavailable — but
+> performs **no client-credential enforcement, rate limiting, or scope
+> enforcement** yet. Each backend service still validates the JWT locally, so
+> the gateway is not a single point of trust for authentication.

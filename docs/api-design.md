@@ -3,8 +3,9 @@
 > This document describes the **planned** REST API conventions for the OpenBank
 > API Platform. Early phases already implemented endpoint sets (Identity,
 > API Management, Payment Service) — each is marked "Implemented so far" below.
-> The Phase 15–16 gateway is also implemented (routing + JWT authentication;
-> see the Gateway section). Consistent conventions apply to the Developer
+> The Phase 15–17 gateway is also implemented (routing + JWT authentication +
+> subscription enforcement; see the Gateway section). Consistent conventions
+> apply to the Developer
 > Portal-facing APIs and
 > the consumer-facing APIs routed by the gateway. OpenAPI documents for each
 > service will be produced in the relevant service phases.
@@ -113,16 +114,18 @@
 
 ## Example Endpoint Structure
 
-### Gateway (implemented — Phases 15–16)
+### Gateway (implemented — Phases 15–17)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
-endpoints of its own**; it forwards the existing service paths unchanged:
+endpoints of its own**; it forwards the existing service paths unchanged and
+adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
 
 | Gateway path | Upstream | Env var (development default) |
 | --- | --- | --- |
 | `/users/**`, `/auth/**` | Identity | `IDENTITY_SERVICE_URL` (`http://localhost:8081`) |
 | `/apis/**`, `/applications/**`, `/subscriptions/**`, `/credentials/**` | API Management | `API_MANAGEMENT_SERVICE_URL` (`http://localhost:8081`) |
 | `/accounts/**`, `/payments/**`, `/transactions/**` | Payment | `PAYMENT_SERVICE_URL` (`http://localhost:8082`) |
+| `/runtime/apis/**` | Managed API target (consumed APIs) | `MANAGED_API_TARGET_URL` (`http://localhost:8084`) |
 
 - The upstream sees exactly the path, query, method, body, and headers the
   client sent — the URI is **not rewritten** (no `StripPrefix`). Any path not
@@ -139,6 +142,35 @@ endpoints of its own**; it forwards the existing service paths unchanged:
   "fieldErrors":{}}` — the gateway deliberately does not disclose which rule
   failed. Valid requests are forwarded with the `Authorization` header
   unchanged; the gateway issues no tokens.
+- **Subscription enforcement (Phase 17):** requests routed to
+  `/runtime/apis/**` are additionally gated on an **active subscription**. The
+  invoked API version is identified from the path as
+  `/runtime/apis/{context}/{version}/...`; the caller's user id is derived
+  **only** from the validated JWT `sub` claim, and the gateway calls the API
+  Management Service's internal `GET /internal/subscription-check?contextPath={context}&version={version}` endpoint (authenticated; not reachable through any gateway route; returns only `{"subscribed": bool}` from a direct PostgreSQL query — no cache). Decision table:
+  - valid JWT + subscribed → request forwarded unchanged;
+  - valid JWT + not subscribed (or subscription belonging to another user) →
+    `403` + code `SUBSCRIPTION_REQUIRED`; stable shape
+    `{"timestamp", "status":403, "error":"Forbidden", "path",
+    "code":"SUBSCRIPTION_REQUIRED",
+    "message":"An active subscription is required to access this API",
+    "fieldErrors":{}}`;
+  - check unavailable / failed (unreachable, timeout, 5xx, malformed body) →
+    `503` + code `SUBSCRIPTION_SERVICE_UNAVAILABLE`; stable shape
+    `{"timestamp", "status":503, "error":"Service Unavailable", "path",
+    "code":"SUBSCRIPTION_SERVICE_UNAVAILABLE",
+    "message":"Subscription verification is temporarily unavailable",
+    "fieldErrors":{}}`. The gateway **fails closed** — an unverified request is
+  never forwarded.
+  This is **intentionally lifecycle-agnostic for Phase 17**: a subscription to
+  the target API version satisfies the gate regardless of its lifecycle state
+  (`CREATED`, `PUBLISHED`, `DEPRECATED`, `RETIRED`). Requiring `PUBLISHED` (or
+  any other lifecycle-based runtime blocking) is out of scope for Phase 17 — the
+  lifecycle remains metadata-only at runtime (see the Phase 10 lifecycle notes
+  below). The gate has no `ADMIN` bypass; a missing version segment returns `403`
+  without calling the check. A single-segment context (e.g.
+  `/runtime/apis/accounts`) limits the version-segment parsing (documented
+  limitation).
 - Backend responses (including 4xx/5xx error bodies) pass through unchanged.
 - When an upstream is unreachable or exceeds the 2 s connect / 5 s response
   timeout, the gateway itself returns `503` with a **stable error shape** that
@@ -208,9 +240,12 @@ the caller cannot choose the initial state when creating a version.
 - The lifecycle value is persisted as a string (`CREATED`, `PUBLISHED`,
   `DEPRECATED`, `RETIRED`), never as an ordinal. `updatedAt` changes on a
   lifecycle change; `createdAt` never changes.
-- The lifecycle is currently **metadata/state only**: it does not yet control
-  gateway routing, subscriptions, or traffic. Enforcement of deprecation or
-  retirement is intentionally out of scope until those components exist.
+- The lifecycle is **metadata/state only through Phase 17**: it does not control
+  gateway routing, subscriptions, or traffic. Lifecycle-based traffic control
+  (e.g. only `PUBLISHED` versions invocable, deprecation/retirement sunset
+  rules) is intentionally out of scope; the Phase 17 subscription-enforcement
+  gate is lifecycle-agnostic for the same reason (see Subscription enforcement
+  above).
 
 **Implemented so far (Phase 11) — developer applications:** developers (and
 admins) can manage their **applications** in the API Management Service. An

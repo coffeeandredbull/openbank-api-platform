@@ -27,7 +27,8 @@ class GatewayRouteConfigTest {
             "identity_users", "identity_auth",
             "api_management_apis", "api_management_applications",
             "api_management_subscriptions", "api_management_credentials",
-            "payment_accounts", "payment_payments", "payment_transactions"
+            "payment_accounts", "payment_payments", "payment_transactions",
+            "managed_api_invocation"
     );
 
     @Autowired
@@ -66,6 +67,8 @@ class GatewayRouteConfigTest {
         assertThat(byId.get("payment_accounts").getUri().toString()).isEqualTo("http://localhost:8082");
         assertThat(byId.get("payment_payments").getUri().toString()).isEqualTo("http://localhost:8082");
         assertThat(byId.get("payment_transactions").getUri().toString()).isEqualTo("http://localhost:8082");
+        assertThat(byId.get("managed_api_invocation").getUri().toString())
+                .isEqualTo("http://localhost:8084");
     }
 
     @Test
@@ -85,7 +88,8 @@ class GatewayRouteConfigTest {
                 "api_management_credentials", "/credentials/**",
                 "payment_accounts", "/accounts/**",
                 "payment_payments", "/payments/**",
-                "payment_transactions", "/transactions/**"
+                "payment_transactions", "/transactions/**",
+                "managed_api_invocation", "/runtime/apis/**"
         );
         Map<String, RouteDefinition> byId = routes();
         for (Map.Entry<String, String> entry : expectedPaths.entrySet()) {

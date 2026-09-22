@@ -16,6 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "IDENTITY_SERVICE_URL=http://identity.internal:9001",
         "API_MANAGEMENT_SERVICE_URL=http://api-management.internal:9002",
         "PAYMENT_SERVICE_URL=http://payment.internal:9003",
+        "MANAGED_API_TARGET_URL=http://managed.internal:9004",
         "JWT_SECRET=" + GatewayTestJwt.SECRET
 })
 class GatewayRouteConfigEnvOverrideTest {
@@ -40,6 +41,7 @@ class GatewayRouteConfigEnvOverrideTest {
         assertThat(byId.get("payment_accounts").getUri().toString()).isEqualTo("http://payment.internal:9003");
         assertThat(byId.get("payment_payments").getUri().toString()).isEqualTo("http://payment.internal:9003");
         assertThat(byId.get("payment_transactions").getUri().toString()).isEqualTo("http://payment.internal:9003");
+        assertThat(byId.get("managed_api_invocation").getUri().toString()).isEqualTo("http://managed.internal:9004");
     }
 
     @Test

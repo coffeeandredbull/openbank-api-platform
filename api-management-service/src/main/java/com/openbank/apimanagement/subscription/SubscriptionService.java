@@ -1,7 +1,9 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.api.Api;
 import com.openbank.apimanagement.api.ApiVersion;
 import com.openbank.apimanagement.api.ApiVersionRepository;
+import com.openbank.apimanagement.api.ApiRepository;
 import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
@@ -20,14 +22,17 @@ public class SubscriptionService {
     private final SubscriptionRepository subscriptionRepository;
     private final ApplicationRepository applicationRepository;
     private final ApiVersionRepository apiVersionRepository;
+    private final ApiRepository apiRepository;
 
     public SubscriptionService(
             SubscriptionRepository subscriptionRepository,
             ApplicationRepository applicationRepository,
-            ApiVersionRepository apiVersionRepository) {
+            ApiVersionRepository apiVersionRepository,
+            ApiRepository apiRepository) {
         this.subscriptionRepository = subscriptionRepository;
         this.applicationRepository = applicationRepository;
         this.apiVersionRepository = apiVersionRepository;
+        this.apiRepository = apiRepository;
     }
 
     @Transactional
@@ -62,5 +67,18 @@ public class SubscriptionService {
         return subscriptionRepository.findByApplication_OwnerUserIdOrderByIdAsc(ownerUserId).stream()
                 .map(SubscriptionResponse::from)
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean isSubscribed(Long ownerUserId, String contextPath, String version) {
+        Api api = apiRepository.findByContextPath(contextPath).orElse(null);
+        if (api == null) {
+            return false;
+        }
+        ApiVersion apiVersion = apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
+        if (apiVersion == null) {
+            return false;
+        }
+        return subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(apiVersion.getId(), ownerUserId);
     }
 }

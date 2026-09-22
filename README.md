@@ -59,9 +59,10 @@ to them, and manage credentials.
 > subscription and credential management), the Payment Service foundation
 > (Account, Payment, and Transaction domains, Phases 14–), and the API Gateway
 > (Phase 15 — routing, upstream failure handling, health; Phase 16 — **JWT
-> authentication at the gateway**) are implemented. The remaining services,
-> subscription/credential enforcement at the gateway, and the portal are
-> planned. See the [architecture document](docs/architecture.md) for details
+> authentication at the gateway**; Phase 17 — **subscription enforcement for
+> managed API invocations**) are implemented. The remaining services,
+> client-credential enforcement at the gateway, and the portal are planned.
+> See the [architecture document](docs/architecture.md) for details
 > and each file in [`docs/`](docs/) for requirements, database design, security
 > model, and API design.
 
@@ -199,6 +200,33 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   and performs no business authorization (no subscription or credential
   checks) — that remains planned. Gateway logs never contain the
   `Authorization` header or token material.
+- **Phase 17 — API Gateway (subscription enforcement):** managed API
+  invocations are now gated on an active subscription. A new route
+  `/runtime/apis/**` forwards to the **managed API target**
+  (`MANAGED_API_TARGET_URL`, default `http://localhost:8084`) with the full
+  original path — this represents a *consumed* versioned API, distinct from the
+  platform-management routes (`/apis/**`, `/applications/**`, etc.), which
+  remain unencumbered and behave exactly as in Phases 15–16. Each
+  `/runtime/apis/**` request must present a valid JWT (Phase 16 rule — missing
+  or invalid tokens still get `401 UNAUTHENTICATED`); the gateway then derives
+  the caller's user id **only** from the JWT `sub` claim and asks the API
+  Management Service whether that user owns an application subscribed to the
+  requested API version. The check goes through an authenticated internal
+  endpoint `GET /internal/subscription-check?contextPath=...&version=...` that
+  the gateway calls directly against the service (it is **not** reachable via
+  any gateway route) and queries PostgreSQL directly — the system of record,
+  with **no cache** (Redis remains out of scope here). A valid JWT without a
+  subscription (including a subscription held by another user) is rejected
+  with `403` + code `SUBSCRIPTION_REQUIRED`; an unreachable, timed-out, or
+  failed check is rejected with `503` + code `SUBSCRIPTION_SERVICE_UNAVAILABLE`
+  (fail closed — an unsubscribed request is never forwarded). The `path` is
+  parsed as `/runtime/apis/{context}/{version}/...`; the check is
+  lifecycle-agnostic (no `PUBLISHED` requirement) and delivers no admin
+  bypass. All 401/403/503 rejection bodies are generic and never expose the
+  token, upstream URLs, or check responses, and gateway logs still never
+  contain the `Authorization` header or any body. Application
+  **client-credential** enforcement (the Phase 13 credentials) and rate
+  limiting remain planned.
 - **Planned phases (subject to change):** API Gateway client-credential
   authentication (using these credentials), subscription tiers / rate limits,
   credential rotation/revocation and status, the remaining services, the
@@ -227,8 +255,9 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 - **Analytics Service:** aggregated request usage and performance metrics
   published from gateway/service activity.
 - **API Gateway:** central entry point — **routing is implemented (Phase
-  15)** and **JWT authentication is implemented (Phase 16)**; rate limiting,
-  subscription/credential enforcement, and request observability for the
+  15)**, **JWT authentication is implemented (Phase 16)**, and **subscription
+  enforcement for managed API invocations is implemented (Phase 17)**; rate
+  limiting, client-credential enforcement, and request observability for the
   Analytics Service remain planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
@@ -274,5 +303,5 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
-gateway-service/     (implemented — Phases 15–16, routing + JWT authentication)
+gateway-service/     (implemented — Phases 15–17, routing + JWT authentication + subscription enforcement)
 ```

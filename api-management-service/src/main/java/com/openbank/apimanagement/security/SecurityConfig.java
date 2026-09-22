@@ -53,6 +53,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials/{credentialId}").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.GET, "/internal/subscription-check").authenticated()
                         .anyRequest().permitAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

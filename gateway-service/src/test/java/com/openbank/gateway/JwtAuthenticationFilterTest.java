@@ -120,6 +120,30 @@ class JwtAuthenticationFilterTest {
     }
 
     @Test
+    void validTokenStoresTheJwtIdentityAsAnExchangeAttribute() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts")
+                        .header("Authorization", "Bearer " + GatewayTestJwt.admin())
+                        .build());
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isTrue();
+        Object identity = exchange.getAttribute(com.openbank.gateway.filter.JwtAuthenticationFilter.IDENTITY_ATTRIBUTE);
+        assertThat(identity).isNotNull();
+    }
+
+    @Test
+    void runtimeApiPathIsRejectedWithoutToken() {
+        Result result = call(MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts"));
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
     void expiredTokenIsRejected() {
         Result result = call(MockServerHttpRequest.get("/accounts/1")
                 .header("Authorization", "Bearer " + GatewayTestJwt.expiredAdmin()));

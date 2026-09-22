@@ -13,6 +13,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -100,6 +101,13 @@ public class GlobalExceptionHandler {
             fieldErrors.put(ex.getName(), "invalid value");
         }
         return build(HttpStatus.BAD_REQUEST, "TYPE_MISMATCH", "Request parameter has an invalid value", request, fieldErrors);
+    }
+
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParameter(MissingServletRequestParameterException ex, HttpServletRequest request) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        fieldErrors.put(ex.getParameterName(), ex.getParameterName() + " is required");
+        return build(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed", request, fieldErrors);
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

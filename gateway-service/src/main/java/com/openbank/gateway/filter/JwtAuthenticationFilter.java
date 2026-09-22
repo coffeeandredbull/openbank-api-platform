@@ -3,6 +3,7 @@ package com.openbank.gateway.filter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.InvalidJwtException;
+import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.auth.JwtTokenService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,7 +34,10 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private static final String BEARER_PREFIX = "Bearer ";
 
+    public static final String IDENTITY_ATTRIBUTE = JwtAuthenticationFilter.class.getName() + ".identity";
+
     private static final Set<String> PROTECTED_PATH_PREFIXES = Set.of(
+            "/runtime",
             "/apis",
             "/applications",
             "/subscriptions",
@@ -65,9 +69,11 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         if (isPublic(method, path) || !isProtected(path)) {
             return chain.filter(exchange);
         }
-        if (!hasValidToken(exchange)) {
+        JwtIdentity identity = identityFrom(exchange);
+        if (identity == null) {
             return reject(exchange, method, path, startTime);
         }
+        exchange.getAttributes().put(IDENTITY_ATTRIBUTE, identity);
         return chain.filter(exchange);
     }
 
@@ -96,21 +102,20 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         return path.equals(expected);
     }
 
-    private boolean hasValidToken(ServerWebExchange exchange) {
+    private JwtIdentity identityFrom(ServerWebExchange exchange) {
         String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (authorization == null
                 || !authorization.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
-            return false;
+            return null;
         }
         String token = authorization.substring(BEARER_PREFIX.length()).trim();
         if (token.isEmpty()) {
-            return false;
+            return null;
         }
         try {
-            jwtTokenService.validateToken(token);
-            return true;
+            return jwtTokenService.validateToken(token);
         } catch (InvalidJwtException e) {
-            return false;
+            return null;
         }
     }
 
