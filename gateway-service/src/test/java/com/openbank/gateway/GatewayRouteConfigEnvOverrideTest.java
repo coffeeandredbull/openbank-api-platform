@@ -15,7 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(properties = {
         "IDENTITY_SERVICE_URL=http://identity.internal:9001",
         "API_MANAGEMENT_SERVICE_URL=http://api-management.internal:9002",
-        "PAYMENT_SERVICE_URL=http://payment.internal:9003"
+        "PAYMENT_SERVICE_URL=http://payment.internal:9003",
+        "JWT_SECRET=" + GatewayTestJwt.SECRET
 })
 class GatewayRouteConfigEnvOverrideTest {
 

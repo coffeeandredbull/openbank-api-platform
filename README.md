@@ -58,12 +58,12 @@ to them, and manage credentials.
 > foundation, API versioning, API version lifecycle, developer application,
 > subscription and credential management), the Payment Service foundation
 > (Account, Payment, and Transaction domains, Phases 14–), and the API Gateway
-> foundation (Phase 15 — routing, upstream failure handling, health; **no
-> authentication at the gateway yet**) are implemented. The remaining services,
-> gateway authentication, and the portal are planned. See the
-> [architecture document](docs/architecture.md) for details and each file in
-> [`docs/`](docs/) for requirements, database design, security model, and API
-> design.
+> (Phase 15 — routing, upstream failure handling, health; Phase 16 — **JWT
+> authentication at the gateway**) are implemented. The remaining services,
+> subscription/credential enforcement at the gateway, and the portal are
+> planned. See the [architecture document](docs/architecture.md) for details
+> and each file in [`docs/`](docs/) for requirements, database design, security
+> model, and API design.
 
 ## Technology Stack
 
@@ -181,6 +181,24 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   Management's default port (`8081`), while the Identity Service's own default
   port is `8080`; running all three locally therefore requires overriding one
   of them (for example `IDENTITY_SERVICE_URL=http://localhost:8080`).
+- **Phase 16 — API Gateway (JWT authentication):** the gateway now
+  authenticates every request itself using the same HS256 JWT convention the
+  backend services already issue and validate: the `JWT_SECRET` environment
+  variable (identical to the backends' `app.jwt.secret`, minimum 256 bits) plus
+  the Nimbus JOSE library. Only `POST /users`, `POST /auth/login`, and
+  `GET /actuator/health` are public; every other routed path (`/users*`,
+  `/auth*`, `/apis/**`, `/applications/**`, `/subscriptions/**`,
+  `/credentials/**`, `/accounts/**`, `/payments/**`, `/transactions/**`)
+  requires a valid `Authorization: Bearer <JWT>` with a signed, unexpired token
+  carrying `sub` and `role` claims (ADMIN or DEVELOPER). Missing, unparseable,
+  tampered, expired, or wrong-claim tokens are rejected with a generic
+  `401` + code `UNAUTHENTICATED` (`message: "Authentication is required"`) —
+  the gateway never reveals which rule failed. Valid requests are forwarded
+  with the `Authorization` header unchanged, and each backend service still
+  validates the JWT itself (defense in depth). The gateway issues no tokens
+  and performs no business authorization (no subscription or credential
+  checks) — that remains planned. Gateway logs never contain the
+  `Authorization` header or token material.
 - **Planned phases (subject to change):** API Gateway client-credential
   authentication (using these credentials), subscription tiers / rate limits,
   credential rotation/revocation and status, the remaining services, the
@@ -209,8 +227,9 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 - **Analytics Service:** aggregated request usage and performance metrics
   published from gateway/service activity.
 - **API Gateway:** central entry point — **routing is implemented (Phase
-  15)**; JWT validation, rate limiting, subscription enforcement, and request
-  observability for the Analytics Service remain planned.
+  15)** and **JWT authentication is implemented (Phase 16)**; rate limiting,
+  subscription/credential enforcement, and request observability for the
+  Analytics Service remain planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
 - **Shared infrastructure:** PostgreSQL as system of record; Redis for caching,
@@ -255,5 +274,5 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
-gateway-service/     (implemented — Phase 15, routing foundation — no authentication yet)
+gateway-service/     (implemented — Phases 15–16, routing + JWT authentication)
 ```

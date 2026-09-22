@@ -3,8 +3,9 @@
 > This document describes the **planned** REST API conventions for the OpenBank
 > API Platform. Early phases already implemented endpoint sets (Identity,
 > API Management, Payment Service) — each is marked "Implemented so far" below.
-> The Phase 15 gateway is also implemented (routing-only; see the Gateway
-> section). Consistent conventions apply to the Developer Portal-facing APIs and
+> The Phase 15–16 gateway is also implemented (routing + JWT authentication;
+> see the Gateway section). Consistent conventions apply to the Developer
+> Portal-facing APIs and
 > the consumer-facing APIs routed by the gateway. OpenAPI documents for each
 > service will be produced in the relevant service phases.
 
@@ -101,16 +102,18 @@
     verified claims: `X-User-Id`, `X-Roles`, `X-Scopes`, `X-Application-Id`.
   - Note: services treat these headers as **enriched context from the
     gateway**, not as standalone trust; they still check ownership.
-  - **Phase 15 note:** the gateway currently forwards the `Authorization`
-    header untouched and validates nothing (gateway-level JWT validation is a
-    later phase). The `X-*` forwarded headers above are still planned.
+  - **Phase 16 note:** the gateway authenticates presenters itself: it
+    validates the `Authorization: Bearer <jwt>` header (HS256 signature via
+    the `JWT_SECRET` variable, expiry, and mandatory `sub` + `role` claims) and
+    forwards it untouched to services; the `X-*` forwarded headers above are
+    still planned. See Security for the public/protected route split.
 - Application credentials (client id/secret or API key) may be presented at
   token endpoints: `POST /auth/token` with `grant_type` and secrets in the body
   (never in URLs).
 
 ## Example Endpoint Structure
 
-### Gateway (implemented — Phase 15)
+### Gateway (implemented — Phases 15–16)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
 endpoints of its own**; it forwards the existing service paths unchanged:
@@ -124,6 +127,18 @@ endpoints of its own**; it forwards the existing service paths unchanged:
 - The upstream sees exactly the path, query, method, body, and headers the
   client sent — the URI is **not rewritten** (no `StripPrefix`). Any path not
   in the table returns the gateway's own `404`.
+- **Authentication (Phase 16):** the gateway requires
+  `Authorization: Bearer <jwt>` on every routed path except `POST /users`,
+  `POST /auth/login`, and `GET /actuator/health` (method-sensitive: e.g.
+  `GET /users/me`, `GET/DELETE /users/*`, and any other `POST /auth/*` are
+  protected). Tokens must be signed with the shared `JWT_SECRET` (HS256),
+  unexpired, and carry numeric `sub` + `role` (ADMIN or DEVELOPER) claims.
+  Rejections return a stable shape:
+  `{"timestamp", "status":401, "error":"Unauthorized", "path",
+  "code":"UNAUTHENTICATED", "message":"Authentication is required",
+  "fieldErrors":{}}` — the gateway deliberately does not disclose which rule
+  failed. Valid requests are forwarded with the `Authorization` header
+  unchanged; the gateway issues no tokens.
 - Backend responses (including 4xx/5xx error bodies) pass through unchanged.
 - When an upstream is unreachable or exceeds the 2 s connect / 5 s response
   timeout, the gateway itself returns `503` with a **stable error shape** that

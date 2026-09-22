@@ -314,23 +314,41 @@ Implemented behavior:
 Not implemented yet (future phases): balance authorization, real payment
 processing/approval, subscription/scope enforcement, and gateway integration.
 
-## Gateway Foundations — Implemented (Phase 15)
+## Gateway Foundations — Implemented (Phases 15–16)
 
-The new `gateway-service` (Spring Cloud Gateway, port `8080`) is a
-**routing-only** gateway. This is a deliberate, temporary security boundary:
-routing exists, enforcement does not.
+The `gateway-service` (Spring Cloud Gateway, port `8080`) is a routing gateway
+that now also **authenticates** callers. It remains deliberately thin: routing
+and authentication are implemented; authorization and rate limiting are not.
 
 Implemented behavior:
 
-- **No gateway authentication (yet):** the gateway has no Spring Security
-  dependency. It forwards the `Authorization` header untouched and does not
-  inspect, validate, generate, or strip JWTs. Enforcement stays exactly where
-  it was in Phases 6–14: each backend service validates the bearer token
-  locally. Because services still authenticate independently, removing or
-  bypassing the gateway does **not** remove authentication — the gateway is
-  not a single point of trust for request authentication in this phase.
-- **No gateway authorization, subscription checks, rate limiting, or CORS**
-  in this phase — all remain planned.
+- **Gateway JWT authentication (Phase 16):** a global filter runs on every
+  request before routing. Only three paths are public — `POST /users`,
+  `POST /auth/login`, and `GET /actuator/health` (method-sensitive: e.g.
+  `GET /users/me`, `GET/DELETE /users/*`, and any other `POST /auth/*` are
+  protected). All other routed paths require an `Authorization: Bearer <jwt>`:
+  - The token must parse as an HS256 JWT whose signature verifies against the
+    shared `JWT_SECRET` environment variable (the same value as the backends'
+    `app.jwt.secret`, minimum 256 bits; the gateway fails fast on startup if
+    it is missing or too short — no insecure default secret).
+  - It must be unexpired and carry mandatory `sub` (numeric user id) and
+    `role` (`ADMIN` or `DEVELOPER`) claims.
+  - Any failure (missing header, wrong scheme, unparseable, bad signature,
+    expired, missing/invalid claims) returns the same generic `401` with code
+    `UNAUTHENTICATED` and message `Authentication is required`. The gateway
+    **never discloses which check failed** — it leaks no token contents,
+    exception classes, or parsing internals, and rejecting it never exposes
+    the token or secret.
+- **No business authorization at the gateway (yet):** subscription checks,
+  credential/application validation, and rate limiting remain planned. The
+  gateway authenticates only.
+- **Defense in depth is unchanged:** the gateway forwards the `Authorization`
+  header **unchanged** for valid requests, and every backend service still
+  validates the JWT locally as in Phases 6–14. Removing or bypassing the
+  gateway therefore does **not** remove authentication. The gateway also
+  issues/generates no tokens and has no Spring Security dependency; it uses
+  the Nimbus JOSE library directly, mirroring the backend signature/claim
+  checks.
 - **Upstream failures fail closed with a generic error:** if an upstream is
   unreachable (e.g. connection refused) or exceeds the 2 s connect / 5 s
   response timeouts, the gateway returns `503` with code
@@ -340,19 +358,20 @@ Implemented behavior:
   through unchanged, so clients still see the real backend error shape.
 - **Diagnostics-only logging:** each routed request logs method, path, route
   id, status, and duration. The gateway **never logs the `Authorization`
-  header, cookies, or any request/response body** — login passwords and client
-  secrets are invisible to gateway logs.
+  header, JWT/token material, cookies, or any request/response body** — login
+  passwords and client secrets are invisible to gateway logs (tests assert
+  rejected/valid tokens never appear in logs).
 - **Minimal actuator exposure:** only `GET /actuator/health` is exposed; the
   gateway route-discovery endpoints (`/actuator/gateway/...`) are not.
 - **No secrets in configuration:** upstream URLs are environment variables
-  with non-secret localhost defaults. The gateway holds no JWT secret, client
-  secret, or database credential (a configuration test asserts the file
-  contains no secret/password/jwt/token material, and a planned review checks
-  the envs).
+  with non-secret localhost defaults. The JWT secret never appears in gateway
+  configuration — it is read from the `JWT_SECRET` environment variable only
+  (a configuration test asserts the YAML contains no secret/password/jwt/token
+  material).
 
-Not implemented yet (future phases): gateway JWT validation, application
-client-credential verification (using the Phase 13 credentials), subscription
-enforcement, rate limiting, and gateway-issued telemetry.
+Not implemented yet (future phases): application client-credential
+verification (using the Phase 13 credentials), subscription enforcement, rate
+limiting, and gateway-issued telemetry.
 
 ## Authorization / RBAC
 
@@ -445,7 +464,7 @@ enforcement, rate limiting, and gateway-issued telemetry.
 | Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level |
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
-| JWT validation at gateway | **Planned** — not implemented (the Phase 15 gateway forwards `Authorization` untouched; each service validates the JWT locally) |
+| JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
 | Subscription enforcement | **Planned** — not implemented (only the subscription and credential registries exist; gateway/runtime enforcement is a future phase) |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
@@ -453,13 +472,17 @@ enforcement, rate limiting, and gateway-issued telemetry.
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 15 the Identity Service supports stateless bearer request
+> As of Phase 16 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
 > catalog, application, subscription, and credential endpoints with full
 > owner-scoping, and the Payment Service validates the same JWT and enforces
 > owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
 > transaction endpoints (fail closed, no public endpoints). The API Gateway
-> foundation (Phase 15) routes requests to the three services and handles
-> upstream failures, but performs **no gateway authentication, subscription
-> enforcement, rate limiting, or scope enforcement** yet.
+> foundation (Phases 15–16) routes requests to the three services, handles
+> upstream failures, and authenticates every caller against the shared
+> `JWT_SECRET` (`POST /users`, `POST /auth/login`, and health remain public),
+> but performs **no gateway authorization, subscription enforcement, rate
+> limiting, or scope enforcement** yet. Each backend service still validates
+> the JWT locally, so the gateway is not a single point of trust for
+> authentication.

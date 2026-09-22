@@ -3,8 +3,8 @@
 > This document describes the **planned** architecture of the OpenBank API
 > Platform. It is the design target that later phases build toward, one small
 > step at a time. Implemented parts (the Identity, API Management, and Payment
-> services, and the Phase 15 gateway routing foundation) are marked in their
-> sections; everything else remains planned.
+> services, and the Phase 15–16 gateway: routing + JWT authentication) are
+> marked in their sections; everything else remains planned.
 
 ## Overview
 
@@ -94,7 +94,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
-**Implemented (Phase 15 — routing foundations).** The `gateway-service`
+**Implemented (Phases 15–16).** The `gateway-service`
 (Spring Cloud Gateway) listens on port `8080` and performs:
 
 - **Single entry point**: all requests — from the Developer Portal and from
@@ -108,6 +108,16 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   - `/apis/**`, `/applications/**`, `/subscriptions/**`, `/credentials/**` →
     API Management
   - `/accounts/**`, `/payments/**`, `/transactions/**` → Payment
+- **Authentication (Phase 16)**: a global JWT filter validates the
+  `Authorization: Bearer <jwt>` header before routing. Only `POST /users`,
+  `POST /auth/login`, and `GET /actuator/health` are public; all other routed
+  paths require a signed (HS256, shared `JWT_SECRET`), unexpired token with
+  `sub` and `role` (ADMIN or DEVELOPER) claims. Failures return `401` + code
+  `UNAUTHENTICATED` with a generic message and never reveal which check failed.
+  Valid requests keep their `Authorization` header unchanged. The gateway
+  performs **authentication only** — no business authorization (subscription
+  or credential checks) — and issues no tokens. Each backend service still
+  validates the JWT itself (defense in depth).
 - **Upstream failure handling**: when an upstream is unreachable or exceeds the
   connect (2 s) or response (5 s) timeout, the gateway returns `503` with code
   `UPSTREAM_SERVICE_UNAVAILABLE` and a generic message — never the upstream
@@ -115,18 +125,15 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   through unchanged.
 - **Request diagnostics**: each routed request logs method, path, route id,
   status, and duration. Login passwords and credentials are never touched or
-  logged: the gateway never logs the `Authorization` header, cookies, or any
-  request/response body.
+  logged: the gateway never logs the `Authorization` header, JWT/token
+  material, cookies, or any request/response body.
 - **Health**: `GET /actuator/health` is the only exposed actuator endpoint.
-- The Phase 15 gateway performs **no authentication, authorization,
-  subscription enforcement, rate limiting, or CORS handling** — those remain
-  planned (below). Each backend service still validates the JWT itself, so
-  request security is unchanged from Phases 2–14.
+- The Phase 16 gateway performs **no business authorization, subscription
+  enforcement, rate limiting, or CORS handling** — those remain planned
+  (below).
 
 **Planned (later phases):**
 
-- **Authentication**: validates JWT access tokens presented by callers before
-  routing is allowed.
 - **Authorization**: enforces that the caller is permitted to reach the target
   API/route (role, scope, or subscription check).
 - **Subscription enforcement**: verifies the calling application's
@@ -176,9 +183,9 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## Planned Request Flow
 
-> Phase 15 status: the gateway already performs steps 1, 5, 6, and 7 (minus
-> the telemetry). Steps 2–4 (JWT validation, subscription check, rate
-> limiting) are planned.
+> Phase 16 status: the gateway already performs steps 1, 2 (JWT validation —
+> signature, expiry, mandatory claims), 5, 6, and 7 (minus the telemetry).
+> Steps 3–4 (subscription check, rate limiting) are planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.

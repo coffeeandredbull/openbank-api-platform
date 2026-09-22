@@ -24,6 +24,7 @@ class GatewayUpstreamFailureTest {
         registry.add("IDENTITY_SERVICE_URL", () -> unreachableUrl);
         registry.add("API_MANAGEMENT_SERVICE_URL", () -> unreachableUrl);
         registry.add("PAYMENT_SERVICE_URL", () -> unreachableUrl);
+        registry.add("JWT_SECRET", () -> GatewayTestJwt.SECRET);
     }
 
     private static int freePort() {
@@ -41,6 +42,7 @@ class GatewayUpstreamFailureTest {
     void unreachableUpstreamReturnsServiceUnavailableWithSafeErrorBody() {
         byte[] body = webTestClient.get()
                 .uri("/accounts/1")
+                .header("Authorization", "Bearer " + GatewayTestJwt.admin())
                 .exchange()
                 .expectStatus().isEqualTo(503)
                 .expectBody()

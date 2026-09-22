@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
+@SpringBootTest(properties = "JWT_SECRET=" + GatewayTestJwt.SECRET)
 class GatewayRouteConfigTest {
 
     private static final Set<String> REQUIRED_ROUTE_IDS = Set.of(

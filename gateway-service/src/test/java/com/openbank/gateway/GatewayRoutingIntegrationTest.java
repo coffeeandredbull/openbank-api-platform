@@ -44,7 +44,10 @@ class GatewayRoutingIntegrationTest {
         registry.add("IDENTITY_SERVICE_URL", () -> "http://127.0.0.1:" + IDENTITY_SERVER.getAddress().getPort());
         registry.add("API_MANAGEMENT_SERVICE_URL", () -> "http://127.0.0.1:" + API_MANAGEMENT_SERVER.getAddress().getPort());
         registry.add("PAYMENT_SERVICE_URL", () -> "http://127.0.0.1:" + PAYMENT_SERVER.getAddress().getPort());
+        registry.add("JWT_SECRET", () -> GatewayTestJwt.SECRET);
     }
+
+    private static final String VALID_TOKEN = GatewayTestJwt.admin();
 
     private static HttpServer startServer(String name, AtomicReference<CapturedRequest> target) {
         try {
@@ -130,7 +133,11 @@ class GatewayRoutingIntegrationTest {
 
     @Test
     void identitySubpathsAndAuthRouteForwardedWithoutRewriting() {
-        webTestClient.get().uri("/users/42").exchange().expectStatus().isCreated();
+        webTestClient.get()
+                .uri("/users/42")
+                .header("Authorization", "Bearer " + VALID_TOKEN)
+                .exchange()
+                .expectStatus().isCreated();
         assertThat(IDENTITY.get().path()).isEqualTo("/users/42");
 
         webTestClient.post()
@@ -144,17 +151,29 @@ class GatewayRoutingIntegrationTest {
 
     @Test
     void apiManagementRoutesForwardRequestsUntouched() {
-        webTestClient.get().uri("/apis/123").exchange().expectStatus().isCreated();
+        webTestClient.get()
+                .uri("/apis/123")
+                .header("Authorization", "Bearer " + VALID_TOKEN)
+                .exchange()
+                .expectStatus().isCreated();
         assertThat(API_MANAGEMENT.get().method()).isEqualTo("GET");
         assertThat(API_MANAGEMENT.get().path()).isEqualTo("/apis/123");
 
-        webTestClient.get().uri("/applications/5").exchange().expectStatus().isCreated();
+        webTestClient.get()
+                .uri("/applications/5")
+                .header("Authorization", "Bearer " + VALID_TOKEN)
+                .exchange()
+                .expectStatus().isCreated();
         assertThat(API_MANAGEMENT.get().path()).isEqualTo("/applications/5");
     }
 
     @Test
     void paymentRouteForwardsRequestUntouched() {
-        webTestClient.get().uri("/accounts/7").exchange().expectStatus().isCreated();
+        webTestClient.get()
+                .uri("/accounts/7")
+                .header("Authorization", "Bearer " + VALID_TOKEN)
+                .exchange()
+                .expectStatus().isCreated();
         assertThat(PAYMENT.get().method()).isEqualTo("GET");
         assertThat(PAYMENT.get().path()).isEqualTo("/accounts/7");
     }
@@ -163,6 +182,7 @@ class GatewayRoutingIntegrationTest {
     void backendApplicationErrorsPassThroughUnchanged() {
         webTestClient.get()
                 .uri("/apis/999")
+                .header("Authorization", "Bearer " + VALID_TOKEN)
                 .exchange()
                 .expectStatus().isNotFound()
                 .expectBody()
