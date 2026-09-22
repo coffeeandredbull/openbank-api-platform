@@ -479,6 +479,16 @@ gateway-issued telemetry.
   secrets (Docker Compose env / Kubernetes Secrets).
 - **Nothing is hardcoded**; no default passwords committed; example configs use
   placeholders that are overridden per environment.
+- **Redis password (Phase 18):** each service binds `spring.data.redis.password`
+  from the `REDIS_PASSWORD` environment variable (no default value in YAML).
+  An empty/missing value maps to *no password* — no `AUTH` command is ever
+  attempted, and a config test asserts the connection configuration carries no
+  password in that case. The **gateway** declares no `password:` key at all
+  (a configuration test guards that gateway YAML contains no secret-bearing
+  keys). Health responses never include the Redis password: the health endpoint
+  uses `show-details: never` and only the `redisHealth` group's component
+  *status* is visible; Testcontainers tests assert the password does not appear
+  in any `/actuator/health` response body.
 - JWT signing keys can be rotated via configuration.
 - `.gitignore` rules will exclude any local config that carries real values.
 
@@ -522,24 +532,29 @@ gateway-issued telemetry.
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
-| Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
+| Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent. Redis coordinates (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`) are env-bound since Phase 18 and an empty password maps to *no password* (never a literal AUTH); the gateway config declares no password key |
+| Redis infrastructure health (Phase 18) | **Implemented** — all four services connect to Redis (infrastructure only, no caching/rate-limit/token business yet) and monitor it via a dedicated `GET /actuator/health/redisHealth` group (native Redis indicator, `show-components: always`, `show-details: never`); the default `/actuator/health` deliberately excludes Redis so a Redis-less deployment stays `UP`, implemented with a small `HealthEndpointGroups` bean (public Actuator API) because Boot 3.5.16 cannot exclude a contributor from the default group by properties. Health responses never expose the Redis password |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 17 the Identity Service supports stateless bearer request
+> As of Phase 18 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
 > catalog, application, subscription, and credential endpoints with full
 > owner-scoping (and now authenticates the gateway's internal subscription
 > check), and the Payment Service validates the same JWT and enforces
 > owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
-> transaction endpoints (fail closed, no public endpoints). The API Gateway
-> (Phases 15–17) routes requests to the three services, handles upstream
-> failures, authenticates every caller against the shared `JWT_SECRET`
-> (`POST /users`, `POST /auth/login`, and health remain public), and for
-> managed API invocations (`/runtime/apis/**`) additionally enforces that the
-> caller owns an active subscription to the target API version — rejecting
-> unsubscribed callers with `403 SUBSCRIPTION_REQUIRED` and failing closed
-> (`503 SUBSCRIPTION_SERVICE_UNAVAILABLE`) when the check is unavailable — but
-> performs **no client-credential enforcement, rate limiting, or scope
-> enforcement** yet. Each backend service still validates the JWT locally, so
-> the gateway is not a single point of trust for authentication.
+> transaction endpoints (fail closed, no public endpoints except the Phase 18
+> health endpoint). The API Gateway (Phases 15–17) routes requests to the three
+> services, handles upstream failures, authenticates every caller against the
+> shared `JWT_SECRET` (`POST /users`, `POST /auth/login`, and health remain
+> public), and for managed API invocations (`/runtime/apis/**`) additionally
+> enforces that the caller owns an active subscription to the target API
+> version — rejecting unsubscribed callers with `403 SUBSCRIPTION_REQUIRED` and
+> failing closed (`503 SUBSCRIPTION_SERVICE_UNAVAILABLE`) when the check is
+> unavailable — but performs **no client-credential enforcement, rate limiting,
+> or scope enforcement** yet. Each backend service still validates the JWT
+> locally, so the gateway is not a single point of trust for authentication.
+> Redis is connected across all four services (Phase 18) purely as
+> infrastructure with health monitoring via the dedicated `redisHealth` health
+> group — it is used by **no** authentication, authorization, rate-limiting, or
+> revocation function yet.

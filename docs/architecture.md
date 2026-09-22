@@ -3,9 +3,9 @@
 > This document describes the **planned** architecture of the OpenBank API
 > Platform. It is the design target that later phases build toward, one small
 > step at a time. Implemented parts (the Identity, API Management, and Payment
-> services, and the Phase 15–17 gateway: routing + JWT authentication +
-> subscription enforcement) are marked in their sections; everything else
-> remains planned.
+> services; the Phase 15–17 gateway: routing + JWT authentication +
+> subscription enforcement; and the Phase 18 Redis infrastructure integration)
+> are marked in their sections; everything else remains planned.
 
 ## Overview
 
@@ -160,6 +160,8 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   logged: the gateway never logs the `Authorization` header, JWT/token
   material, cookies, or any request/response body.
 - **Health**: `GET /actuator/health` is the only exposed actuator endpoint.
+  Since Phase 18 it reports `UP` **independently of Redis** (see "Redis Role"
+  below); `GET /actuator/health/redisHealth` is the dedicated Redis view.
 - The Phase 17 gateway performs **no client-credential enforcement, rate
   limiting, or CORS handling** — those remain planned (below).
 
@@ -202,14 +204,54 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## Redis Role
 
-- **Cache**: short-lived caching to reduce load on services (e.g. cached API
-  catalog lookups, session/token material).
-- **Token storage**: server-side storage for issued refresh tokens / blacklisted
-  JWTs (revocation support).
-- **Rate-limit counters**: fast, low-latency counters for the gateway's rate
-  limiting before requests reach business services.
-- **Not a system of record.** Redis must always be reconstructible and is never
-  the source of truth for durable data.
+**Implemented (Phase 18) — infrastructure-only integration.** All four services
+(gateway, identity, api-management, payment) now depend on Redis as *plumbed
+infrastructure*: a Lettuce connection is configured and health-monitored, but
+**no business function uses Redis yet** — no caching, rate limiting, sessions,
+token storage, or subscription caching. PostgreSQL remains the **only** system
+of record.
+
+- **Configuration**: each service binds `spring.data.redis.host` / `port` /
+  `password` from the `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
+  environment variables (development defaults `localhost:6379`, no password).
+  An empty or missing `REDIS_PASSWORD` never becomes a literal password —
+  Spring Data Redis maps an empty value to *no password* (no `AUTH` command is
+  attempted; a config test asserts the connection config carries no password).
+  The gateway's `application.yml` declares **no `password:` key at all** (a
+  test guards that gateway configuration never contains secret-bearing keys);
+  a production Redis password is supplied purely via the environment.
+- **Health split** (the platform's liveness must not depend on Redis while
+  Redis is not yet used by any function, yet Redis reachability must be
+  observable):
+  - the default `GET /actuator/health` **excludes** Redis — it stays `UP`
+    whether or not Redis is reachable (only the gateway and PostgreSQL drive
+    the default aggregate);
+  - the dedicated group `GET /actuator/health/redisHealth` reports Redis
+    `UP`/`DOWN` (`503` when down) using the **native Spring Boot Redis health
+    indicator**, with `show-components: always` so the `redis` component
+    status is visible and `show-details: never` so nothing beyond status is
+    exposed. The three backend services now expose the `health` actuator
+    endpoint (previously only the gateway did); `payment-service` permits
+    `GET /actuator/health`/`/actuator/health/**` (it otherwise denies all
+    unlisted paths).
+  - **Why a small `HealthEndpointGroups` bean:** Spring Boot 3.5.16 builds the
+    default health group with an include-all predicate, so a contributor
+    **cannot be excluded from `/actuator/health` by properties**
+    (`management.endpoint.health.group.default.*` is never consulted by the
+    default endpoint). Each service therefore registers a `HealthEndpointGroups`
+    bean built on public Actuator APIs (`HealthEndpointGroups.of(primary,
+    namedGroups)`) whose primary group filters out the `redis` contributor and
+    a named `redisHealth` group re-includes it. This keeps the Redis health
+    indicator fully native and the URLs stable.
+- **Planned (later phases, currently unused):**
+  - **Cache**: short-lived caching to reduce load on services (e.g. cached API
+    catalog lookups, session/token material, the Phase 17 subscription check).
+  - **Token storage**: server-side storage for issued refresh tokens /
+    blacklisted JWTs (revocation support).
+  - **Rate-limit counters**: fast, low-latency counters for the gateway's rate
+    limiting before requests reach business services.
+  - **Not a system of record.** Redis must always be reconstructible and is
+    never the source of truth for durable data.
 
 ## Planned Request Flow
 

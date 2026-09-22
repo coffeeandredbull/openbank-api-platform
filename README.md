@@ -57,14 +57,15 @@ to them, and manage credentials.
 > bearer authentication, RBAC), the API Management Service (API catalog
 > foundation, API versioning, API version lifecycle, developer application,
 > subscription and credential management), the Payment Service foundation
-> (Account, Payment, and Transaction domains, Phases 14–), and the API Gateway
+> (Account, Payment, and Transaction domains, Phases 14–), the API Gateway
 > (Phase 15 — routing, upstream failure handling, health; Phase 16 — **JWT
 > authentication at the gateway**; Phase 17 — **subscription enforcement for
-> managed API invocations**) are implemented. The remaining services,
-> client-credential enforcement at the gateway, and the portal are planned.
-> See the [architecture document](docs/architecture.md) for details
-> and each file in [`docs/`](docs/) for requirements, database design, security
-> model, and API design.
+> managed API invocations**), and **shared Redis infrastructure (Phase 18 —
+> connectivity + health monitoring, no business use yet)** are implemented. The
+> remaining services, client-credential enforcement at the gateway, and the
+> portal are planned. See the [architecture document](docs/architecture.md) for
+> details and each file in [`docs/`](docs/) for requirements, database design,
+> security model, and API design.
 
 ## Technology Stack
 
@@ -227,13 +228,46 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   contain the `Authorization` header or any body. Application
   **client-credential** enforcement (the Phase 13 credentials) and rate
   limiting remain planned.
+- **Phase 18 — Shared Redis infrastructure (connectivity + health):** all four
+  services (gateway, identity, api-management, payment) now include Redis as
+  **plumbed infrastructure only** — **no caching, rate limiting, sessions,
+  token revocation, or subscription caching uses it yet**, and PostgreSQL
+  remains the sole system of record. Each service reads the Redis coordinates
+  from the `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` environment variables
+  (`spring.data.redis.*`, development defaults `localhost:6379` with no
+  password). An empty/missing `REDIS_PASSWORD` deliberately never becomes a
+  literal password (Spring Data Redis maps an empty value to *no password*, so
+  no `AUTH` command is attempted; a config test asserts this). The **gateway's**
+  `application.yml` declares **no `password:` key at all** (an existing test
+  guards that the gateway configuration never contains secret-bearing keys) —
+  if a Redis password is needed it is supplied purely through the environment.
+  **Health is split into two views.** The default `GET /actuator/health` never
+  depends on Redis — it reports `UP` whether or not Redis is reachable, so a
+  Redis-less deployment stays releasable during this infrastructure-only phase.
+  The dedicated `GET /actuator/health/redisHealth` group reports Redis
+  `UP`/`DOWN` (with the native Redis health indicator) so Redis reachability is
+  still observable per service. Spring Boot 3.5.16 **cannot exclude a
+  contributor from the default health group by configuration** (the default
+  group is always built with an include-all predicate), so each service
+  registers a small `HealthEndpointGroups` bean built **only on public Actuator
+  APIs** (`HealthEndpointGroups.of(...)`): the primary group filters out
+  `redis`, and a named `redisHealth` group (`show-components: always`) exposes
+  it. Config tests verify host/port binding, the no-password guard, default
+  health `UP` without Redis, and `redisHealth` `DOWN` (→ `503`) when Redis is
+  unreachable; Testcontainers connectivity tests run a real Redis
+  (`redis:7-alpine`, `--requirepass`) and assert `PING`→`PONG`, `redisHealth`
+  `UP`, and that **no health response ever contains the Redis password**.
+  Payment allows `GET /actuator/health` (previously it denied every unlisted
+  path), and the three backend services now expose the `health` actuator
+  endpoint (previously only the gateway did). **Nothing in Phase 18 stores,
+  caches, or rates anything in Redis.**
 - **Planned phases (subject to change):** API Gateway client-credential
-  authentication (using these credentials), subscription tiers / rate limits,
-  credential rotation/revocation and status, the remaining services, the
-  Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker
-  Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be built in
-  small, explicitly requested phases and verified (compile + tests) at each
-  step.
+  authentication (using these credentials), subscription tiers / Redis-backed
+  rate limits, credential rotation/revocation and status, Redis-backed token
+  revocation and caches, the remaining services, the Developer Portal, shared
+  infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
+  and Kubernetes manifests will be built in small, explicitly requested phases
+  and verified (compile + tests) at each step.
 
 ## Planned Features
 
@@ -255,14 +289,16 @@ infrastructure, and AI features are explicitly out of scope unless requested.
 - **Analytics Service:** aggregated request usage and performance metrics
   published from gateway/service activity.
 - **API Gateway:** central entry point — **routing is implemented (Phase
-  15)**, **JWT authentication is implemented (Phase 16)**, and **subscription
-  enforcement for managed API invocations is implemented (Phase 17)**; rate
-  limiting, client-credential enforcement, and request observability for the
-  Analytics Service remain planned.
+  15)**, **JWT authentication is implemented (Phase 16)**, **subscription
+  enforcement for managed API invocations is implemented (Phase 17)**, and
+  **Redis connectivity is plumbed but unused (Phase 18)**; rate limiting,
+  client-credential enforcement, and request observability for the Analytics
+  Service remain planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
-- **Shared infrastructure:** PostgreSQL as system of record; Redis for caching,
-  token storage, and rate-limit counters.
+- **Shared infrastructure:** PostgreSQL as system of record; Redis is **connected
+  but not yet used for any business function** (Phase 18 — caching, token
+  storage, and rate-limit counters remain planned).
 - **CI/CD & orchestration:** Docker images, Docker Compose for local
   development, GitHub Actions pipelines, Kubernetes manifests.
 
