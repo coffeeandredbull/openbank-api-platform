@@ -122,6 +122,23 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void applicationNotFoundProducesStructured404() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleApplicationNotFound(
+                        new ApplicationNotFoundException(7L), request("GET", "/applications/7"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.path()).isEqualTo("/applications/7");
+        assertThat(body.code()).isEqualTo("APPLICATION_NOT_FOUND");
+        assertThat(body.message()).contains("7");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
     void invalidLifecycleTransitionProducesStructured409() {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
                 handler.handleInvalidLifecycleTransition(

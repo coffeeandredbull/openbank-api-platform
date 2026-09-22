@@ -43,6 +43,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/apis/{apiId}/versions").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/apis/{apiId}/versions/{versionId}").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.PATCH, "/apis/{apiId}/versions/{versionId}/lifecycle").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/applications").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.GET, "/applications").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.GET, "/applications/{applicationId}").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.PATCH, "/applications/{applicationId}").hasAnyRole("ADMIN", "DEVELOPER")
                         .anyRequest().permitAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

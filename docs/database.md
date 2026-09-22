@@ -65,14 +65,31 @@ Phase 9/10 — they remain planned fields. The `subscriptions` reference
 `api_versions` by ID (cross-service reference, consistent with the ownership
 model).
 
+**Implemented so far (Phase 11) — `applications`:** developer applications are
+owned by the **API Management Service** (they previously appeared only in the
+planned Subscription Service section below; the registry was built now in the
+API Management Service because that is where API-centric self-service lives).
+Actual implemented columns: `id`, `name`, `description` (nullable),
+`owner_user_id`, `created_at`, `updated_at`. `owner_user_id` is a logical
+reference to an Identity Service user — there is **no** `users` table here, no
+cross-service foreign key, and no uniqueness constraint on `name` (the same name
+may be reused by the same or different developers). Ownership is enforced by the
+service layer (`owner_user_id` from the JWT `sub` claim), never taken from the
+request body. `created_at` is write-once; `updated_at` changes on update.
+Credentials (client id/secret hashes, API keys) and subscriptions remain planned
+for the Subscription Service and will reference applications by ID.
+
 ### Subscription Service
 
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
-| `applications` | id, owner_user_id, name, description, status, created_at | developer application |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored |
 | `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt) |
-| `subscriptions` | id, application_id, api_version_id, tier_id, status (PENDING/ACTIVE/DENIED/REVOKED), subscribed_at, revoked_at | the link that grants access |
+| `subscriptions` | id, application_id, api_version_id, tier_id, status (PENDING/ACTIVE/DENIED/REVOKED), subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID |
+
+> The `applications` entity is **implemented** in the API Management Service
+> (Phase 11) — see above. The Subscription Service will reference applications
+> by ID when credentials/subscriptions are built.
 
 ### Account Service
 
@@ -102,7 +119,10 @@ model).
 
 ## Important Relationships
 
-- `users` **1─n** `applications` (a developer owns applications).
+- `users` **1─n** `applications` (a developer owns applications; the
+  relationship is logical — `applications.owner_user_id` references an Identity
+  Service user ID with no foreign key, since the tables live in different
+  services).
 - `applications` **1—n** `credentials` — an application holds one
   primary credential set; rotation can create a new generation.
 - `applications` **n—m** `api_versions` **through** `subscriptions` (an app can
@@ -124,8 +144,8 @@ model).
 | Data | Owner service |
 | --- | --- |
 | Users, roles, credentials, refresh tokens | Identity |
-| API catalog, versions, tiers | API Management |
-| Applications, credentials, subscriptions | Subscription |
+| API catalog, versions, tiers, developer applications | API Management |
+| Credentials, subscriptions | Subscription |
 | Accounts, balances | Account |
 | Payments | Payment |
 | Transactions / ledger | Transaction |

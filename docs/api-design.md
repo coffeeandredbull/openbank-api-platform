@@ -156,9 +156,40 @@ the caller cannot choose the initial state when creating a version.
   gateway routing, subscriptions, or traffic. Enforcement of deprecation or
   retirement is intentionally out of scope until those components exist.
 
+**Implemented so far (Phase 11) — developer applications:** developers (and
+admins) can manage their **applications** in the API Management Service. An
+application's owner is the authenticated user: `ownerUserId` is derived from the
+JWT `sub` claim, never from the request body. Ownership is **logical** — the
+`ownerUserId` references an Identity Service user by ID; the API Management
+Service stores no user record and no cross-service foreign key.
+- `POST /applications` — create an application (`name` required,
+  `description` optional); returns `201 Created` with a `Location` header.
+- `GET /applications` — list the caller's **own** applications (name/description
+  owner-scoped).
+- `GET /applications/{applicationId}` — a single owned application.
+- `PATCH /applications/{applicationId}` — partial update of `name`/`description`
+  only. Omitted fields stay unchanged; an empty body is a no-op.
+- Authorization is uniform for `ADMIN` and `DEVELOPER` bearer tokens with
+  owner-based semantics: `ADMIN` owns what it creates and has **no** global
+  access to other users' applications. Accessing an application that does not
+  exist **or is not owned by the caller** returns `404 APPLICATION_NOT_FOUND`
+  (identical to "does not exist" — no existence leak). Unauthenticated,
+  invalid, or expired tokens return `401 UNAUTHENTICATED`.
+- Validation: `name` is required, ≤ 255 characters, with no leading/trailing
+  whitespace; `description` ≤ 2000 characters. Violations return
+  `400 VALIDATION_FAILED`; malformed JSON returns `400 MALFORMED_REQUEST`.
+- Names are **not unique** — the same name may be used by the same or different
+  developers; there is no duplicate check.
+- No credentials (client id/secret, API keys) or subscriptions are attached to
+  applications yet; those remain planned under the Subscription Service.
+  Application deletion is intentionally not part of this phase.
+
 ### Subscription Service
-- `GET    /applications` — list own applications.
-- `POST   /applications` — create application.
+
+> `POST /applications` and `GET /applications` below are **implemented** in the
+> `API Management Service` (Phase 11) — see the Phase 11 section above. They are
+> repeated here as the planned contract for the gateway/portal view; the
+> remaining items (credentials, subscriptions) are not yet implemented.
 - `POST   /applications/{id}/credentials` — issue credential (secret shown once).
 - `POST   /applications/{id}/subscriptions` — subscribe app to API version + tier.
 - `GET    /subscriptions/{id}` — subscription status.

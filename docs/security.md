@@ -131,6 +131,33 @@ Implemented behavior:
 Not implemented yet (future phases): gateway-level authentication, RS256, and
 credential/subscription checks.
 
+## Application Ownership — Implemented (Phase 11)
+
+The API Management Service's **applications** endpoints enforce per-user
+ownership of developer applications.
+
+Implemented behavior:
+
+- **Owner derivation:** the `ownerUserId` of an application always comes from
+  the validated JWT `sub` claim (a `Long` user ID bounded to `roles` from the
+  token). The request body cannot set the owner — a supplied `ownerUserId` in
+  the payload is ignored.
+- **Owner-scoped access:** `GET /applications`, `GET /applications/{id}`,
+  `PATCH /applications/{id}` operate only on applications owned by the caller
+  (repository lookup keyed by `id` **and** `ownerUserId`). A resource that does
+  not exist **or belongs to another user** returns `404 APPLICATION_NOT_FOUND`
+  exactly as if it did not exist — this avoids confirming other users' resources.
+- **Roles:** both `ADMIN` and `DEVELOPER` bearer tokens are accepted, with
+  uniform owner semantics. An `ADMIN` owns what it creates; it has **no**
+  implicit access to other users' applications. Insufficient/unknown roles fail
+  closed with `401 UNAUTHENTICATED`; missing/invalid/expired tokens also map to
+  `401 UNAUTHENTICATED`. There is no `DELETE` endpoint in this phase.
+- **Defense in depth:** authorization lives in the service layer (and DB lookup
+  keys), not in the route matcher; the security filter only authenticates.
+
+Not implemented yet (future phases): application credentials (client
+id/secret/API keys), subscription checks, and profile/scope enforcement.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -210,6 +237,7 @@ credential/subscription checks.
 | Request authentication (bearer filter) | **Implemented (Phase 7)** — `Authorization: Bearer <jwt>` validated per request in the Identity Service; stateless, no DB lookup |
 | RBAC roles & scopes | **Partially implemented (Phase 7)** — `ADMIN`/`DEVELOPER` enforced as `ROLE_ADMIN`/`ROLE_DEVELOPER` on `/test/*` endpoints; scopes still planned |
 | Shared JWT validation & RBAC (other services) | **Partially implemented (Phase 8)** — the API Management Service validates the same JWT locally (`JWT_SECRET`) and enforces `ADMIN`/`DEVELOPER` roles on its catalog endpoints |
+| Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
 | JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
 | Subscription enforcement | **Planned** — not implemented |
 | Rate limiting | **Planned** — not implemented |

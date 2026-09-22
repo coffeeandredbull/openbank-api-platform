@@ -57,8 +57,8 @@ Payment, Transaction, and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, subscriptions tiers (plan definitions), documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". |
-| **Subscription Service** | Owns developer applications and API subscriptions. Links a developer application to an API version under a rate-limit tier and provisions credentials (API key / client ID + secret). Enforces whether an application is actually allowed to call an API. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11): who owns which application, with ownership enforced from JWT claims. |
+| **Subscription Service** | Owns API subscriptions and credentials. Links a developer application (owned by the API Management Service) to an API version under a rate-limit tier and provisions credentials (API key / client ID + secret). Enforces whether an application is actually allowed to call an API. |
 | **Account Service** | Owns bank account entities and balances. Authorizes balance reads and updates. Payment and Transaction services consult it for balance effects. |
 | **Payment Service** | Initiates and processes payments. Validates payment instructions against accounts, applies business rules, and records payment outcomes. |
 | **Transaction Service** | Owns the ledger of transactions. Records and queries transaction history for accounts, including the entries produced by payments. |

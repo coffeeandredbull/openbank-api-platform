@@ -24,10 +24,15 @@
   retired).
 - The API Management Service is the source of truth for "which API versions
   exist and how they are routed".
+- Developers can manage their **applications** (implemented, Phase 11): create
+  (`POST /applications`), list own, fetch one, and partially update
+  (`PATCH`). Applications are owned per user (owner from the JWT `sub` claim);
+  names are not unique; no deletion in this phase.
 
 ### Subscriptions
 
-- Developers can register **applications** (name, description, owner).
+- Applications are **implemented** (Phase 11, in the API Management Service);
+  credentials and subscriptions below remain planned.
 - An application can be **subscribed** to an API version under a rate-limit
   **tier**.
 - Subscriptions can be approved/denied (per tier policy) and revoked.

@@ -51,6 +51,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "INVALID_LIFECYCLE_TRANSITION", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(ApplicationNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleApplicationNotFound(ApplicationNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "APPLICATION_NOT_FOUND", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

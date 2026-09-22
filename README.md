@@ -58,11 +58,11 @@ to them, and manage credentials.
 
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC) and the API Management Service (API catalog
-> foundation, API versioning, and API version lifecycle) are implemented. The
-> remaining services, the gateway, and the portal are planned. See the
-> [architecture document](docs/architecture.md) for details and each file in
-> [`docs/`](docs/) for requirements, database design, security model, and API
-> design.
+> foundation, API versioning, API version lifecycle, and developer application
+> management) are implemented. The remaining services, the gateway, and the
+> portal are planned. See the [architecture document](docs/architecture.md) for
+> details and each file in [`docs/`](docs/) for requirements, database design,
+> security model, and API design.
 
 ## Technology Stack
 
@@ -108,6 +108,16 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   Ownership rules carry over from Phase 9 (cross-API reads/updates → `404`
   without leaking existence). Lifecycle is metadata-only for now; it does not yet
   control gateway routing, subscriptions, or deprecation/retirement enforcement.
+- **Phase 11 — API Management Service (developer applications):** developers
+  and admins can manage their applications with `POST /applications`,
+  `GET /applications`, `GET /applications/{applicationId}`, and
+  `PATCH /applications/{applicationId}`. Ownership is enforced from the JWT
+  `sub` claim (`ownerUserId`), never from the request body; the service keeps no
+  user rows (logical cross-service reference to the Identity Service). All
+  reads/updates are owner-scoped — accessing another user's application returns
+  `404 APPLICATION_NOT_FOUND` with no existence leak. Names are not unique.
+  `ADMIN` owns what it creates and has no global access. No credentials,
+  subscriptions, or deletion yet (planned).
 - **Planned phases (subject to change):** subscriptions, the remaining services,
   the API Gateway, the Developer Portal, shared infrastructure (PostgreSQL/Redis
   via Docker Compose), CI/CD (GitHub Actions) and Kubernetes manifests will be
@@ -172,5 +182,5 @@ docs/
 ├── security.md
 └── api-design.md
 identity-service/    (implemented — Phases 2–7)
-api-management-service/  (implemented — Phases 8–10, API catalog + versioning + lifecycle)
+api-management-service/  (implemented — Phases 8–11, API catalog + versioning + lifecycle + applications)
 ```
