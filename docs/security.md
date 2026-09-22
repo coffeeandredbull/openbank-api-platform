@@ -314,6 +314,46 @@ Implemented behavior:
 Not implemented yet (future phases): balance authorization, real payment
 processing/approval, subscription/scope enforcement, and gateway integration.
 
+## Gateway Foundations — Implemented (Phase 15)
+
+The new `gateway-service` (Spring Cloud Gateway, port `8080`) is a
+**routing-only** gateway. This is a deliberate, temporary security boundary:
+routing exists, enforcement does not.
+
+Implemented behavior:
+
+- **No gateway authentication (yet):** the gateway has no Spring Security
+  dependency. It forwards the `Authorization` header untouched and does not
+  inspect, validate, generate, or strip JWTs. Enforcement stays exactly where
+  it was in Phases 6–14: each backend service validates the bearer token
+  locally. Because services still authenticate independently, removing or
+  bypassing the gateway does **not** remove authentication — the gateway is
+  not a single point of trust for request authentication in this phase.
+- **No gateway authorization, subscription checks, rate limiting, or CORS**
+  in this phase — all remain planned.
+- **Upstream failures fail closed with a generic error:** if an upstream is
+  unreachable (e.g. connection refused) or exceeds the 2 s connect / 5 s
+  response timeouts, the gateway returns `503` with code
+  `UPSTREAM_SERVICE_UNAVAILABLE` and a fixed human message. The response never
+  contains the upstream host, port, URL, exception class, or stack trace
+  (covered by tests). Backend application errors (401/403/404/...) pass
+  through unchanged, so clients still see the real backend error shape.
+- **Diagnostics-only logging:** each routed request logs method, path, route
+  id, status, and duration. The gateway **never logs the `Authorization`
+  header, cookies, or any request/response body** — login passwords and client
+  secrets are invisible to gateway logs.
+- **Minimal actuator exposure:** only `GET /actuator/health` is exposed; the
+  gateway route-discovery endpoints (`/actuator/gateway/...`) are not.
+- **No secrets in configuration:** upstream URLs are environment variables
+  with non-secret localhost defaults. The gateway holds no JWT secret, client
+  secret, or database credential (a configuration test asserts the file
+  contains no secret/password/jwt/token material, and a planned review checks
+  the envs).
+
+Not implemented yet (future phases): gateway JWT validation, application
+client-credential verification (using the Phase 13 credentials), subscription
+enforcement, rate limiting, and gateway-issued telemetry.
+
 ## Authorization / RBAC
 
 - **Roles** (`USER`, `ADMIN`, etc.) determine coarse access (self-service vs.
@@ -404,7 +444,8 @@ processing/approval, subscription/scope enforcement, and gateway integration.
 | Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
 | Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level |
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
-| JWT validation at gateway | **Planned** — not implemented (Identity Service validates at the request level) |
+| Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
+| JWT validation at gateway | **Planned** — not implemented (the Phase 15 gateway forwards `Authorization` untouched; each service validates the JWT locally) |
 | Subscription enforcement | **Planned** — not implemented (only the subscription and credential registries exist; gateway/runtime enforcement is a future phase) |
 | Rate limiting | **Planned** — not implemented |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
@@ -412,12 +453,13 @@ processing/approval, subscription/scope enforcement, and gateway integration.
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 14 the Identity Service supports stateless bearer request
+> As of Phase 15 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
 > catalog, application, subscription, and credential endpoints with full
 > owner-scoping, and the Payment Service validates the same JWT and enforces
 > owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
-> transaction endpoints (fail closed, no public endpoints). There is **no
-> gateway authentication, subscription enforcement, or scope enforcement**
-> yet.
+> transaction endpoints (fail closed, no public endpoints). The API Gateway
+> foundation (Phase 15) routes requests to the three services and handles
+> upstream failures, but performs **no gateway authentication, subscription
+> enforcement, rate limiting, or scope enforcement** yet.

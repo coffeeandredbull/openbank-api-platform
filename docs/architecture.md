@@ -1,8 +1,10 @@
 # Architecture
 
 > This document describes the **planned** architecture of the OpenBank API
-> Platform. Nothing described here is implemented yet. It is the design target
-> that later phases build toward, one small step at a time.
+> Platform. It is the design target that later phases build toward, one small
+> step at a time. Implemented parts (the Identity, API Management, and Payment
+> services, and the Phase 15 gateway routing foundation) are marked in their
+> sections; everything else remains planned.
 
 ## Overview
 
@@ -92,8 +94,37 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
+**Implemented (Phase 15 — routing foundations).** The `gateway-service`
+(Spring Cloud Gateway) listens on port `8080` and performs:
+
 - **Single entry point**: all requests — from the Developer Portal and from
   external API consumers — enter through the gateway.
+- **Routing**: routes requests to the correct backend service based on path,
+  without rewriting the URI. Method, path, query, body, and headers are
+  forwarded untouched. Upstream base URLs are configured per environment with
+  the `IDENTITY_SERVICE_URL`, `API_MANAGEMENT_SERVICE_URL`, and
+  `PAYMENT_SERVICE_URL` variables:
+  - `/users/**`, `/auth/**` → Identity
+  - `/apis/**`, `/applications/**`, `/subscriptions/**`, `/credentials/**` →
+    API Management
+  - `/accounts/**`, `/payments/**`, `/transactions/**` → Payment
+- **Upstream failure handling**: when an upstream is unreachable or exceeds the
+  connect (2 s) or response (5 s) timeout, the gateway returns `503` with code
+  `UPSTREAM_SERVICE_UNAVAILABLE` and a generic message — never the upstream
+  host, port, URL, or stack trace. Backend application errors (4xx/5xx) pass
+  through unchanged.
+- **Request diagnostics**: each routed request logs method, path, route id,
+  status, and duration. Login passwords and credentials are never touched or
+  logged: the gateway never logs the `Authorization` header, cookies, or any
+  request/response body.
+- **Health**: `GET /actuator/health` is the only exposed actuator endpoint.
+- The Phase 15 gateway performs **no authentication, authorization,
+  subscription enforcement, rate limiting, or CORS handling** — those remain
+  planned (below). Each backend service still validates the JWT itself, so
+  request security is unchanged from Phases 2–14.
+
+**Planned (later phases):**
+
 - **Authentication**: validates JWT access tokens presented by callers before
   routing is allowed.
 - **Authorization**: enforces that the caller is permitted to reach the target
@@ -102,8 +133,6 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   subscription against the target API version.
 - **Rate limiting**: applies per-application (and per-tier) request limits,
   backed by Redis counters; returns `429 Too Many Requests` on exceed.
-- **Routing**: routes requests to the correct backend service based on the
-  requested API version and path.
 - **Observability**: emits request telemetry for the Analytics Service.
 - The gateway stays thin about business logic; it routes and enforces, but does
   not implement account, payment, or transaction rules.
@@ -146,6 +175,10 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   the source of truth for durable data.
 
 ## Planned Request Flow
+
+> Phase 15 status: the gateway already performs steps 1, 5, 6, and 7 (minus
+> the telemetry). Steps 2–4 (JWT validation, subscription check, rate
+> limiting) are planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.

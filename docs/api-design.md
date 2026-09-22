@@ -3,9 +3,10 @@
 > This document describes the **planned** REST API conventions for the OpenBank
 > API Platform. Early phases already implemented endpoint sets (Identity,
 > API Management, Payment Service) — each is marked "Implemented so far" below.
-> Consistent conventions apply to the Developer Portal-facing APIs and the
-> consumer-facing APIs routed by the gateway. OpenAPI documents for each service
-> will be produced in the relevant service phases.
+> The Phase 15 gateway is also implemented (routing-only; see the Gateway
+> section). Consistent conventions apply to the Developer Portal-facing APIs and
+> the consumer-facing APIs routed by the gateway. OpenAPI documents for each
+> service will be produced in the relevant service phases.
 
 ## REST Conventions
 
@@ -100,11 +101,50 @@
     verified claims: `X-User-Id`, `X-Roles`, `X-Scopes`, `X-Application-Id`.
   - Note: services treat these headers as **enriched context from the
     gateway**, not as standalone trust; they still check ownership.
+  - **Phase 15 note:** the gateway currently forwards the `Authorization`
+    header untouched and validates nothing (gateway-level JWT validation is a
+    later phase). The `X-*` forwarded headers above are still planned.
 - Application credentials (client id/secret or API key) may be presented at
   token endpoints: `POST /auth/token` with `grant_type` and secrets in the body
   (never in URLs).
 
 ## Example Endpoint Structure
+
+### Gateway (implemented — Phase 15)
+
+The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
+endpoints of its own**; it forwards the existing service paths unchanged:
+
+| Gateway path | Upstream | Env var (development default) |
+| --- | --- | --- |
+| `/users/**`, `/auth/**` | Identity | `IDENTITY_SERVICE_URL` (`http://localhost:8081`) |
+| `/apis/**`, `/applications/**`, `/subscriptions/**`, `/credentials/**` | API Management | `API_MANAGEMENT_SERVICE_URL` (`http://localhost:8081`) |
+| `/accounts/**`, `/payments/**`, `/transactions/**` | Payment | `PAYMENT_SERVICE_URL` (`http://localhost:8082`) |
+
+- The upstream sees exactly the path, query, method, body, and headers the
+  client sent — the URI is **not rewritten** (no `StripPrefix`). Any path not
+  in the table returns the gateway's own `404`.
+- Backend responses (including 4xx/5xx error bodies) pass through unchanged.
+- When an upstream is unreachable or exceeds the 2 s connect / 5 s response
+  timeout, the gateway itself returns `503` with a **stable error shape** that
+  never includes the upstream host, port, or URL:
+
+  ```json
+  {
+    "timestamp": "2026-09-22T12:00:00Z",
+    "status": 503,
+    "error": "Service Unavailable",
+    "code": "UPSTREAM_SERVICE_UNAVAILABLE",
+    "message": "The requested service is currently unavailable"
+  }
+  ```
+
+- `GET /actuator/health` → `{"status":"UP"}` — the only exposed actuator
+  endpoint (the gateway route-discovery endpoints are not exposed).
+- Development note: the gateway's Identity default URL (`8081`) collides with
+  API Management's default port (`8081`), while the Identity Service's own
+  default port is `8080`. Running all three locally therefore requires
+  overriding one of them, e.g. `IDENTITY_SERVICE_URL=http://localhost:8080`.
 
 ### Identity Service (behind gateway)
 - `POST /api/v1/auth/register` — register user.

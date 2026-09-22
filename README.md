@@ -56,9 +56,11 @@ to them, and manage credentials.
 > **Status note:** The Identity Service (registration, login, JWT issuance,
 > bearer authentication, RBAC), the API Management Service (API catalog
 > foundation, API versioning, API version lifecycle, developer application,
-> subscription and credential management), and the Payment Service foundation
-> (Account, Payment, and Transaction domains, Phases 14–) are implemented. The
-> remaining services, the gateway, and the portal are planned. See the
+> subscription and credential management), the Payment Service foundation
+> (Account, Payment, and Transaction domains, Phases 14–), and the API Gateway
+> foundation (Phase 15 — routing, upstream failure handling, health; **no
+> authentication at the gateway yet**) are implemented. The remaining services,
+> gateway authentication, and the portal are planned. See the
 > [architecture document](docs/architecture.md) for details and each file in
 > [`docs/`](docs/) for requirements, database design, security model, and API
 > design.
@@ -157,6 +159,28 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   global access, and the API never exposes balances, client secrets, or other
   users' data. No real payment processing, balances/wallets, refunds,
   settlement, or lifecycle endpoints yet (planned).
+- **Phase 15 — API Gateway (routing foundations):** a new `gateway-service`
+  (Spring Cloud Gateway, port `8080`) becomes the single entry point. It
+  routes nine path prefixes to the backend services without rewriting the
+  URI: `/users/**` and `/auth/**` → Identity, `/apis/**`, `/applications/**`,
+  `/subscriptions/**`, and `/credentials/**` → API Management, and
+  `/accounts/**`, `/payments/**`, and `/transactions/**` → Payment. Upstream
+  base URLs come from the `IDENTITY_SERVICE_URL`, `API_MANAGEMENT_SERVICE_URL`,
+  and `PAYMENT_SERVICE_URL` environment variables (development defaults:
+  Identity `http://localhost:8081`, API Management `http://localhost:8081`,
+  Payment `http://localhost:8082`). Method, path, query, body, and headers are
+  forwarded untouched; backend 4xx/5xx responses pass through unchanged. When
+  an upstream is unreachable or times out (2 s connect, 5 s response), the
+  gateway returns `503` with code `UPSTREAM_SERVICE_UNAVAILABLE` and a generic
+  message — never the upstream host, port, URL, or stack trace. Each routed
+  request logs method, path, route id, status, and duration but never the
+  `Authorization` header or any body. `GET /actuator/health` is the only
+  exposed actuator endpoint. **No authentication happens at the gateway in
+  this phase** — backend JWT enforcement is unchanged. Development quirk: the
+  gateway's Identity default URL (`http://localhost:8081`) collides with API
+  Management's default port (`8081`), while the Identity Service's own default
+  port is `8080`; running all three locally therefore requires overriding one
+  of them (for example `IDENTITY_SERVICE_URL=http://localhost:8080`).
 - **Planned phases (subject to change):** API Gateway client-credential
   authentication (using these credentials), subscription tiers / rate limits,
   credential rotation/revocation and status, the remaining services, the
@@ -184,8 +208,9 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   settlement, and richer transaction history.
 - **Analytics Service:** aggregated request usage and performance metrics
   published from gateway/service activity.
-- **API Gateway:** central entry point — routing, JWT validation, rate
-  limiting, subscription enforcement, request observability.
+- **API Gateway:** central entry point — **routing is implemented (Phase
+  15)**; JWT validation, rate limiting, subscription enforcement, and request
+  observability for the Analytics Service remain planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
 - **Shared infrastructure:** PostgreSQL as system of record; Redis for caching,
@@ -230,4 +255,5 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
+gateway-service/     (implemented — Phase 15, routing foundation — no authentication yet)
 ```

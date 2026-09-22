@@ -1,0 +1,54 @@
+server:
+  port: ${GATEWAY_PORT:8080}
+
+spring:
+  application:
+    name: gateway-service
+  cloud:
+    gateway:
+      httpclient:
+        connect-timeout: 2000
+        response-timeout: 5s
+      routes:
+        - id: identity_users
+          uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/users/**
+        - id: identity_auth
+          uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/auth/**
+        - id: api_management_apis
+          uri: ${API_MANAGEMENT_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/apis/**
+        - id: api_management_applications
+          uri: ${API_MANAGEMENT_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/applications/**
+        - id: api_management_subscriptions
+          uri: ${API_MANAGEMENT_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/subscriptions/**
+        - id: api_management_credentials
+          uri: ${API_MANAGEMENT_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/credentials/**
+        - id: payment_accounts
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/accounts/**
+        - id: payment_payments
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/payments/**
+        - id: payment_transactions
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/transactions/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
