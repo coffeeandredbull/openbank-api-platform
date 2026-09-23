@@ -38,7 +38,15 @@ public class RedisRateLimitService implements RateLimitService {
 
     @Override
     public Decision evaluate(long userId, String contextPath, String version) {
-        String key = keyGenerator.keyFor(userId, contextPath, version);
+        return evaluateWithKey(keyGenerator.keyFor(userId, contextPath, version));
+    }
+
+    @Override
+    public Decision evaluateForApplication(long applicationId, String contextPath, String version) {
+        return evaluateWithKey(keyGenerator.keyForApplication(applicationId, contextPath, version));
+    }
+
+    private Decision evaluateWithKey(String key) {
         try {
             String currentValue = redisTemplate.execute(
                     INCR_AND_EXPIRE_ONCE,

@@ -4,6 +4,8 @@ public interface RateLimitService {
 
     Decision evaluate(long userId, String contextPath, String version);
 
+    Decision evaluateForApplication(long applicationId, String contextPath, String version);
+
     enum State {
         ALLOWED, DENIED, UNAVAILABLE
     }

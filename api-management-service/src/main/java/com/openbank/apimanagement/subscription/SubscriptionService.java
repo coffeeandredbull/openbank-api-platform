@@ -81,4 +81,17 @@ public class SubscriptionService {
         }
         return subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(apiVersion.getId(), ownerUserId);
     }
+
+    @Transactional(readOnly = true)
+    public boolean isSubscribedByApplication(Long applicationId, String contextPath, String version) {
+        Api api = apiRepository.findByContextPath(contextPath).orElse(null);
+        if (api == null) {
+            return false;
+        }
+        ApiVersion apiVersion = apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
+        if (apiVersion == null) {
+            return false;
+        }
+        return subscriptionRepository.existsByApiVersionIdAndApplicationId(apiVersion.getId(), applicationId);
+    }
 }

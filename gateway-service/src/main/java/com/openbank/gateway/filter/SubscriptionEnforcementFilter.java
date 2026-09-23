@@ -74,6 +74,9 @@ public class SubscriptionEnforcementFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange);
         }
         long startTime = System.currentTimeMillis();
+        if (exchange.getAttribute(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE) != null) {
+            return enforceForApplication(exchange, chain, path, startTime);
+        }
         if (exchange.getAttribute(JwtAuthenticationFilter.IDENTITY_ATTRIBUTE) == null) {
             return writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                     MESSAGE_UNAVAILABLE, path, startTime);
@@ -98,6 +101,23 @@ public class SubscriptionEnforcementFilter implements GlobalFilter, Ordered {
                     case UNAVAILABLE -> writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                             MESSAGE_UNAVAILABLE, path, startTime);
                 });
+    }
+
+    private Mono<Void> enforceForApplication(
+            ServerWebExchange exchange, GatewayFilterChain chain, String path, long startTime) {
+        ContextVersion target = parse(path);
+        Boolean subscribed = exchange.getAttribute(
+                ClientCredentialAuthenticationFilter.APPLICATION_SUBSCRIBED_ATTRIBUTE);
+        if (target == null || !Boolean.TRUE.equals(subscribed)) {
+            return writeError(exchange, HttpStatus.FORBIDDEN, CODE_REQUIRED,
+                    MESSAGE_REQUIRED, path, startTime);
+        }
+        log.info("gateway subscription check allowed method={} path={} routeId={} durationMs={}",
+                requestMethod(exchange),
+                path,
+                routeId(exchange),
+                System.currentTimeMillis() - startTime);
+        return chain.filter(exchange);
     }
 
     private boolean isRuntimeApiPath(String path) {

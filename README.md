@@ -57,15 +57,18 @@ to them, and manage credentials.
 > bearer authentication, RBAC), the API Management Service (API catalog
 > foundation, API versioning, API version lifecycle, developer application,
 > subscription and credential management), the Payment Service foundation
-> (Account, Payment, and Transaction domains, Phases 14–), the API Gateway
-> (Phase 15 — routing, upstream failure handling, health; Phase 16 — **JWT
-> authentication at the gateway**; Phase 17 — **subscription enforcement for
-> managed API invocations**), and **shared Redis infrastructure (Phase 18 —
-> connectivity + health monitoring, no business use yet)** are implemented. The
-> remaining services, client-credential enforcement at the gateway, and the
-> portal are planned. See the [architecture document](docs/architecture.md) for
-> details and each file in [`docs/`](docs/) for requirements, database design,
-> security model, and API design.
+> (Account, Payment, and Transaction domains), the API Gateway (Phase 15 —
+> routing, upstream failure handling, health; Phase 16 — **JWT authentication
+> at the gateway**; Phase 17 — **subscription enforcement for JWT-authenticated
+> managed API invocations**; Phase 20 — runtime upstream resolution hardening;
+> Phase 21 — **client-credential authentication, application-scoped
+> subscription enforcement, and Redis-backed application rate limiting**), and
+> **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
+> now with real rate-limit counters since Phase 21)** are implemented. The
+> remaining services and the portal are planned. See the
+> [architecture document](docs/architecture.md) for details and each file in
+> [`docs/`](docs/) for requirements, database design, security model, and API
+> design.
 
 ## Technology Stack
 
@@ -276,13 +279,51 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   returns `503` + code `UPSTREAM_SERVICE_UNAVAILABLE` with a fixed, leak-free
   message, and the authentication → subscription enforcement → rate limiting →
   forwarding order is unchanged.
-- **Planned phases (subject to change):** API Gateway client-credential
-  authentication (using these credentials), subscription tiers / Redis-backed
-  rate limits, credential rotation/revocation and status, Redis-backed token
-  revocation and caches, the remaining services, the Developer Portal, shared
-  infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
-  and Kubernetes manifests will be built in small, explicitly requested phases
-  and verified (compile + tests) at each step.
+- **Phase 21 — API Gateway (client credentials, application subscriptions &
+  rate limiting):** managed API invocations (`/runtime/apis/**`) now accept
+  **application client credentials** — `Authorization: Basic
+  base64(clientId:clientSecret)` using the Phase 13 credentials — as an
+  alternative to a user JWT. The gateway decodes the pair, derives the API
+  version from the path (`/runtime/apis/{context}/{version}/...`), and calls the
+  API Management Service's internal, self-authenticating endpoint
+  `GET /internal/credential-check?contextPath={context}&version={version}` with
+  the **same Basic header** (it is not reachable through any gateway route). The
+  service looks the credential up by `clientId`, verifies the secret with
+  BCrypt `matches` against the stored hash, and returns, from a **direct
+  PostgreSQL query** (the system of record — no cache),
+  `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool}`
+  (failures return `{"authenticated":false}`); the plaintext secret or its hash
+  is never stored, returned, forwarded, or logged anywhere in the exchange.
+  Outcomes: unknown/malformed credentials → `401` + code
+  `CLIENT_CREDENTIAL_INVALID`; the check is unreachable, returns 5xx, or a
+  malformed body → `503` + code `CREDENTIAL_SERVICE_UNAVAILABLE` (**fail
+  closed** — an unverified request is never forwarded); valid credentials but
+  the **authenticated application itself** is not subscribed to the target API
+  version → `403` + code `SUBSCRIPTION_REQUIRED` (subscription is decided by
+  the same single check — no second network call — and identity is the
+  application, never a user); a malformed runtime path with Basic → `403`
+  (mirroring the JWT flow). The Basic header is **stripped before forwarding**,
+  so the consumed backend never sees the credentials. JWT (user) invocation is
+  unchanged (Bearer forwarded intact, `Bearer` + `Basic` together → the
+  client-credential flow wins), subscription enforcement and rate limiting take
+  the same application identity, and platform-management routes still require a
+  Bearer JWT (Basic there → `401` `UNAUTHENTICATED`). Both flows are now
+  **rate limited via Redis** — fixed-window counters per API version, keyed
+  `rate_limit:user:{userId}:{context}:{version}` (user flow) and
+  `rate_limit:app:{applicationId}:{context}:{version}` (application flow, added
+  here): the limit (`RATE_LIMIT_REQUESTS`, default `100`) is evaluated before
+  routing, over-limit requests get `429` + code `RATE_LIMIT_EXCEEDED` with a
+  `Retry-After` header, and a Redis failure returns `503` + code
+  `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed) — this is Redis's **first
+  business use**. All new rejection bodies keep the stable
+  `{timestamp,status,error,path,code,message,fieldErrors}` shape and never
+  expose the credentials, hashes, upstream URLs, or internal responses.
+- **Planned phases (subject to change):** subscription tiers, credential
+  rotation/revocation and status, Redis-backed token revocation and caches,
+  the remaining services, the Developer Portal, shared infrastructure
+  (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions) and Kubernetes
+  manifests will be built in small, explicitly requested phases and verified
+  (compile + tests) at each step.
 
 ## Planned Features
 
@@ -295,7 +336,8 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   tiers, rate-limit enforcement, and gateway-side credential verification.
   Basic application, subscription, and application credential management is
   already implemented in the API Management Service (Phases 11–13). The API
-  Gateway will later authenticate applications with the issued credentials.
+  Gateway already authenticates applications with the issued client credentials
+  and enforces the application's subscription and API rate limit (Phase 21).
 - **Account / Payment / Transaction:** the `payment-service` already hosts the
   Account, Payment, and Transaction foundations (Phase 14) — one account per
   user, `PENDING` payment creation, and transaction records of type `PAYMENT`.
@@ -305,10 +347,11 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   published from gateway/service activity.
 - **API Gateway:** central entry point — **routing is implemented (Phase
   15)**, **JWT authentication is implemented (Phase 16)**, **subscription
-  enforcement for managed API invocations is implemented (Phase 17)**, and
-  **Redis connectivity is plumbed but unused (Phase 18)**; rate limiting,
-  client-credential enforcement, and request observability for the Analytics
-  Service remain planned.
+  enforcement for managed API invocations is implemented (Phases 17 and 21 —
+  JWT and application client credentials)**, **Redis-backed rate limiting is
+  implemented (per-user and per-application, Phase 21)**, and **Redis
+  connectivity is plumbed (Phase 18) and now used for rate-limit counters**;
+  request observability for the Analytics Service remains planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
 - **Shared infrastructure:** PostgreSQL as system of record; Redis is **connected
@@ -354,5 +397,5 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
-gateway-service/     (implemented — Phases 15–17, routing + JWT authentication + subscription enforcement)
+gateway-service/     (implemented — Phases 15–21, routing + JWT/client-credential authentication + subscription enforcement + Redis rate limiting)
 ```

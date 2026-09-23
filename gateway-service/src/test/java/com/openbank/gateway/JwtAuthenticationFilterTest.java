@@ -214,4 +214,23 @@ class JwtAuthenticationFilterTest {
         Result result = call(MockServerHttpRequest.get("/no-such-route"));
         assertThat(result.forwarded()).isTrue();
     }
+
+    @Test
+    void clientCredentialRequestsSkipJwtAuthenticationEvenWithAnInvalidBearerHeader() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts")
+                        .header("Authorization", "Bearer not.a.jwt")
+                        .build());
+        exchange.getAttributes().put(
+                com.openbank.gateway.filter.ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE,
+                new com.openbank.gateway.auth.ClientCredentialIdentity("client-abc", 12L, 42L));
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isTrue();
+        assertThat(exchange.getResponse().getStatusCode()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+    }
 }

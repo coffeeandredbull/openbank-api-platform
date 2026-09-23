@@ -99,4 +99,26 @@ class RedisRateLimitServiceTest {
         assertThat(keysCaptor.getValue()).containsExactly("rate_limit:7:/payments:v1");
         assertThat(argsCaptor.getAllValues()).containsExactly("60");
     }
+
+    @Test
+    void applicationEvaluationUsesAnApplicationScopedCounterKey() {
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn("1");
+
+        service.evaluateForApplication(12, "/payments", "v1");
+
+        ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
+        verify(redisTemplate).execute(any(RedisScript.class), keysCaptor.capture(), any(Object[].class));
+        assertThat(keysCaptor.getValue()).containsExactly("rate_limit:app:12:/payments:v1");
+    }
+
+    @Test
+    void applicationEvaluationBeyondTheLimitIsDenied() {
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn("3");
+        when(redisTemplate.getExpire(eq("rate_limit:app:12:/payments:v1"), eq(TimeUnit.SECONDS)))
+                .thenReturn(20L);
+
+        assertThat(service.evaluateForApplication(12, "/payments", "v1").state()).isEqualTo(State.DENIED);
+    }
 }

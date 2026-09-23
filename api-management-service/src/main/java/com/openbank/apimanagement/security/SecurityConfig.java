@@ -54,6 +54,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials/{credentialId}").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/internal/subscription-check").authenticated()
+                        // Intentionally public: the API Gateway calls this with the caller's
+                        // Basic credentials and this endpoint authenticates them itself. It is an
+                        // internal, self-authenticating check (not a management API) and is never
+                        // exposed through the gateway outside the managed /runtime/apis/** paths.
+                        .requestMatchers(HttpMethod.GET, "/internal/credential-check").permitAll()
                         .anyRequest().permitAll())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();

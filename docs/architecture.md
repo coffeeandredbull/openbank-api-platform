@@ -3,8 +3,10 @@
 > This document describes the **planned** architecture of the OpenBank API
 > Platform. It is the design target that later phases build toward, one small
 > step at a time. Implemented parts (the Identity, API Management, and Payment
-> services; the Phase 15–17 gateway: routing + JWT authentication +
-> subscription enforcement; and the Phase 18 Redis infrastructure integration)
+> services; the Phase 15–21 gateway: routing + JWT and client-credential
+> authentication + subscription enforcement + Redis rate limiting; and the
+> Phase 18 Redis infrastructure integration, now with real rate-limit counters
+> since Phase 21)
 > are marked in their sections; everything else remains planned.
 
 ## Overview
@@ -71,7 +73,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that a future gateway authenticates. Subscription **tiers** and **rate-limit** enforcement remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Subscription **tiers** remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Collects and aggregates API usage and performance data (request counts, latency, status-code distribution) published by the gateway and services, and exposes queries for the Developer Portal. |
 
@@ -86,10 +88,13 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   locally and references `ownerUserId` rather than holding user rows. A future
   Payment → Account or Payment → Transaction network call is deliberately not
   needed today because those domains share one service (and one database).
-- **Gateway → API Management (Phase 17):** the gateway calls the API
-  Management Service's internal `GET /internal/subscription-check` endpoint
-  directly (not through any gateway route) to verify a caller's subscription
-  against PostgreSQL. This is the only internal service-to-service call today.
+- **Gateway → API Management (Phases 17 and 21):** the gateway calls the API
+  Management Service's internal endpoints directly (never through any gateway
+  route) to verify a caller against PostgreSQL:
+  `GET /internal/subscription-check` (Phase 17, JWT callers) and
+  `GET /internal/credential-check` (Phase 21, application client credentials;
+  returns credential + subscription verdict in one call). These are the only
+  internal service-to-service calls today.
 - **No message broker** (Kafka / RabbitMQ) is used. Any asynchronous need will
   be addressed with Redis or direct calls unless explicitly requested
   otherwise.
@@ -99,7 +104,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
-**Implemented (Phases 15–20).** The `gateway-service`
+**Implemented (Phases 15–21).** The `gateway-service`
 (Spring Cloud Gateway) listens on port `8080` and performs:
 
 - **Single entry point**: all requests — from the Developer Portal and from
@@ -160,6 +165,36 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   `PUBLISHED` versions invocable, deprecation/retirement sunset handling) is out
   of scope for Phase 17 and remains a later phase. There is no `ADMIN` bypass,
   and identity is never taken from query parameters or headers.
+- **Client-credential authentication (Phase 21)**: managed API invocations
+  (`/runtime/apis/**`) can be authenticated as an **application** with
+  `Authorization: Basic base64(clientId:clientSecret)` (the Phase 13
+  credentials) instead of a user JWT. The gateway:
+  - derives the API version from the path (`/runtime/apis/{context}/{version}/...`)
+    and calls the API Management Service's internal, self-authenticating
+    `GET /internal/credential-check?contextPath=...&version=...` with the same
+    Basic header (not routable through the gateway; `permitAll` in the service
+    by design — the Basic header is the credential, not a bearer token);
+  - treats the response `{"authenticated":bool,"applicationId":N,
+    "ownerUserId":N,"subscribed":bool}` as both the **credential verdict** and
+    the **subscription verdict** for the authenticated application (identity =
+    application, never a user), decided against PostgreSQL directly (no cache);
+  - **strips the Basic header** (decorated request) before forwarding, so the
+    consumed backend never sees the client secret;
+  - fails closed: invalid/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`;
+    check unreachable/failed/malformed → `503 CREDENTIAL_SERVICE_UNAVAILABLE`;
+    valid credentials but unsubscribed application (or malformed runtime path)
+    → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic
+    on `/apis/**` → `401 UNAUTHENTICATED`); a request with both Bearer and
+    Basic uses the client-credential flow.
+- **Rate limiting (Phase 21 — Redis-backed)**: every `/runtime/apis/**` request
+  is rate limited before routing with Redis fixed-window counters per API
+  version — `rate_limit:user:{userId}:{context}:{version}` for JWT callers,
+  `rate_limit:app:{applicationId}:{context}:{version}` for client-credential
+  callers — configured by `RATE_LIMIT_REQUESTS` (default `100`) /
+  `RATE_LIMIT_WINDOW_SECONDS` (default `60`). Exceeded → `429` + code
+  `RATE_LIMIT_EXCEEDED` with `Retry-After`; Redis/counter failure → `503` + code
+  `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). This is the first business
+  use of the Phase 18 Redis infrastructure.
 - **Upstream failure handling**: when an upstream is unreachable or exceeds the
   connect (2 s) or response (5 s) timeout, the gateway returns `503` with code
   `UPSTREAM_SERVICE_UNAVAILABLE` and a generic message — never the upstream
@@ -172,16 +207,13 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 - **Health**: `GET /actuator/health` is the only exposed actuator endpoint.
   Since Phase 18 it reports `UP` **independently of Redis** (see "Redis Role"
   below); `GET /actuator/health/redisHealth` is the dedicated Redis view.
-- The Phase 17 gateway performs **no client-credential enforcement, rate
-  limiting, or CORS handling** — those remain planned (below).
+- The Phase 17–21 gateway performs **no CORS handling** and no business logic;
+  tiered/policy-based rate limiting and observability remain planned (below).
 
 **Planned (later phases):**
 
-- **Client-credential authorization**: authenticates applications with the
-  Phase 13 `clientId`/`clientSecret` credentials (OAuth2-style flows) instead
-  of (or in addition to) a user JWT.
-- **Rate limiting**: applies per-application (and per-tier) request limits,
-  backed by Redis counters; returns `429 Too Many Requests` on exceed.
+- **Subscription tiers / policy-based rate limiting**: per-subscription or
+  per-tier limits on top of the current fixed per-API-version counters.
 - **Observability**: emits request telemetry for the Analytics Service.
 - The gateway stays thin about business logic; it routes and enforces, but does
   not implement account, payment, or transaction rules.
@@ -214,12 +246,14 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## Redis Role
 
-**Implemented (Phase 18) — infrastructure-only integration.** All four services
-(gateway, identity, api-management, payment) now depend on Redis as *plumbed
-infrastructure*: a Lettuce connection is configured and health-monitored, but
-**no business function uses Redis yet** — no caching, rate limiting, sessions,
-token storage, or subscription caching. PostgreSQL remains the **only** system
-of record.
+**Implemented (Phase 18 — infrastructure, plumbed and health-monitored; Phase
+21 — first business use: gateway rate-limit counters).** All four services
+(gateway, identity, api-management, payment) depend on Redis as *plumbed
+infrastructure*: a Lettuce connection is configured and health-monitored (Phase
+18), and since Phase 21 the **gateway stores fixed-window rate-limit counters in
+Redis** for managed API invocations. Caching, sessions, token storage, and
+subscription caching remain unused. PostgreSQL remains the **only** system of
+record.
 
 - **Configuration**: each service binds `spring.data.redis.host` / `port` /
   `password` from the `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
@@ -255,21 +289,22 @@ of record.
     indicator fully native and the URLs stable.
 - **Planned (later phases, currently unused):**
   - **Cache**: short-lived caching to reduce load on services (e.g. cached API
-    catalog lookups, session/token material, the Phase 17 subscription check).
+    catalog lookups, session/token material, the Phase 17 subscription check or
+    the Phase 21 credential check).
   - **Token storage**: server-side storage for issued refresh tokens /
     blacklisted JWTs (revocation support).
-  - **Rate-limit counters**: fast, low-latency counters for the gateway's rate
-    limiting before requests reach business services.
   - **Not a system of record.** Redis must always be reconstructible and is
     never the source of truth for durable data.
 
 ## Planned Request Flow
 
-> Phase 17 status: the gateway already performs steps 1, 2 (JWT validation —
-> signature, expiry, mandatory claims), 3 (subscription check — currently
-> without tier selection), 5, 6, and 7 (minus the telemetry). Step 4 (rate
-> limiting) is planned; tiering and caching for the subscription check remain
-> planned.
+> Phase 21 status: the gateway already performs steps 1, 2 (authentication —
+> JWT validation for user Bearer calls, client-credential verification for
+> application Basic calls), 3 (subscription — JWT flow via
+> `/internal/subscription-check`, application flow via the same
+> `/internal/credential-check` call), 4 (Redis-backed rate limiting), 5, 6, and
+> 7 (minus the telemetry). Tiering and caching for the subscription/credential
+> checks and tier-based rate limiting remain planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.

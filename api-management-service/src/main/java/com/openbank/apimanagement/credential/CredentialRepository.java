@@ -12,4 +12,6 @@ public interface CredentialRepository extends JpaRepository<Credential, Long> {
     List<Credential> findByApplication_OwnerUserIdOrderByIdAsc(Long ownerUserId);
 
     boolean existsByClientId(String clientId);
+
+    Optional<Credential> findByClientId(String clientId);
 }

@@ -2,6 +2,7 @@ package com.openbank.gateway.filter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openbank.gateway.auth.ClientCredentialIdentity;
 import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.ratelimit.RateLimitService;
 import com.openbank.gateway.ratelimit.RuntimeApiPath;
@@ -59,7 +60,9 @@ public class RateLimitingFilter implements GlobalFilter, Ordered {
         }
         long startTime = System.currentTimeMillis();
         JwtIdentity identity = exchange.getAttribute(JwtAuthenticationFilter.IDENTITY_ATTRIBUTE);
-        if (identity == null) {
+        ClientCredentialIdentity clientIdentity =
+                exchange.getAttribute(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE);
+        if (identity == null && clientIdentity == null) {
             return writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                     MESSAGE_UNAVAILABLE, path, startTime);
         }
@@ -68,10 +71,17 @@ public class RateLimitingFilter implements GlobalFilter, Ordered {
             return writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                     MESSAGE_UNAVAILABLE, path, startTime);
         }
-        return Mono.fromCallable(() ->
-                        rateLimitService.evaluate(identity.userId(), target.contextPath(), target.version()))
+        Mono<RateLimitService.Decision> decision;
+        if (clientIdentity != null) {
+            decision = Mono.fromCallable(() -> rateLimitService.evaluateForApplication(
+                    clientIdentity.applicationId(), target.contextPath(), target.version()));
+        } else {
+            decision = Mono.fromCallable(() -> rateLimitService.evaluate(
+                    identity.userId(), target.contextPath(), target.version()));
+        }
+        return decision
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(decision -> switch (decision.state()) {
+                .flatMap(found -> switch (found.state()) {
                     case ALLOWED -> {
                         log.info("gateway rate limit allowed method={} path={} routeId={} durationMs={}",
                                 requestMethod(exchange),
@@ -81,7 +91,7 @@ public class RateLimitingFilter implements GlobalFilter, Ordered {
                         yield chain.filter(exchange);
                     }
                     case DENIED -> writeError(exchange, HttpStatus.TOO_MANY_REQUESTS, CODE_EXCEEDED,
-                            MESSAGE_EXCEEDED, path, startTime, decision.retryAfterSeconds());
+                            MESSAGE_EXCEEDED, path, startTime, found.retryAfterSeconds());
                     case UNAVAILABLE -> writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                             MESSAGE_UNAVAILABLE, path, startTime);
                 });

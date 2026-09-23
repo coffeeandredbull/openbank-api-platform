@@ -3,8 +3,9 @@
 > This document describes the **planned** REST API conventions for the OpenBank
 > API Platform. Early phases already implemented endpoint sets (Identity,
 > API Management, Payment Service) — each is marked "Implemented so far" below.
-> The Phase 15–17 gateway is also implemented (routing + JWT authentication +
-> subscription enforcement; see the Gateway section). Consistent conventions
+> The Phase 15–21 gateway is also implemented (routing + JWT and
+> client-credential authentication + subscription enforcement + Redis rate
+> limiting; see the Gateway section). Consistent conventions
 > apply to the Developer
 > Portal-facing APIs and
 > the consumer-facing APIs routed by the gateway. OpenAPI documents for each
@@ -108,13 +109,21 @@
     the `JWT_SECRET` variable, expiry, and mandatory `sub` + `role` claims) and
     forwards it untouched to services; the `X-*` forwarded headers above are
     still planned. See Security for the public/protected route split.
+  - **Phase 21 note (application client credentials):** for managed API
+    invocations only (`/runtime/apis/**`), an application may authenticate with
+    `Authorization: Basic base64(clientId:clientSecret)` (the Phase 13
+    credentials) instead of a Bearer JWT. The gateway verifies the credential
+    (and the application's subscription) via the internal credential-check
+    endpoint and **strips the header before forwarding**, so the consumed
+    backend never sees the secret. Platform-management routes do not accept
+    Basic — they remain Bearer-only.
 - Application credentials (client id/secret or API key) may be presented at
   token endpoints: `POST /auth/token` with `grant_type` and secrets in the body
   (never in URLs).
 
 ## Example Endpoint Structure
 
-### Gateway (implemented — Phases 15–20)
+### Gateway (implemented — Phases 15–21)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
 endpoints of its own**; it forwards the existing service paths unchanged and
@@ -181,6 +190,52 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   without calling the check. A single-segment context (e.g.
   `/runtime/apis/accounts`) limits the version-segment parsing (documented
   limitation).
+- **Client-credential authentication (Phase 21):** managed API invocations
+  (`/runtime/apis/**`) also accept **application client credentials**:
+  `Authorization: Basic base64(clientId:clientSecret)` (the Phase 13
+  credentials), presented instead of a user JWT. The gateway derives the API
+  version from the path and calls the API Management Service's internal,
+  self-authenticating `GET /internal/credential-check?contextPath={context}&version={version}`
+  endpoint with the **same Basic header** (not reachable through any gateway
+  route). That endpoint verifies the secret server-side (`clientId` lookup +
+  BCrypt against the stored hash — direct PostgreSQL query, no cache, no plaintext
+  secret or hash ever returned/forwarded/logged) and returns
+  `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool}`
+  (any failure returns `{"authenticated":false}`). Decision table:
+  - credential not found / secret mismatch / malformed credential → `401` +
+    code `CLIENT_CREDENTIAL_INVALID`; stable shape
+    `{"timestamp","status":401,"error":"Unauthorized","path",
+    "code":"CLIENT_CREDENTIAL_INVALID","message":"Invalid client credentials",
+    "fieldErrors":{}}`;
+  - check unavailable / failed (unreachable, timeout, 5xx, malformed body) →
+    `503` + code `CREDENTIAL_SERVICE_UNAVAILABLE`; stable shape
+    `{"timestamp","status":503,"error":"Service Unavailable","path",
+    "code":"CREDENTIAL_SERVICE_UNAVAILABLE","message":
+    "Credential verification is temporarily unavailable","fieldErrors":{}}`;
+    the gateway **fails closed** — an unverified request is never forwarded;
+  - valid credentials but the **authenticated application** is not subscribed
+    to the target API version → `403` + code `SUBSCRIPTION_REQUIRED` (same body
+    as Phase 17; decided by the same single check — no second network call,
+    identity is the application's `applicationId`);
+  - malformed runtime path with Basic → `403` + code `SUBSCRIPTION_REQUIRED`
+    (mirrors the JWT flow, no check call).
+  The Basic header is then **stripped before forwarding**, so the consumed
+  backend never sees the credentials. A request carrying both `Bearer` and
+  `Basic` is handled by the client-credential flow (the JWT filter skips).
+  Platform-management routes remain Bearer-only: Basic on `/apis/**` → the
+  standard `401 UNAUTHENTICATED`.
+- **Rate limiting (Phase 21 — Redis-backed, per API version):** every
+  `/runtime/apis/**` request is rate limited before routing via Redis
+  fixed-window counters keyed `rate_limit:user:{userId}:{context}:{version}`
+  (JWT callers) or `rate_limit:app:{applicationId}:{context}:{version}`
+  (client-credential callers), with `RATE_LIMIT_REQUESTS` (default `100`)
+  requests per `RATE_LIMIT_WINDOW_SECONDS` (default `60`) slot. Exceeded →
+  `429` + code `RATE_LIMIT_EXCEEDED` (`{"timestamp","status":429,
+  "error":"Too Many Requests","path","code":"RATE_LIMIT_EXCEEDED",
+  "message":"Rate limit exceeded","fieldErrors":{}}`, plus a `Retry-After`
+  header); Redis/counter failure → `503` + code
+  `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). This is the first business
+  use of Redis.
 - Backend responses (including 4xx/5xx error bodies) pass through unchanged.
 - When an upstream is unreachable or exceeds the 2 s connect / 5 s response
   timeout, the gateway itself returns `503` with a **stable error shape** that

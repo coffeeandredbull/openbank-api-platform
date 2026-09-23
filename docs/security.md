@@ -129,9 +129,10 @@ Implemented behavior:
 - **No new authentication architecture:** stateless bearer JWT, CSRF disabled,
   no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
 
-Not implemented yet (future phases): RS256, application client-credential
-checks, and subscription tiers/status. (Gateway-level authentication and
-subscription checks are implemented later — Phases 16 and 17; see below.)
+Not implemented yet (future phases): RS256, subscription tiers/status, and
+credential lifecycle. (Gateway-level user authentication and subscription
+checks are implemented later — Phases 16 and 17 — and gateway-level application
+client-credential checks in Phase 21; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -316,13 +317,16 @@ Implemented behavior:
 Not implemented yet (future phases): balance authorization, real payment
 processing/approval, subscription/scope enforcement, and gateway integration.
 
-## Gateway Foundations — Implemented (Phases 15–17)
+## Gateway Foundations — Implemented (Phases 15–21)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) is a routing gateway
-that authenticates callers (Phase 16) and enforces subscriptions for managed
-API invocations (Phase 17). It remains deliberately thin: routing,
-authentication, and subscription enforcement are implemented; application
-client-credential verification and rate limiting are not.
+that authenticates callers (user JWTs since Phase 16; application client
+credentials since Phase 21), enforces subscriptions for managed API invocations
+(Phases 17 and 21), and applies Redis-backed rate limiting (Phase 21 completes
+the application side). It remains deliberately thin: routing, authentication,
+subscription enforcement, and rate limiting are implemented; application
+credentials are verified against the API Management Service's credential
+registry, never stored or copied by the gateway.
 
 Implemented behavior:
 
@@ -381,17 +385,66 @@ Implemented behavior:
     check responses). Gateway logs record only method/path/route id/
     status/duration for the check and forwarding decisions — never the
     `Authorization` header, JWT, body, check response, or internal endpoint.
-- **No application-credential enforcement at the gateway (yet):**
-  client-credential/application validation (the Phase 13 `clientId`/
-  `clientSecret`) and rate limiting remain planned. The gateway authenticates
-  callers and checks subscriptions only.
+- **Gateway application/client-credential authentication (Phase 21):** managed
+  API invocations can be authenticated with the Phase 13 application
+  credentials presented as `Authorization: Basic base64(clientId:clientSecret)`
+  instead of a user JWT:
+  - **Flow.** The gateway decodes the pair, derives the API version from the
+    path (`/runtime/apis/{context}/{version}/...`), and calls the API
+    Management Service's internal `GET /internal/credential-check` endpoint
+    directly (never through a gateway route) with the **same Basic header**.
+    That endpoint is self-authenticating (it is deliberately `permitAll()` in
+    the service's security config — the Basic header, not a bearer token, is
+    what proves identity) and verifies the credential server-side: it looks up
+    the credential by `clientId` and runs BCrypt `matches` against the stored
+    `client_secret_hash` — the plaintext secret and its hash are never read
+    back, returned, forwarded, or logged. It returns, from a **direct
+    PostgreSQL query** (the system of record), `{"authenticated":true,
+    "applicationId":N,"ownerUserId":N,"subscribed":bool}`; all failures return
+    `{"authenticated":false}`. The same single check returns the **subscription
+    verdict** for the authenticated application, so no second network call is
+    made.
+  - **Outcomes (fail closed).** Unknown/malformed credentials → `401` + code
+    `CLIENT_CREDENTIAL_INVALID`; the check is unreachable (2 s connect / 3 s
+    response), returns 5xx, or a malformed/unparseable 2xx body → `503` + code
+    `CREDENTIAL_SERVICE_UNAVAILABLE` (an unverified request is **never**
+    forwarded); a malformed runtime path with Basic → `403` + code
+    `SUBSCRIPTION_REQUIRED` (mirrors the JWT flow, no check call).
+  - **Subscription is the application's own.** Valid credentials whose
+    **authenticated application** is not subscribed to the target API version
+    → `403` + code `SUBSCRIPTION_REQUIRED`. Identity is the application itself
+    (`applicationId` + `ownerUserId` from the registry), never a user-derived
+    value; there is no `ADMIN` bypass, and the JWT-subscription rules do not
+    apply to this flow.
+  - **The credentials never pass through.** After the check, the gateway
+    **strips the `Authorization` header** (via a request decorator) before
+    forwarding, so the consumed backend never sees the client secret. This is
+    the opposite of the Bearer flow, where the validated JWT is forwarded
+    unchanged as part of defense in depth.
+  - **Bearer vs Basic.** A `Bearer` + `Basic` pair on a runtime route uses the
+    client-credential flow (the JWT filter skips when client credentials are
+    present). Platform-management routes (`/apis/**`, `/applications/**`, …)
+    still require a Bearer JWT — client credentials there are not accepted and
+    Basic on `/apis/**` yields the standard `401 UNAUTHENTICATED`.
+- **Gateway rate limiting (Phase 21 — Redis-backed, per API version):** every
+  `/runtime/apis/**` request is rate limited before routing, using Redis
+  fixed-window counters keyed by the *resource being consumed*:
+  `rate_limit:user:{userId}:{context}:{version}` for JWT callers and
+  `rate_limit:app:{applicationId}:{context}:{version}` for client-credential
+  callers (the application branch is added in Phase 21). The limit comes from
+  `RATE_LIMIT_REQUESTS` (default `100`) over `RATE_LIMIT_WINDOW_SECONDS`
+  (default `60`). Over-limit requests get `429` + code `RATE_LIMIT_EXCEEDED`
+  with a `Retry-After` header; if Redis is unreachable or the counter cannot be
+  read, the request is rejected with `503` + code `RATE_LIMIT_SERVICE_UNAVAILABLE`
+  (**fail closed**). This is the **first business use of Redis** (Phase 18
+  plumbed it; nothing consumed it until now).
 - **Defense in depth is unchanged:** the gateway forwards the `Authorization`
-  header **unchanged** for valid requests, and every backend service still
-  validates the JWT locally as in Phases 6–14. Removing or bypassing the
-  gateway therefore does **not** remove authentication. The gateway also
-  issues/generates no tokens and has no Spring Security dependency; it uses
-  the Nimbus JOSE library directly, mirroring the backend signature/claim
-  checks.
+  header **unchanged** for *Bearer* requests (every backend service still
+  validates the JWT locally as in Phases 6–14). Removing or bypassing the
+  gateway therefore does **not** remove user authentication. For
+  *client-credential* requests the secret is stripped, and upstream backends
+  never authenticate applications — the gateway is the sole enforcement point
+  for that flow. Backend services run no Basic/application authentication.
 - **Upstream failures fail closed with a generic error:** if an upstream is
   unreachable (e.g. connection refused) or exceeds the 2 s connect / 5 s
   response timeouts, the gateway returns `503` with code
@@ -425,9 +478,8 @@ Implemented behavior:
   (a configuration test asserts the YAML contains no secret/password/jwt/token
   material).
 
-Not implemented yet (future phases): application client-credential
-verification (using the Phase 13 credentials), rate limiting, and
-gateway-issued telemetry.
+Not implemented yet (future phases): subscription tiers, credential
+rotation/revocation/status, and gateway-issued telemetry for analytics.
 
 ## Authorization / RBAC
 
@@ -438,20 +490,27 @@ gateway-issued telemetry.
 - **Scopes**: JWT `scopes` claim gates specific operations (`accounts:read`,
   `payments:write`, `subscriptions:manage`).
 - **Subscription enforcement**: authorization for API invocation requires an
-  **active subscription** of the caller's application to the target API
-  version. **Implemented (Phase 17)** for JWT-authenticated managed-API calls:
-  the gateway checks the API Management Service's internal subscription check
-  (against PostgreSQL, the system of record) and fails closed. Redis caching of
-  the check, subscription tiers/status, and client-credential presentation
-  remain planned.
+  **active subscription** to the target API version. **Implemented** for managed
+  API invocations: for **JWT callers** (Phase 17) the gateway checks the API
+  Management Service's internal subscription check for a subscription owned by
+  the caller's user; for **application callers** (Phase 21) the same internal
+  check returns the *authenticated application's* subscription in the same
+  response as the credential verification. Both checks query PostgreSQL
+  directly (fail closed, no cache). Redis caching of the check, subscription
+  tiers/status, and credential revocation remain planned.
 
 ## API Subscription Enforcement
 
 - Requests to managed API routes (`/runtime/apis/**`) are de-authorized unless
-  the calling user owns an application with an active subscription to the
-  target API version — **implemented at the gateway (Phase 17)** via the API
-  Management Service's internal check against PostgreSQL (fail closed; no
-  cache).
+  the caller holds a subscription to the target API version — **implemented at
+  the gateway**: for JWT callers (Phase 17) the call is authorized if the
+  calling **user** owns a subscribed application; for client-credential callers
+  (Phase 21) authorization is decided by the same internal check and applies to
+  the **authenticated application itself** (`applicationId`), not the owning
+  user. Both go through the API Management Service's internal check against
+  PostgreSQL (fail closed; no cache) — the Phase 21 application flow makes one
+  single call that returns both the credential verdict and the subscription
+  verdict.
 - Subscription state machine, tiers, and status (`PENDING → ACTIVE`, `DENIED`,
   `REVOKED`) are **planned**; today the registry has no status and the gateway
   check is lifecycle-agnostic (any subscription for the API version counts).
@@ -472,8 +531,11 @@ gateway-issued telemetry.
     exposed by later responses.
   - Rotation/revocation/status are **planned** (Phase 13 intentionally has no
     credential lifecycle).
-  - The gateway **authentication** step that consumes these credentials is a
-    later phase.
+- The gateway **authentication** step that consumes these credentials is
+  **implemented (Phase 21)** — see "Gateway Foundations" above. The secret is
+  presented as a Basic header, verified server-side on every request (BCrypt
+  `matches` against the stored hash), and **stripped before forwarding** to
+  the consumed backend; it is never stored, logged, or echoed by the gateway.
 - **Refresh tokens**: stored as hashes only.
 - No credential is ever printed in logs, responses, or exceptions.
 
@@ -507,17 +569,26 @@ gateway-issued telemetry.
 
 ## Rate Limiting
 
-- Per-application, per-tier request limits enforced by the **API Gateway**
-  using **Redis counters** (token-bucket or fixed-window; decision pending).
-- Enforced **before** routing so abusive callers cannot reach backends.
-- Exceeded limits return `429 Too Many Requests` with `Retry-After`.
+- **Implemented (Phase 21).** The API Gateway enforces per-API-version request
+  limits for `/runtime/apis/**` using **Redis fixed-window counters** keyed by
+  the caller identity: `rate_limit:user:{userId}:{context}:{version}` for
+  JWT-authenticated callers, `rate_limit:app:{applicationId}:{context}:{version}`
+  for client-credential (application) callers. `RATE_LIMIT_REQUESTS` (default
+  `100`) requests are allowed per `RATE_LIMIT_WINDOW_SECONDS` (default `60`)
+  slot.
+- Enforced **before** routing so abusive callers cannot reach the managed
+  backend.
+- Exceeded limits return `429` + code `RATE_LIMIT_EXCEEDED` with
+  `Retry-After`; Redis/counter failures return `503` + code
+  `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed).
 - Redis is ephemeral here; counters are not the source of truth.
+- Tiers (per-subscription or per-A PI limits) remain planned.
 
 ## Security Boundaries
 
 | Boundary | Enforcement |
 | --- | --- |
-| Edge (external → gateway) | TLS, JWT validation, rate limiting, subscription check |
+| Edge (external → gateway) | TLS, JWT (Bearer) and/or client-credential (Basic) validation, Redis rate limiting, subscription check |
 | Gateway → service | Only gateway-validated requests are routed; services still re-validate auth attributes from the JWT, never trusting unchecked headers |
 | Service → service | Internal calls carry verified identity context; sensitive operations re-check ownership |
 | Data | Services read/write only their own schemas; ownership checks in service logic |
@@ -541,33 +612,36 @@ gateway-issued telemetry.
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
-| Subscription enforcement | **Implemented (Phase 17, JWT-authenticated managed-API calls)** — for `/runtime/apis/**` the gateway verifies (after Phase 16 authentication) that the caller's JWT `sub` owns an application subscribed to the target API version, via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503 SUBSCRIPTION_SERVICE_UNAVAILABLE` (fail closed), identity from the JWT only (no client-supplied user id, no `ADMIN` bypass). Tier/status-based enforcement and client-credential flows remain planned |
-| Rate limiting | **Planned** — not implemented |
+| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Tier/status-based enforcement and Redis caching remain planned |
+| Client-credential gateway authentication | **Implemented (Phase 21)** — `/runtime/apis/**` accepts `Authorization: Basic base64(clientId:clientSecret)`; the gateway verifies the credential (and the application's subscription) via the internal `GET /internal/credential-check` endpoint (BCrypt against the stored hash, direct PostgreSQL query, no cache) and **strips the Basic header before forwarding**; unknown/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`, check failure → `503 CREDENTIAL_SERVICE_UNAVAILABLE` (fail closed), no subscription → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic on `/apis/**` → `401`); secrets/hashes are never stored, returned, forwarded, or logged by the gateway |
+| Rate limiting | **Implemented (Phase 21)** — the gateway rate-limits `/runtime/apis/**` before routing with Redis fixed-window counters per API version (`rate_limit:user:{userId}:{context}:{version}` for JWT callers, `rate_limit:app:{applicationId}:{context}:{version}` for application callers; `RATE_LIMIT_REQUESTS` default `100` per `RATE_LIMIT_WINDOW_SECONDS` default `60` s); exceed → `429 RATE_LIMIT_EXCEEDED` with `Retry-After`, Redis failure → `503 RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). Tiers and per-subscription limits remain planned |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent. Redis coordinates (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`) are env-bound since Phase 18 and an empty password maps to *no password* (never a literal AUTH); the gateway config declares no password key |
 | Redis infrastructure health (Phase 18) | **Implemented** — all four services connect to Redis (infrastructure only, no caching/rate-limit/token business yet) and monitor it via a dedicated `GET /actuator/health/redisHealth` group (native Redis indicator, `show-components: always`, `show-details: never`); the default `/actuator/health` deliberately excludes Redis so a Redis-less deployment stays `UP`, implemented with a small `HealthEndpointGroups` bean (public Actuator API) because Boot 3.5.16 cannot exclude a contributor from the default group by properties. Health responses never expose the Redis password |
 | Token revocation (Redis) | **Planned** — not implemented |
 
-> As of Phase 18 the Identity Service supports stateless bearer request
+> As of Phase 21 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
 > API Management Service validates the same JWT and enforces roles on its
 > catalog, application, subscription, and credential endpoints with full
-> owner-scoping (and now authenticates the gateway's internal subscription
-> check), and the Payment Service validates the same JWT and enforces
-> owner-scoped `ADMIN`/`DEVELOPER` access on its account, payment, and
-> transaction endpoints (fail closed, no public endpoints except the Phase 18
-> health endpoint). The API Gateway (Phases 15–17) routes requests to the three
-> services, handles upstream failures, authenticates every caller against the
-> shared `JWT_SECRET` (`POST /users`, `POST /auth/login`, and health remain
-> public), and for managed API invocations (`/runtime/apis/**`) additionally
-> enforces that the caller owns an active subscription to the target API
-> version — rejecting unsubscribed callers with `403 SUBSCRIPTION_REQUIRED` and
-> failing closed (`503 SUBSCRIPTION_SERVICE_UNAVAILABLE`) when the check is
-> unavailable — but performs **no client-credential enforcement, rate limiting,
-> or scope enforcement** yet. Each backend service still validates the JWT
-> locally, so the gateway is not a single point of trust for authentication.
-> Redis is connected across all four services (Phase 18) purely as
-> infrastructure with health monitoring via the dedicated `redisHealth` health
-> group — it is used by **no** authentication, authorization, rate-limiting, or
-> revocation function yet.
+> owner-scoping (and now hosts the internal subscription-check and
+> credential-check endpoints the gateway consults), and the Payment Service
+> validates the same JWT and enforces owner-scoped `ADMIN`/`DEVELOPER` access
+> on its account, payment, and transaction endpoints (fail closed, no public
+> endpoints except the Phase 18 health endpoint). The API Gateway (Phases
+> 15–21) routes requests to the three services, handles upstream failures,
+> authenticates callers — user **Bearer JWTs** (`POST /users`, `POST /auth/login`,
+> and health remain public) and, for managed API invocations, **application
+> client credentials** (`Basic`, verified against the API Management Service's
+> registry with the plaintext secret stripped before forwarding) — enforces
+> subscriptions (`403 SUBSCRIPTION_REQUIRED` when unsubscribed; fail closed
+> `503` when the check is unavailable), and applies **Redis-backed rate
+> limiting** per API version (`429 RATE_LIMIT_EXCEEDED`; fail closed `503`
+> when Redis is unavailable). Scope enforcement, subscription tiers, and
+> credential lifecycle remain planned. Each backend service still validates
+> the JWT locally, so the gateway is not a single point of trust for
+> authentication. Redis is connected across all four services (Phase 18) with
+> health monitoring via the dedicated `redisHealth` health group and is now
+> used for real gateway rate-limit counters (Phase 21) — the only business
+> function it currently serves.

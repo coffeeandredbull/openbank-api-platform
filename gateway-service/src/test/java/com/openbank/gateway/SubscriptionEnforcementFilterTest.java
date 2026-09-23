@@ -1,8 +1,10 @@
 package com.openbank.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openbank.gateway.auth.ClientCredentialIdentity;
 import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.auth.UserRole;
+import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
 import com.openbank.gateway.filter.JwtAuthenticationFilter;
 import com.openbank.gateway.filter.SubscriptionEnforcementFilter;
 import com.sun.net.httpserver.HttpExchange;
@@ -270,5 +272,76 @@ class SubscriptionEnforcementFilterTest {
         GatewayFilterChain chain = ex -> Mono.empty();
         filter.filter(exchange, chain).block();
         assertThat(exchange.getResponse().getBodyAsString().block()).doesNotContain(token);
+    }
+
+    @Test
+    void clientCredentialRequestWithStoredSubscriptionIsForwardedWithoutContactingTheCheckService() {
+        MockServerWebExchange exchange = clientCredentialExchange(
+                "/runtime/apis/payments/v1/accounts", true);
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isTrue();
+        assertThat(HIT).isFalse();
+    }
+
+    @Test
+    void clientCredentialRequestWithoutAStoredSubscriptionIsRejectedWith403() {
+        MockServerWebExchange exchange = clientCredentialExchange(
+                "/runtime/apis/payments/v1/accounts", false);
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isFalse();
+        assertThat(HIT).isFalse();
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(exchange.getResponse().getBodyAsString().block())
+                .contains("\"code\":\"SUBSCRIPTION_REQUIRED\"");
+    }
+
+    @Test
+    void clientCredentialRequestOnMalformedRuntimePathIsRejectedWith403() {
+        MockServerWebExchange exchange = clientCredentialExchange("/runtime/apis/payments", true);
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isFalse();
+        assertThat(HIT).isFalse();
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    void clientCredentialRequestWithUnknownSubscriptionStateFailsClosed() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts").build());
+        exchange.getAttributes().put(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE,
+                new ClientCredentialIdentity("client-abc", 12L, 42L));
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isFalse();
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(HIT).isFalse();
+    }
+
+    private MockServerWebExchange clientCredentialExchange(String path, boolean subscribed) {
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get(path).build());
+        exchange.getAttributes().put(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE,
+                new ClientCredentialIdentity("client-abc", 12L, 42L));
+        exchange.getAttributes().put(
+                ClientCredentialAuthenticationFilter.APPLICATION_SUBSCRIBED_ATTRIBUTE, subscribed);
+        return exchange;
     }
 }
