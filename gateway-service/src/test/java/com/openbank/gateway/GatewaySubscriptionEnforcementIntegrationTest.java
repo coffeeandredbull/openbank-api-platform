@@ -17,6 +17,9 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -34,6 +37,7 @@ import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
 class GatewaySubscriptionEnforcementIntegrationTest {
@@ -48,6 +52,11 @@ class GatewaySubscriptionEnforcementIntegrationTest {
 
     private static final AtomicReference<CapturedRequest> MANAGED = new AtomicReference<>();
 
+    @Container
+    static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
+            .withExposedPorts(6379)
+            .withCommand("redis-server", "--save", "", "--appendonly", "no");
+
     private static final HttpServer IDENTITY_SERVER = startServer("identity");
     private static final HttpServer API_MANAGEMENT_SERVER = startServer("api-management");
     private static final HttpServer PAYMENT_SERVER = startServer("payment");
@@ -60,6 +69,8 @@ class GatewaySubscriptionEnforcementIntegrationTest {
         registry.add("PAYMENT_SERVICE_URL", () -> "http://127.0.0.1:" + PAYMENT_SERVER.getAddress().getPort());
         registry.add("MANAGED_API_TARGET_URL", () -> "http://127.0.0.1:" + MANAGED_SERVER.getAddress().getPort());
         registry.add("JWT_SECRET", () -> GatewayTestJwt.SECRET);
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> String.valueOf(REDIS.getMappedPort(6379)));
     }
 
     private static HttpServer startServer(String name) {
