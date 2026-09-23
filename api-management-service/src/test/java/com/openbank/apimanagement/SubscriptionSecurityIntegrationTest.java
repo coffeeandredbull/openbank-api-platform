@@ -64,6 +64,7 @@ class SubscriptionSecurityIntegrationTest {
         jdbcTemplate.execute("DELETE FROM applications");
         jdbcTemplate.execute("DELETE FROM api_versions");
         jdbcTemplate.execute("DELETE FROM apis");
+        jdbcTemplate.execute("DELETE FROM subscription_tiers");
     }
 
     @Test
@@ -106,6 +107,7 @@ class SubscriptionSecurityIntegrationTest {
     void developerCannotSubscribeAnotherDevelopersApplication() throws Exception {
         Long versionId = createVersionedApi();
         Long applicationId = createApplication("77", "DEVELOPER", "Bob's App");
+        Long tierId = createTier();
 
         mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
@@ -113,9 +115,10 @@ class SubscriptionSecurityIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, versionId)))
+                                """.formatted(applicationId, versionId, tierId)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("APPLICATION_NOT_FOUND"))
                 .andExpect(r -> {
@@ -130,6 +133,7 @@ class SubscriptionSecurityIntegrationTest {
     void adminCannotSubscribeAnotherDevelopersApplication() throws Exception {
         Long versionId = createVersionedApi();
         Long applicationId = createApplication("77", "DEVELOPER", "Bob's App");
+        Long tierId = createTier();
 
         mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
@@ -137,9 +141,10 @@ class SubscriptionSecurityIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, versionId)))
+                                """.formatted(applicationId, versionId, tierId)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("APPLICATION_NOT_FOUND"));
     }
@@ -278,6 +283,16 @@ class SubscriptionSecurityIntegrationTest {
         return objectMapper.readTree(body).get("id").asLong();
     }
 
+    private Long createTier() {
+        String name = "tier-" + System.nanoTime();
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
+                        + "VALUES (?, ?, now(), now())",
+                name, "Security test tier");
+        return jdbcTemplate.queryForObject(
+                "select id from subscription_tiers where name = ?", Long.class, name);
+    }
+
     private Long subscribeAndReadId(String userId, String role, Long applicationId, Long apiVersionId) throws Exception {
         String body = mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token(userId, role, 3600))
@@ -285,9 +300,10 @@ class SubscriptionSecurityIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId)))
+                                """.formatted(applicationId, apiVersionId, createTier())))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()

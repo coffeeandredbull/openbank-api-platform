@@ -67,7 +67,8 @@ to them, and manage credentials.
 > gateway authentication**), the **Analytics Service (Phase 23 — runtime
 > analytics: gateway event capture on `/runtime/apis/**`, bounded-queue
 > delivery, internal-token ingestion, event query, and global usage
-> summary)**, and
+> summary)**, the **subscription tier foundation (Phase 24 — `subscription_tiers`
+> registry + required `tier_id` binding on every subscription)**, and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -355,15 +356,24 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   index) and protects `GET /analytics/events` and `GET /analytics/usage` with
   `ADMIN`/`DEVELOPER` JWTs: paged newest-first listing with exact-match
   filters (api context/version, authentication type, status code) and inclusive
-  from/to bounds, plus a single-row global usage summary (`totalRequests`,
-  2xx/4xx/5xx counts, `averageLatencyMs`) computed in PostgreSQL. Verified by
-  unit and Testcontainers integration tests.
-- **Planned phases (subject to change):** subscription tiers, credential
-  rotation/revocation and status, Redis-backed token revocation and caches,
-  the remaining services, the Developer Portal, shared infrastructure
-  (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions) and Kubernetes
-  manifests will be built in small, explicitly requested phases and verified
-  (compile + tests) at each step.
+from/to bounds, plus a single-row global usage summary (`totalRequests`,
+   2xx/4xx/5xx counts, `averageLatencyMs`) computed in PostgreSQL. Verified by
+   unit and Testcontainers integration tests.
+- **Phase 24 — API Management Service (subscription tier domain foundation):**
+   a `subscription_tiers` table (`name` unique, `description`, timestamps, no
+   rate-limit/pricing fields yet) with service-layer validation and `409`
+   conflict handling, and every subscription now references a **required tier**
+   (`tier_id` FK): `POST /subscriptions` accepts `tierId` (missing tier → `404
+   SUBSCRIPTION_TIER_NOT_FOUND`), and `GET /subscriptions[/{id}]` responses
+   expose `tierId` + `tierName`. No tier admin CRUD, no tier-based rate
+   limiting, and no subscription status/lifecycle yet; the internal
+   subscription/credential checks and gateway behavior are unchanged.
+- **Planned phases (subject to change):** tier-based rate limiting and tier
+   lifecycle, credential rotation/revocation and status, Redis-backed token
+   revocation and caches, the remaining services, the Developer Portal, shared
+   infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
+   and Kubernetes manifests will be built in small, explicitly requested phases
+   and verified (compile + tests) at each step.
 
 ## Planned Features
 

@@ -63,6 +63,7 @@ class SubscriptionCheckIntegrationTest {
         jdbcTemplate.execute("DELETE FROM applications");
         jdbcTemplate.execute("DELETE FROM api_versions");
         jdbcTemplate.execute("DELETE FROM apis");
+        jdbcTemplate.execute("DELETE FROM subscription_tiers");
     }
 
     @Test
@@ -317,11 +318,22 @@ class SubscriptionCheckIntegrationTest {
                             .content("""
                                     {
                                       "applicationId": %d,
-                                      "apiVersionId": %d
+                                      "apiVersionId": %d,
+                                      "tierId": %d
                                     }
-                                    """.formatted(applicationId, apiVersionId)))
+                                    """.formatted(applicationId, apiVersionId, createTier())))
                     .andExpect(status().isCreated());
         }
+    }
+
+    private Long createTier() {
+        String name = "tier-" + System.nanoTime();
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
+                        + "VALUES (?, ?, now(), now())",
+                name, "Check test tier");
+        return jdbcTemplate.queryForObject(
+                "select id from subscription_tiers where name = ?", Long.class, name);
     }
 
     private String token(String subject, String role, long expiresInSeconds) throws Exception {

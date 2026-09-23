@@ -8,6 +8,9 @@ public record CreateSubscriptionRequest(
         Long applicationId,
 
         @NotNull(message = "apiVersionId is required")
-        Long apiVersionId
+        Long apiVersionId,
+
+        @NotNull(message = "tierId is required")
+        Long tierId
 ) {
 }

@@ -375,13 +375,14 @@ Service stores no user record and no cross-service foreign key.
 **Implemented so far (Phase 12) — subscriptions:** an application can be
 **subscribed** to an **API version** in the API Management Service. This
 implements the Application → Subscription → API Version link. The request body
-carries only `applicationId` and `apiVersionId`; the **owner is always derived
-from the authenticated user's JWT `sub` claim** and is never taken from the
-request body.
-- `POST /subscriptions` — subscribe an owned application to an API version.
-  Body: `{ "applicationId": long, "apiVersionId": long }` (both required).
-  Returns `201 Created` with a `Location: /subscriptions/{id}` header and the
-  subscription body (`id`, `applicationId`, `apiVersionId`, `createdAt`,
+carries `applicationId`, `apiVersionId`, and `tierId`; the **owner is always
+derived from the authenticated user's JWT `sub` claim** and is never taken from
+the request body.
+- `POST /subscriptions` — subscribe an owned application to an API version,
+  binding it to a subscription tier. Body: `{ "applicationId": long,
+  "apiVersionId": long, "tierId": long }` (all required). Returns `201 Created`
+  with a `Location: /subscriptions/{id}` header and the subscription body (`id`,
+  `applicationId`, `apiVersionId`, `tierId`, `tierName`, `createdAt`,
   `updatedAt`).
 - `GET /subscriptions/{subscriptionId}` — the caller's **own** subscription.
 - `GET /subscriptions` — list the caller's **own** subscriptions in ascending
@@ -393,20 +394,23 @@ request body.
   returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak).
 - Cross-owner or missing target resources: an `applicationId` the caller does
   not own (or that does not exist) returns `404 APPLICATION_NOT_FOUND`; a
-  non-existent `apiVersionId` returns `404 API_VERSION_NOT_FOUND`. Both are
-  checked before the subscription is created.
+  non-existent `apiVersionId` returns `404 API_VERSION_NOT_FOUND`; a
+  non-existent `tierId` returns `404 SUBSCRIPTION_TIER_NOT_FOUND`. Application,
+  version, and tier are all checked before the subscription is created.
 - Duplicate subscriptions (same application + same API version) → `409
   SUBSCRIPTION_ALREADY_EXISTS`. Enforced in the service up front **and** by a
   database unique constraint on `(application_id, api_version_id)`; the
   resulting `DataIntegrityViolationException` from a race condition is mapped to
   the same `409` response. Two different applications may subscribe to the same
   API version, and one application may subscribe to multiple versions.
-- Validation: `applicationId` and `apiVersionId` are required (`@NotNull`);
-  violations return `400 VALIDATION_FAILED`, malformed JSON returns `400
-  MALFORMED_REQUEST`.
-- A subscription is currently **metadata/link only**: it carries no lifecycle
-  state, status, tier, credentials (API key / client id+secret), or rate limit.
-  Those remain planned under the Subscription Service.
+- Validation: `applicationId`, `apiVersionId`, and `tierId` are required
+  (`@NotNull`); violations return `400 VALIDATION_FAILED`, malformed JSON
+  returns `400 MALFORMED_REQUEST`.
+- A subscription carries a **tier reference** (Phase 24): tier id + name are
+  returned and the `tier_id` column is a `NOT NULL` foreign key to the
+  `subscription_tiers` table. It still carries **no** lifecycle state, status,
+  credentials (API key / client id+secret), or rate limit; tier-based rate
+  limiting, tier lifecycle, and subscription status remain planned.
 
 **Implemented so far (Phase 13) — credentials:** an **application** can hold
 **credentials** (`clientId` + hashed `clientSecret`) in the API Management
@@ -455,8 +459,10 @@ the request body.
 > link (`POST /subscriptions`, `GET /subscriptions/{id}`, `GET /subscriptions`)
 > in Phase 12, and application **credentials** (`POST /credentials`,
 > `GET /credentials/{id}`, `GET /credentials`) in Phase 13 — see the sections
-> above. They are repeated here as the planned contract for the gateway/portal
-> view; the remaining items (tiers, status, revocation) are not yet implemented.
+> above. The subscription schema now carries a **tier reference**
+> (`subscription_tiers`, Phase 24) but no status/lifecycle/revocation yet; those
+> remain planned. They are repeated here as the planned contract for the
+> gateway/portal view.
 - `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
 - `GET    /subscriptions/{id}` — subscription status.

@@ -6,6 +6,8 @@ public record SubscriptionResponse(
         Long id,
         Long applicationId,
         Long apiVersionId,
+        Long tierId,
+        String tierName,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -15,6 +17,8 @@ public record SubscriptionResponse(
                 subscription.getId(),
                 subscription.getApplication().getId(),
                 subscription.getApiVersion().getId(),
+                subscription.getTier().getId(),
+                subscription.getTier().getName(),
                 subscription.getCreatedAt(),
                 subscription.getUpdatedAt()
         );

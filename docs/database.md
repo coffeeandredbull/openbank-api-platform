@@ -80,25 +80,42 @@ may be reused by the same or different developers). Ownership is enforced by the
 service layer (`owner_user_id` from the JWT `sub` claim), never taken from the
 request body. `created_at` is write-once; `updated_at` changes on update.
 Credentials (client id/secret hashes) are **implemented** (Phase 13 — see below);
-subscription tiers/status and any further Subscription-Service-owned material
+the subscription **tier** table is **implemented** (Phase 24 — see below);
+subscription status and any further Subscription-Service-owned material
 remain planned and will reference applications by ID.
 
 **Implemented so far (Phase 12) — `subscriptions`:** the Application →
 Subscription → API Version link is now implemented in the **API Management
 Service** (it previously appeared only in the planned Subscription Service
 section below). Actual implemented columns: `id`, `application_id`,
-`api_version_id`, `created_at`, `updated_at`. Both `application_id` and
-`api_version_id` are `NOT NULL` **foreign keys** to `applications` and
-`api_versions` respectively — this is allowed because all three tables live in
-the same service. A **unique constraint** on `(application_id, api_version_id)`
-(DB-level `uc_subscription_application_api_version`) prevents duplicate
+`api_version_id`, `tier_id`, `created_at`, `updated_at`. `application_id`,
+`api_version_id`, and `tier_id` are all `NOT NULL` **foreign keys** to
+`applications`, `api_versions`, and `subscription_tiers` respectively — this is
+allowed because all these tables live in the same service. A **unique
+constraint** on `(application_id, api_version_id)` (DB-level
+`uc_subscription_application_api_version`) prevents duplicate
 subscriptions; the service performs the same check up front and maps any race
 condition to `409 SUBSCRIPTION_ALREADY_EXISTS`. A subscription has **no**
-lifecycle state, status, tier, credential, or rate-limit fields — it is the
-link only; credentials, tiers, and status/lifecycle remain planned. Two
+lifecycle state, status, credential, or rate-limit fields — it is the
+link plus its tier binding; credentials, status/lifecycle, and tier rate
+limits remain planned. Two
 subscriptions may target the same API version (different applications) and the
 same application may subscribe to multiple API versions. `created_at` is
 write-once; `updated_at` is set on creation (both equal at creation time).
+
+**Implemented so far (Phase 24) — `subscription_tiers`:** tier definitions are
+now a real table in the **API Management Service**. Actual implemented columns:
+`id` (identity), `name` (`varchar(100)`, `NOT NULL`, unique — DB-level
+`uc_subscription_tier_name`), `description` (`varchar(500)`, nullable),
+`created_at`, `updated_at`. Tiers are created through the service layer
+(`SubscriptionTierService`), which validates that the name is non-blank, has no
+leading/trailing whitespace, is at most 100 characters, and the description is
+at most 500 characters; a duplicate name is rejected up front as `409
+SUBSCRIPTION_TIER_ALREADY_EXISTS` and the unique constraint backs that up for
+race conditions. Subscriptions reference tiers via the `tier_id` foreign key
+above. There is **no** admin tier CRUD endpoint yet and **no** rate-limit,
+pricing, or lifecycle fields — only the domain foundation. `created_at` is
+write-once; `updated_at` is set on creation.
 
 **Implemented so far (Phase 13) — `credentials`:** application credentials are
 now implemented in the **API Management Service** (they previously appeared
@@ -123,8 +140,8 @@ equal at creation time). Ownership is logical: Credential → Application →
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13) — see above; scopes, rotation/status (`revoked`) remain planned |
-| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt) |
-| `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps) is already **implemented** in the API Management Service (Phase 12) — see above; tier, status, and lifecycle remain planned |
+| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description only; rate-limit/pricing fields remain planned |
+| `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps) and the `tier_id` binding are already **implemented** in the API Management Service (Phases 12 and 24) — see above; status, subscribed_at, and lifecycle remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service
 > (Phase 11), the Application → Subscription → API Version link in Phase 12, and

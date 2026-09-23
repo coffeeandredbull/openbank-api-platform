@@ -10,6 +10,7 @@ import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -46,6 +47,9 @@ class SubscriptionServiceTest {
     @Mock
     private com.openbank.apimanagement.api.ApiRepository apiRepository;
 
+    @Mock
+    private SubscriptionTierRepository subscriptionTierRepository;
+
     @InjectMocks
     private SubscriptionService subscriptionService;
 
@@ -57,6 +61,7 @@ class SubscriptionServiceTest {
         ApiVersion apiVersion = apiVersion(20L);
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion));
+        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(false);
         when(subscriptionRepository.save(any(Subscription.class))).thenAnswer(invocation -> {
             Subscription saved = invocation.getArgument(0);
@@ -65,20 +70,36 @@ class SubscriptionServiceTest {
         });
 
         SubscriptionResponse response = subscriptionService.create(
-                42L, new CreateSubscriptionRequest(10L, 20L));
+                42L, new CreateSubscriptionRequest(10L, 20L, 15L));
 
         ArgumentCaptor<Subscription> captor = ArgumentCaptor.forClass(Subscription.class);
         verify(subscriptionRepository).save(captor.capture());
         Subscription persisted = captor.getValue();
         assertThat(persisted.getApplication().getId()).isEqualTo(10L);
         assertThat(persisted.getApiVersion().getId()).isEqualTo(20L);
+        assertThat(persisted.getTier().getId()).isEqualTo(15L);
         assertThat(persisted.getCreatedAt()).isEqualTo(persisted.getUpdatedAt());
 
         assertThat(response.id()).isEqualTo(30L);
         assertThat(response.applicationId()).isEqualTo(10L);
         assertThat(response.apiVersionId()).isEqualTo(20L);
+        assertThat(response.tierId()).isEqualTo(15L);
+        assertThat(response.tierName()).isEqualTo("Developer");
         assertThat(response.createdAt()).isNotNull();
         assertThat(response.updatedAt()).isNotNull();
+    }
+
+    @Test
+    void createRejectsMissingTier() {
+        when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
+                .thenReturn(Optional.of(application(10L, 42L)));
+        when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionTierRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 999L)))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
     }
 
     @Test
@@ -86,9 +107,10 @@ class SubscriptionServiceTest {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(true);
 
-        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L)))
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 15L)))
                 .isInstanceOf(SubscriptionAlreadyExistsException.class)
                 .hasMessageContaining("10")
                 .hasMessageContaining("20");
@@ -99,7 +121,7 @@ class SubscriptionServiceTest {
     void createRejectsMissingApplication() {
         when(applicationRepository.findByIdAndOwnerUserId(999L, 42L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(999L, 20L)))
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(999L, 20L, 15L)))
                 .isInstanceOf(ApplicationNotFoundException.class)
                 .hasMessageContaining("999");
         verify(subscriptionRepository, never()).save(any(Subscription.class));
@@ -109,7 +131,7 @@ class SubscriptionServiceTest {
     void createRejectsApplicationOwnedByAnotherUser() {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L)))
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 15L)))
                 .isInstanceOf(ApplicationNotFoundException.class)
                 .hasMessageContaining("10");
         verify(subscriptionRepository, never()).save(any(Subscription.class));
@@ -121,7 +143,7 @@ class SubscriptionServiceTest {
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(999L)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 999L)))
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 999L, 15L)))
                 .isInstanceOf(ApiVersionNotFoundException.class)
                 .hasMessageContaining("999");
         verify(subscriptionRepository, never()).save(any(Subscription.class));
@@ -132,11 +154,12 @@ class SubscriptionServiceTest {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(false);
         when(subscriptionRepository.save(any(Subscription.class)))
                 .thenThrow(new DataIntegrityViolationException("could not execute statement; constraint"));
 
-        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L)))
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 15L)))
                 .isInstanceOf(SubscriptionAlreadyExistsException.class)
                 .hasMessageContaining("10")
                 .hasMessageContaining("20");
@@ -153,6 +176,8 @@ class SubscriptionServiceTest {
         assertThat(response.id()).isEqualTo(30L);
         assertThat(response.applicationId()).isEqualTo(10L);
         assertThat(response.apiVersionId()).isEqualTo(20L);
+        assertThat(response.tierId()).isEqualTo(15L);
+        assertThat(response.tierName()).isEqualTo("Developer");
         assertThat(response.createdAt()).isEqualTo(TIMESTAMP);
         assertThat(response.updatedAt()).isEqualTo(TIMESTAMP);
     }
@@ -267,11 +292,20 @@ class SubscriptionServiceTest {
     }
 
     private Subscription subscription(Long id, Long applicationId, Long apiVersionId, Instant createdAt, Instant updatedAt) {
-        Subscription subscription = new Subscription(application(applicationId, 42L), apiVersion(apiVersionId));
+        Subscription subscription = new Subscription(
+                application(applicationId, 42L), apiVersion(apiVersionId), tier(15L, "Developer"));
         setField(subscription, "id", id);
         setField(subscription, "createdAt", createdAt);
         setField(subscription, "updatedAt", updatedAt);
         return subscription;
+    }
+
+    private SubscriptionTier tier(Long id, String name) {
+        SubscriptionTier tier = new SubscriptionTier(name, "Standard access");
+        setField(tier, "id", id);
+        setField(tier, "createdAt", TIMESTAMP);
+        setField(tier, "updatedAt", TIMESTAMP);
+        return tier;
     }
 
     private void setField(Object target, String name, Object value) {

@@ -10,6 +10,7 @@ import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,16 +24,19 @@ public class SubscriptionService {
     private final ApplicationRepository applicationRepository;
     private final ApiVersionRepository apiVersionRepository;
     private final ApiRepository apiRepository;
+    private final SubscriptionTierRepository subscriptionTierRepository;
 
     public SubscriptionService(
             SubscriptionRepository subscriptionRepository,
             ApplicationRepository applicationRepository,
             ApiVersionRepository apiVersionRepository,
-            ApiRepository apiRepository) {
+            ApiRepository apiRepository,
+            SubscriptionTierRepository subscriptionTierRepository) {
         this.subscriptionRepository = subscriptionRepository;
         this.applicationRepository = applicationRepository;
         this.apiVersionRepository = apiVersionRepository;
         this.apiRepository = apiRepository;
+        this.subscriptionTierRepository = subscriptionTierRepository;
     }
 
     @Transactional
@@ -42,12 +46,14 @@ public class SubscriptionService {
                 .orElseThrow(() -> new ApplicationNotFoundException(request.applicationId()));
         ApiVersion apiVersion = apiVersionRepository.findById(request.apiVersionId())
                 .orElseThrow(() -> new ApiVersionNotFoundException(request.apiVersionId()));
+        SubscriptionTier tier = subscriptionTierRepository.findById(request.tierId())
+                .orElseThrow(() -> new SubscriptionTierNotFoundException(request.tierId()));
         if (subscriptionRepository.existsByApplicationIdAndApiVersionId(
                 request.applicationId(), request.apiVersionId())) {
             throw new SubscriptionAlreadyExistsException(request.applicationId(), request.apiVersionId());
         }
         try {
-            Subscription saved = subscriptionRepository.save(new Subscription(application, apiVersion));
+            Subscription saved = subscriptionRepository.save(new Subscription(application, apiVersion, tier));
             return SubscriptionResponse.from(saved);
         } catch (DataIntegrityViolationException e) {
             throw new SubscriptionAlreadyExistsException(request.applicationId(), request.apiVersionId());

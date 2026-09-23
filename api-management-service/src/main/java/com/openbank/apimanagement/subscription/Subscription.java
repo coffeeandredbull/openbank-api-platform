@@ -37,6 +37,10 @@ public class Subscription {
     @JoinColumn(name = "api_version_id", nullable = false, updatable = false)
     private ApiVersion apiVersion;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "tier_id", nullable = false, updatable = false)
+    private SubscriptionTier tier;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -46,9 +50,10 @@ public class Subscription {
     protected Subscription() {
     }
 
-    public Subscription(Application application, ApiVersion apiVersion) {
+    public Subscription(Application application, ApiVersion apiVersion, SubscriptionTier tier) {
         this.application = application;
         this.apiVersion = apiVersion;
+        this.tier = tier;
         Instant now = Instant.now();
         this.createdAt = now;
         this.updatedAt = now;
@@ -64,6 +69,10 @@ public class Subscription {
 
     public ApiVersion getApiVersion() {
         return apiVersion;
+    }
+
+    public SubscriptionTier getTier() {
+        return tier;
     }
 
     public Instant getCreatedAt() {

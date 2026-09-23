@@ -66,11 +66,13 @@ class SubscriptionIntegrationTest {
         jdbcTemplate.execute("DELETE FROM applications");
         jdbcTemplate.execute("DELETE FROM api_versions");
         jdbcTemplate.execute("DELETE FROM apis");
+        jdbcTemplate.execute("DELETE FROM subscription_tiers");
     }
 
     @Test
     void createPersistsSubscriptionWithRelationshipsAndTimestamps() throws Exception {
         Long versionId = createVersionedApi();
+        Long tierId = createTier();
 
         Long applicationId = createApplication("42", "DEVELOPER", "My App");
         mockMvc.perform(post("/subscriptions")
@@ -79,15 +81,18 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, versionId)))
+                                """.formatted(applicationId, versionId, tierId)))
                 .andExpect(status().isCreated())
                 .andExpect(r -> {
                     JsonNode body = objectMapper.readTree(r.getResponse().getContentAsString());
                     assertThat(body.get("id").asLong()).isPositive();
                     assertThat(body.get("applicationId").asLong()).isEqualTo(applicationId);
                     assertThat(body.get("apiVersionId").asLong()).isEqualTo(versionId);
+                    assertThat(body.get("tierId").asLong()).isEqualTo(tierId);
+                    assertThat(body.get("tierName").asText()).isNotBlank();
                     assertThat(body.get("createdAt").asText()).isEqualTo(body.get("updatedAt").asText());
                 });
 
@@ -97,11 +102,55 @@ class SubscriptionIntegrationTest {
         Long apiVersionIdStored = jdbcTemplate.queryForObject(
                 "select api_version_id from subscriptions order by id asc limit 1", Long.class);
         assertThat(apiVersionIdStored).isEqualTo(versionId);
+        Long tierIdStored = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions order by id asc limit 1", Long.class);
+        assertThat(tierIdStored).isEqualTo(tierId);
         String createdAt = jdbcTemplate.queryForObject(
                 "select created_at::text from subscriptions order by id asc limit 1", String.class);
         String updatedAt = jdbcTemplate.queryForObject(
                 "select updated_at::text from subscriptions order by id asc limit 1", String.class);
         assertThat(createdAt).isEqualTo(updatedAt);
+    }
+
+    @Test
+    void createRejectsMissingTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": 55555
+                                }
+                                """.formatted(applicationId, versionId)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id 55555 does not exist"));
+
+        assertThat(jdbcTemplate.queryForObject("select count(*) from subscriptions", Long.class)).isZero();
+    }
+
+    @Test
+    void createRejectsMissingTierIdWith400() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d
+                                }
+                                """.formatted(applicationId, versionId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.tierId").value("tierId is required"));
     }
 
     @Test
@@ -117,9 +166,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, versionId)))
+                                """.formatted(applicationId, versionId, createTier())))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("SUBSCRIPTION_ALREADY_EXISTS"))
                 .andExpect(r -> {
@@ -157,6 +207,8 @@ class SubscriptionIntegrationTest {
                 .andExpect(jsonPath("$.id").value(subscriptionId))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.apiVersionId").value(versionId))
+                .andExpect(jsonPath("$.tierId").isNumber())
+                .andExpect(jsonPath("$.tierName").isNotEmpty())
                 .andExpect(r -> {
                     String body = r.getResponse().getContentAsString();
                     assertThat(body).doesNotContain("ownerUserId");
@@ -215,6 +267,7 @@ class SubscriptionIntegrationTest {
     void createRejectsApplicationOwnedByAnotherUser() throws Exception {
         Long versionId = createVersionedApi();
         Long applicationId = createApplication("77", "DEVELOPER", "Bob's App");
+        Long tierId = createTier();
 
         mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
@@ -222,9 +275,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, versionId)))
+                                """.formatted(applicationId, versionId, tierId)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("APPLICATION_NOT_FOUND"))
                 .andExpect(r -> {
@@ -238,6 +292,7 @@ class SubscriptionIntegrationTest {
     @Test
     void createRejectsMissingApplication() throws Exception {
         Long versionId = createVersionedApi();
+        Long tierId = createTier();
 
         mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
@@ -245,9 +300,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": 98765,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(versionId)))
+                                """.formatted(versionId, tierId)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("APPLICATION_NOT_FOUND"))
                 .andExpect(jsonPath("$.message").value("Application with id 98765 does not exist"));
@@ -256,6 +312,7 @@ class SubscriptionIntegrationTest {
     @Test
     void createRejectsMissingApiVersion() throws Exception {
         Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long tierId = createTier();
 
         mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
@@ -263,9 +320,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": 55555
+                                  "apiVersionId": 55555,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId)))
+                                """.formatted(applicationId, tierId)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("API_VERSION_NOT_FOUND"))
                 .andExpect(jsonPath("$.message").value("Api version with id 55555 does not exist"));
@@ -314,7 +372,7 @@ class SubscriptionIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "application_id", "api_version_id", "created_at", "updated_at");
+                "id", "application_id", "api_version_id", "tier_id", "created_at", "updated_at");
 
         Integer nullableCount = jdbcTemplate.queryForObject(
                 "select count(*) from information_schema.columns "
@@ -338,7 +396,7 @@ class SubscriptionIntegrationTest {
                         + "where rel.relname = 'subscriptions' and con.contype = 'f' "
                         + "order by 1",
                 String.class);
-        assertThat(foreignKeyTargets).containsExactlyInAnyOrder("applications", "api_versions");
+        assertThat(foreignKeyTargets).containsExactlyInAnyOrder("applications", "api_versions", "subscription_tiers");
     }
 
     private Long createVersionedApi() throws Exception {
@@ -397,6 +455,16 @@ class SubscriptionIntegrationTest {
         return objectMapper.readTree(body).get("id").asLong();
     }
 
+    private Long createTier() {
+        String name = "tier-" + System.nanoTime();
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
+                        + "VALUES (?, ?, now(), now())",
+                name, "Integration test tier");
+        return jdbcTemplate.queryForObject(
+                "select id from subscription_tiers where name = ?", Long.class, name);
+    }
+
     private int subscribeAs(String userId, String role, Long applicationId, Long apiVersionId) throws Exception {
         return mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token(userId, role, 3600))
@@ -404,9 +472,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId)))
+                                """.formatted(applicationId, apiVersionId, createTier())))
                 .andReturn()
                 .getResponse()
                 .getStatus();
@@ -419,9 +488,10 @@ class SubscriptionIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId)))
+                                """.formatted(applicationId, apiVersionId, createTier())))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()

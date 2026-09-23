@@ -57,14 +57,15 @@ class SubscriptionControllerTest {
     @Test
     void createReturns201WithBodyAndLocationHeader() throws Exception {
         when(subscriptionService.create(eq(42L), any(CreateSubscriptionRequest.class)))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscriptions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "applicationId": 10,
-                                  "apiVersionId": 20
+                                  "apiVersionId": 20,
+                                  "tierId": 15
                                 }
                                 """))
                 .andExpect(status().isCreated())
@@ -72,6 +73,8 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.apiVersionId").value(20))
+                .andExpect(jsonPath("$.tierId").value(15))
+                .andExpect(jsonPath("$.tierName").value("Developer"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist())
@@ -81,8 +84,24 @@ class SubscriptionControllerTest {
     @Test
     void createDerivesOwnerFromAuthenticatedPrincipal() throws Exception {
         when(subscriptionService.create(eq(42L), any(CreateSubscriptionRequest.class)))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
 
+        mockMvc.perform(post("/subscriptions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": 10,
+                                  "apiVersionId": 20,
+                                  "tierId": 15
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        verify(subscriptionService).create(eq(42L), any(CreateSubscriptionRequest.class));
+    }
+
+    @Test
+    void createRejectsMissingTierIdWith400() throws Exception {
         mockMvc.perform(post("/subscriptions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -91,9 +110,9 @@ class SubscriptionControllerTest {
                                   "apiVersionId": 20
                                 }
                                 """))
-                .andExpect(status().isCreated());
-
-        verify(subscriptionService).create(eq(42L), any(CreateSubscriptionRequest.class));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.tierId").value("tierId is required"));
     }
 
     @Test
@@ -160,13 +179,15 @@ class SubscriptionControllerTest {
     @Test
     void getReturns200WithSubscriptionDetails() throws Exception {
         when(subscriptionService.get(1L, 42L))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(get("/subscriptions/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.apiVersionId").value(20))
+                .andExpect(jsonPath("$.tierId").value(15))
+                .andExpect(jsonPath("$.tierName").value("Developer"))
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());
     }
 
@@ -186,14 +207,16 @@ class SubscriptionControllerTest {
     void listReturns200WithOwnedSubscriptions() throws Exception {
         when(subscriptionService.list(42L))
                 .thenReturn(List.of(
-                        new SubscriptionResponse(1L, 10L, 20L, TIMESTAMP, TIMESTAMP),
-                        new SubscriptionResponse(2L, 10L, 21L, TIMESTAMP, TIMESTAMP)));
+                        new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP),
+                        new SubscriptionResponse(2L, 10L, 21L, 15L, "Developer", TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/subscriptions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].id").value(1))
                 .andExpect(jsonPath("$[0].applicationId").value(10))
+                .andExpect(jsonPath("$[0].tierId").value(15))
+                .andExpect(jsonPath("$[0].tierName").value("Developer"))
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].apiVersionId").value(21))
                 .andExpect(jsonPath("$[0].ownerUserId").doesNotExist());

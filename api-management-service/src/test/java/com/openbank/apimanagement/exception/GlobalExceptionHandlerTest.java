@@ -250,6 +250,42 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void subscriptionTierNotFoundProducesStructured404() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionTierNotFound(
+                        new SubscriptionTierNotFoundException(9L), request("GET", "/subscriptions"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(404);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(404);
+        assertThat(body.error()).isEqualTo("Not Found");
+        assertThat(body.code()).isEqualTo("SUBSCRIPTION_TIER_NOT_FOUND");
+        assertThat(body.message()).contains("9");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
+    void duplicateSubscriptionTierProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionTierAlreadyExists(
+                        new SubscriptionTierAlreadyExistsException("Gold"), request("POST", "/subscriptions"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.code()).isEqualTo("SUBSCRIPTION_TIER_ALREADY_EXISTS");
+        assertThat(body.message()).contains("Gold");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("unique constraint")
+                .doesNotContain("SQL")
+                .doesNotContain("DataIntegrityViolation");
+    }
+
+    @Test
     void credentialNotFoundProducesStructured404() {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
                 handler.handleCredentialNotFound(

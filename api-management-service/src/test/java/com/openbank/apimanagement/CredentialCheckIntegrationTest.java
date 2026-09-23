@@ -66,6 +66,7 @@ class CredentialCheckIntegrationTest {
         jdbcTemplate.execute("DELETE FROM applications");
         jdbcTemplate.execute("DELETE FROM api_versions");
         jdbcTemplate.execute("DELETE FROM apis");
+        jdbcTemplate.execute("DELETE FROM subscription_tiers");
     }
 
     @Test
@@ -278,10 +279,21 @@ class CredentialCheckIntegrationTest {
                         .content("""
                                 {
                                   "applicationId": %d,
-                                  "apiVersionId": %d
+                                  "apiVersionId": %d,
+                                  "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId)))
+                                """.formatted(applicationId, apiVersionId, createTier())))
                 .andExpect(status().isCreated());
+    }
+
+    private Long createTier() {
+        String name = "tier-" + System.nanoTime();
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
+                        + "VALUES (?, ?, now(), now())",
+                name, "Credential check tier");
+        return jdbcTemplate.queryForObject(
+                "select id from subscription_tiers where name = ?", Long.class, name);
     }
 
     private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(Long applicationId)

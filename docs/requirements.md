@@ -34,23 +34,25 @@
 - Applications are **implemented** (Phase 11, in the API Management Service);
   subscriptions are **implemented** (Phase 12, in the API Management Service);
   application credentials are **implemented** (Phase 13, in the API Management
-  Service); tiers, credential lifecycle, and gateway enforcement remain
-  planned.
+  Service); the subscription **tier foundation** is **implemented** (Phase 24, in
+  the API Management Service); credential lifecycle, tier rate limits/status,
+  and gateway tier enforcement remain planned.
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
-  link (`applicationId` + `apiVersionId`), `GET /subscriptions/{subscriptionId}`
+  link (`applicationId` + `apiVersionId` + `tierId`), `GET /subscriptions/{subscriptionId}`
   and `GET /subscriptions` read it back. Owner is derived from the JWT `sub`
   claim (never from the request body); a subscription is unique per
   (application, API version) — duplicates are rejected with `409`. Each
-  subscription is metadata-only: no lifecycle, status, credentials, rate limit,
-  or tier yet.
+  subscription references a **tier** (`tierId`/`tierName` in responses, Phase
+  24) but still carries no lifecycle, status, credentials, or rate limit.
 - Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
   issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
   hash is stored; the plaintext secret is returned exactly once at creation.
   `GET /credentials/{id}` and `GET /credentials` never return the secret or its
   hash. Ownership flows Credential → Application → owner (JWT `sub`).
 - An application can be **subscribed** to an API version under a rate-limit
-  **tier** (planned).
+  **tier** (planned; the tier registry itself — `subscription_tiers`,
+  Phase 24 — is implemented, but tier-backed rate limits are not yet applied).
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned).
 - Credential rotation, revocation, and status are **planned** (Phase 13 has no
   credential lifecycle).
