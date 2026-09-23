@@ -6,7 +6,11 @@
 > services; the Phase 15–22 gateway: routing + JWT and client-credential
 > authentication + subscription enforcement + Redis rate limiting + trusted
 > identity headers; and the Phase 18 Redis infrastructure integration, now with
-> real rate-limit counters since Phase 21)
+> real rate-limit counters since Phase 21; and the Phase 23 analytics
+> foundation: runtime analytics event capture in the gateway plus the new
+> Analytics Service owning their PostgreSQL persistence, with best-effort
+> in-memory delivery from the gateway to the Analytics Service (Phase 23,
+> Slice 4) that is fully isolated from the runtime request path)
 > are marked in their sections; everything else remains planned.
 
 ## Overview
@@ -75,7 +79,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
 | **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Subscription **tiers** remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
-| **Analytics Service** | Collects and aggregates API usage and performance data (request counts, latency, status-code distribution) published by the gateway and services, and exposes queries for the Developer Portal. |
+| **Analytics Service** | Owns the **runtime analytics events** (Phase 23): a PostgreSQL-backed service (port `8083`) that persists one record per managed API invocation — timestamp, API context/version, HTTP method, status code, latency, authentication type, and the caller's `userId` / `applicationId` (plain identifiers, nullable for JWT callers). Enum values are stored as strings, and no request/response bodies, tokens, or secrets are ever stored. It exposes **no public REST endpoints**; since Phase 23 Slice 4 it accepts events only on the internal `POST /internal/analytics/events` endpoint, authenticated with a shared internal token (`X-Internal-Service-Token`, compared in constant time) and answered `202 Accepted` without a body. Aggregations and queries for the Developer Portal remain planned. |
 
 ## Communication Between Services
 
@@ -88,6 +92,22 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   locally and references `ownerUserId` rather than holding user rows. A future
   Payment → Account or Payment → Transaction network call is deliberately not
   needed today because those domains share one service (and one database).
+- **Gateway → Analytics (Phase 23, Slice 4 — best-effort, failure-isolated):**
+  the gateway captures a runtime analytics event for every concluded
+  `/runtime/apis/**` request into a bounded in-memory sink (capacity
+  `ANALYTICS_QUEUE_CAPACITY`, default `1024`) and an async daemon worker
+  delivers each event over HTTP to the Analytics Service (default
+  `http://localhost:8083`) at `POST /internal/analytics/events`, authenticated
+  with the shared `ANALYTICS_INTERNAL_TOKEN` internal token. Delivery uses a
+  per-attempt timeout (`ANALYTICS_DELIVERY_TIMEOUT_MS`, default `500`) and is
+  deliberately **best-effort only**: a full queue drops events (offer, never
+  blocks), and a failed/timed-out attempt is dropped with a warning — there are
+  no retries and no exactly-once guarantees. When the gateway's
+  `ANALYTICS_INTERNAL_TOKEN` is not configured, delivery is disabled entirely
+  and events are never sent. **The runtime request path never waits on the
+  Analytics Service** (the timeout is only enforced on the delivery attempt);
+  hence `http://localhost:8083` is the last destination in the topology that
+  must not be confused with the management-route backends.
 - **Gateway → API Management (Phases 17 and 21):** the gateway calls the API
   Management Service's internal endpoints directly (never through any gateway
   route) to verify a caller against PostgreSQL:
@@ -330,8 +350,11 @@ record.
 > which since Phase 22 also passes the caller's verified identity to managed
 > APIs as gateway-generated `X-User-Id`/`X-Roles` (user flow) and
 > `X-User-Id`/`X-Application-Id`/`X-Client-Id` (application flow) headers — 6,
-> and 7 (minus the telemetry). Tiering and caching for the subscription/credential
-> checks and tier-based rate limiting remain planned.
+> and 7 (telemetry: since Phase 23 Slice 4 the gateway captures a runtime
+> analytics event per managed invocation and delivers it to the Analytics
+> Service asynchronously and best-effort, isolated from the request). Tiering
+> and caching for the subscription/credential checks and tier-based rate
+> limiting remain planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.
@@ -348,7 +371,10 @@ record.
    passing through the validated identity and application context.
 6. The backend service executes business logic (database reads/writes against
    PostgreSQL), using Redis for caching where applicable.
-7. The gateway returns the response and emits **telemetry** for analytics.
+7. The gateway returns the response and emits **telemetry** for analytics:
+   it captures a runtime analytics event and delivers it to the Analytics
+   Service asynchronously and best-effort (Phase 23 Slice 4), never blocking
+   the response on that delivery.
 
 ## Guiding Trade-offs
 
