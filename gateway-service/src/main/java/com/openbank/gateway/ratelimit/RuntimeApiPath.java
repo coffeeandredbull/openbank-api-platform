@@ -6,6 +6,11 @@ public record RuntimeApiPath(String contextPath, String version) {
 
     private static final String RUNTIME_API_PATH = "/runtime/apis";
 
+    public static boolean isRuntimePath(String path) {
+        return path != null
+                && (path.equals(RUNTIME_API_PATH) || path.startsWith(RUNTIME_API_PATH + "/"));
+    }
+
     public static Optional<RuntimeApiPath> from(String path) {
         if (path == null || !path.startsWith(RUNTIME_API_PATH + "/")) {
             return Optional.empty();

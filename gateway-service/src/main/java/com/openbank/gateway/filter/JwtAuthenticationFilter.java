@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.InvalidJwtException;
 import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.auth.JwtTokenService;
+import com.openbank.gateway.auth.TrustedIdentityHeaders;
+import com.openbank.gateway.ratelimit.RuntimeApiPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -17,6 +19,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -49,10 +52,15 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
 
     private final JwtTokenService jwtTokenService;
     private final ObjectMapper objectMapper;
+    private final TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer;
 
-    public JwtAuthenticationFilter(JwtTokenService jwtTokenService, ObjectMapper objectMapper) {
+    public JwtAuthenticationFilter(
+            JwtTokenService jwtTokenService,
+            ObjectMapper objectMapper,
+            TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer) {
         this.jwtTokenService = jwtTokenService;
         this.objectMapper = objectMapper;
+        this.trustedIdentityHeaderSanitizer = trustedIdentityHeaderSanitizer;
     }
 
     @Override
@@ -77,7 +85,26 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
             return reject(exchange, method, path, startTime);
         }
         exchange.getAttributes().put(IDENTITY_ATTRIBUTE, identity);
-        return chain.filter(exchange);
+        if (!RuntimeApiPath.isRuntimePath(path)) {
+            return chain.filter(exchange);
+        }
+        return chain.filter(withTrustedJwtIdentity(exchange, identity));
+    }
+
+    private ServerWebExchange withTrustedJwtIdentity(
+            ServerWebExchange exchange, JwtIdentity identity) {
+        ServerWebExchange sanitized = trustedIdentityHeaderSanitizer.sanitize(exchange);
+        ServerHttpRequestDecorator decorated = new ServerHttpRequestDecorator(sanitized.getRequest()) {
+            @Override
+            public HttpHeaders getHeaders() {
+                HttpHeaders headers = new HttpHeaders();
+                headers.putAll(super.getHeaders());
+                headers.set(TrustedIdentityHeaders.USER_ID, String.valueOf(identity.userId()));
+                headers.set(TrustedIdentityHeaders.ROLES, identity.role().name());
+                return HttpHeaders.readOnlyHttpHeaders(headers);
+            }
+        };
+        return sanitized.mutate().request(decorated).build();
     }
 
     private boolean isPublic(HttpMethod method, String path) {

@@ -62,7 +62,9 @@ to them, and manage credentials.
 > at the gateway**; Phase 17 — **subscription enforcement for JWT-authenticated
 > managed API invocations**; Phase 20 — runtime upstream resolution hardening;
 > Phase 21 — **client-credential authentication, application-scoped
-> subscription enforcement, and Redis-backed application rate limiting**), and
+> subscription enforcement, and Redis-backed application rate limiting**;
+> Phase 22 — **trusted identity headers supplied to managed APIs from verified
+> gateway authentication**), and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -318,6 +320,24 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   business use**. All new rejection bodies keep the stable
   `{timestamp,status,error,path,code,message,fieldErrors}` shape and never
   expose the credentials, hashes, upstream URLs, or internal responses.
+- **Phase 22 — API Gateway (trusted identity headers):** after successful
+  authentication of a `runtime` managed-API invocation (`/runtime/apis/**`),
+  the gateway supplies the caller's **verified identity** to the consumed API
+  as gateway-generated request headers. The JWT/user flow adds `X-User-Id`
+  (from the `sub` claim) and `X-Roles` (from the `role` claim) while continuing
+  to forward `Authorization: Bearer <jwt>` unchanged; the client-credential/
+  application flow adds `X-User-Id` (the credential's `ownerUserId`),
+  `X-Application-Id` (the credential's `applicationId`), and `X-Client-Id` (the
+  credential's `clientId`) while continuing to strip the Basic header. These
+  headers are **never trusted from the client**: a reusable
+  `TrustedIdentityHeaderSanitizer` strips any client-supplied `X-User-Id`,
+  `X-Roles`, `X-Application-Id`, or `X-Client-Id` values before trusted values
+  are added, so a spoofed identity can never reach the managed API. The headers
+  are applied **only** on `/runtime/apis/**` (platform-management routes receive
+  none), the filter order is unchanged, and each backend still validates the
+  JWT locally / re-checks ownership (defense in depth). Verified by focused
+  unit tests and an end-to-end integration test against a real managed
+  upstream.
 - **Planned phases (subject to change):** subscription tiers, credential
   rotation/revocation and status, Redis-backed token revocation and caches,
   the remaining services, the Developer Portal, shared infrastructure
@@ -349,7 +369,11 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   15)**, **JWT authentication is implemented (Phase 16)**, **subscription
   enforcement for managed API invocations is implemented (Phases 17 and 21 —
   JWT and application client credentials)**, **Redis-backed rate limiting is
-  implemented (per-user and per-application, Phase 21)**, and **Redis
+  implemented (per-user and per-application, Phase 21)**, **trusted identity
+  headers supplied to managed APIs are implemented (Phase 22 — gateway-derived
+  `X-User-Id`/`X-Roles` for users and `X-User-Id`/`X-Application-Id`/
+  `X-Client-Id` for applications, runtime routes only, never trusted from the
+  client)**, and **Redis
   connectivity is plumbed (Phase 18) and now used for rate-limit counters**;
   request observability for the Analytics Service remains planned.
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
@@ -397,5 +421,5 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
-gateway-service/     (implemented — Phases 15–21, routing + JWT/client-credential authentication + subscription enforcement + Redis rate limiting)
+gateway-service/     (implemented — Phases 15–22, routing + JWT/client-credential authentication + subscription enforcement + Redis rate limiting + trusted identity headers)
 ```

@@ -3,9 +3,9 @@
 > This document describes the **planned** REST API conventions for the OpenBank
 > API Platform. Early phases already implemented endpoint sets (Identity,
 > API Management, Payment Service) — each is marked "Implemented so far" below.
-> The Phase 15–21 gateway is also implemented (routing + JWT and
+> The Phase 15–22 gateway is also implemented (routing + JWT and
 > client-credential authentication + subscription enforcement + Redis rate
-> limiting; see the Gateway section). Consistent conventions
+> limiting + trusted identity headers; see the Gateway section). Consistent conventions
 > apply to the Developer
 > Portal-facing APIs and
 > the consumer-facing APIs routed by the gateway. OpenAPI documents for each
@@ -100,15 +100,19 @@
   forwards verified identity context to services:
   - `Authorization: Bearer <jwt>` — the standard path for users and
     OAuth2-style application flows.
-  - Planned forwarded/internal headers (gateway → services), carrying only
-    verified claims: `X-User-Id`, `X-Roles`, `X-Scopes`, `X-Application-Id`.
+  - Forwarded/internal headers (gateway → managed APIs, **implemented for
+    `/runtime/apis/**` since Phase 22**), carrying only verified claims:
+    `X-User-Id`, `X-Roles` (user flow) and `X-User-Id`, `X-Application-Id`,
+    `X-Client-Id` (application flow). `X-Scopes` remains planned. See the Phase
+    22 note below.
   - Note: services treat these headers as **enriched context from the
     gateway**, not as standalone trust; they still check ownership.
   - **Phase 16 note:** the gateway authenticates presenters itself: it
     validates the `Authorization: Bearer <jwt>` header (HS256 signature via
     the `JWT_SECRET` variable, expiry, and mandatory `sub` + `role` claims) and
     forwards it untouched to services; the `X-*` forwarded headers above are
-    still planned. See Security for the public/protected route split.
+    implemented for managed-API invocations in Phase 22. See Security for the
+    public/protected route split.
   - **Phase 21 note (application client credentials):** for managed API
     invocations only (`/runtime/apis/**`), an application may authenticate with
     `Authorization: Basic base64(clientId:clientSecret)` (the Phase 13
@@ -117,13 +121,23 @@
     endpoint and **strips the header before forwarding**, so the consumed
     backend never sees the secret. Platform-management routes do not accept
     Basic — they remain Bearer-only.
+  - **Phase 22 note (trusted identity headers):** after successful
+    authentication of a `/runtime/apis/**` request, the gateway supplies the
+    verified caller identity as gateway-generated request headers — `X-User-Id`
+    + `X-Roles` for the JWT/user flow, `X-User-Id` + `X-Application-Id` +
+    `X-Client-Id` for the client-credential/application flow — on top of the
+    unchanged `Authorization` behavior (Bearer forwarded, Basic stripped). These
+    headers are **never trusted from the client**: any client-supplied
+    `X-User-Id`, `X-Roles`, `X-Application-Id`, or `X-Client-Id` value is
+    stripped before trusted values are added. Platform-management routes receive
+    none of them.
 - Application credentials (client id/secret or API key) may be presented at
   token endpoints: `POST /auth/token` with `grant_type` and secrets in the body
   (never in URLs).
 
 ## Example Endpoint Structure
 
-### Gateway (implemented — Phases 15–21)
+### Gateway (implemented — Phases 15–22)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
 endpoints of its own**; it forwards the existing service paths unchanged and
@@ -224,6 +238,24 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   `Basic` is handled by the client-credential flow (the JWT filter skips).
   Platform-management routes remain Bearer-only: Basic on `/apis/**` → the
   standard `401 UNAUTHENTICATED`.
+- **Trusted identity headers (Phase 22):** for managed API invocations
+  (`/runtime/apis/**`) the gateway adds verified caller identity as
+  gateway-generated request headers before forwarding:
+  - **JWT/user flow** → `X-User-Id` (the JWT `sub` user id) + `X-Roles` (the
+    `role` claim, e.g. `ADMIN`/`DEVELOPER`); `Authorization: Bearer <jwt>` is
+    still forwarded unchanged.
+  - **Client-credential/application flow** → `X-User-Id` (the credential's
+    `ownerUserId`) + `X-Application-Id` (the credential's `applicationId`) +
+    `X-Client-Id` (the credential's `clientId`); **no `X-Roles`**; `Authorization`
+    remains stripped.
+  - **Spoof-safe:** the gateway strips any client-supplied `X-User-Id`,
+    `X-Roles`, `X-Application-Id`, or `X-Client-Id` from the inbound request
+    (a reusable sanitizer) before trusted values are added — these headers are
+    never accepted from the client (end-to-end tests assert a managed upstream
+    receives only gateway-derived values).
+  - Applied **only** on `/runtime/apis/**`; platform-management routes receive
+    none. Managed APIs receive them as enriched context, while each backend
+    still validates the JWT locally / re-checks ownership (defense in depth).
 - **Rate limiting (Phase 21 — Redis-backed, per API version):** every
   `/runtime/apis/**` request is rate limited before routing via Redis
   fixed-window counters keyed `rate_limit:user:{userId}:{context}:{version}`

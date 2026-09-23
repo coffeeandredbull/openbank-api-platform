@@ -3,10 +3,10 @@
 > This document describes the **planned** architecture of the OpenBank API
 > Platform. It is the design target that later phases build toward, one small
 > step at a time. Implemented parts (the Identity, API Management, and Payment
-> services; the Phase 15–21 gateway: routing + JWT and client-credential
-> authentication + subscription enforcement + Redis rate limiting; and the
-> Phase 18 Redis infrastructure integration, now with real rate-limit counters
-> since Phase 21)
+> services; the Phase 15–22 gateway: routing + JWT and client-credential
+> authentication + subscription enforcement + Redis rate limiting + trusted
+> identity headers; and the Phase 18 Redis infrastructure integration, now with
+> real rate-limit counters since Phase 21)
 > are marked in their sections; everything else remains planned.
 
 ## Overview
@@ -104,7 +104,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
-**Implemented (Phases 15–21).** The `gateway-service`
+**Implemented (Phases 15–22).** The `gateway-service`
 (Spring Cloud Gateway) listens on port `8080` and performs:
 
 - **Single entry point**: all requests — from the Developer Portal and from
@@ -186,6 +186,30 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic
     on `/apis/**` → `401 UNAUTHENTICATED`); a request with both Bearer and
     Basic uses the client-credential flow.
+- **Trusted identity headers (Phase 22)**: for managed API invocations
+  (`/runtime/apis/**`) the gateway supplies the caller's **verified identity**
+  to the consumed API as gateway-generated request headers, added after
+  successful authentication and before forwarding:
+  - **JWT (user) flow** → `X-User-Id` (the JWT `sub` user id) and `X-Roles` (the
+    JWT `role`, e.g. `ADMIN`/`DEVELOPER`); `Authorization: Bearer <jwt>` is
+    still forwarded unchanged.
+  - **Client-credential (application) flow** → `X-User-Id` (the credential's
+    `ownerUserId`), `X-Application-Id` (the credential's `applicationId`), and
+    `X-Client-Id` (the credential's `clientId`); no `X-Roles` is set, and the
+    `Authorization: Basic ...` header remains stripped before forwarding.
+  - The values are always **gateway-derived after authentication** (from JWT
+    claims or the credential-check response) and are **never trusted from the
+    client**: a reusable `TrustedIdentityHeaderSanitizer` strips any
+    client-supplied `X-User-Id`, `X-Roles`, `X-Application-Id`, or `X-Client-Id`
+    values from the inbound request before trusted values are added, so a
+    spoofed identity can never reach the consumed API or influence it.
+  - **Runtime path only**: the headers are added exclusively on
+    `/runtime/apis/**`; platform-management routes (`/apis/**`,
+    `/applications/**`, ...) receive none of them. Filter order is unchanged
+    (`-210` client credentials → `-200` JWT → `-150` subscription → `-120` rate
+    limit → `-100` global filter). Backend services still treat these headers
+    as enriched context and continue to validate the JWT locally / re-check
+    ownership (defense in depth).
 - **Rate limiting (Phase 21 — Redis-backed)**: every `/runtime/apis/**` request
   is rate limited before routing with Redis fixed-window counters per API
   version — `rate_limit:user:{userId}:{context}:{version}` for JWT callers,
@@ -298,12 +322,15 @@ record.
 
 ## Planned Request Flow
 
-> Phase 21 status: the gateway already performs steps 1, 2 (authentication —
+> Phase 22 status: the gateway already performs steps 1, 2 (authentication —
 > JWT validation for user Bearer calls, client-credential verification for
 > application Basic calls), 3 (subscription — JWT flow via
 > `/internal/subscription-check`, application flow via the same
-> `/internal/credential-check` call), 4 (Redis-backed rate limiting), 5, 6, and
-> 7 (minus the telemetry). Tiering and caching for the subscription/credential
+> `/internal/credential-check` call), 4 (Redis-backed rate limiting), and 5 —
+> which since Phase 22 also passes the caller's verified identity to managed
+> APIs as gateway-generated `X-User-Id`/`X-Roles` (user flow) and
+> `X-User-Id`/`X-Application-Id`/`X-Client-Id` (application flow) headers — 6,
+> and 7 (minus the telemetry). Tiering and caching for the subscription/credential
 > checks and tier-based rate limiting remain planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal

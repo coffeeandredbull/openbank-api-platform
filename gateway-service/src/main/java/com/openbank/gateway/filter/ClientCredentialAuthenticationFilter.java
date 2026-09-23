@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.ClientCredentialIdentity;
+import com.openbank.gateway.auth.TrustedIdentityHeaders;
 import com.openbank.gateway.ratelimit.RuntimeApiPath;
 import io.netty.channel.ChannelOption;
 import org.slf4j.Logger;
@@ -44,7 +45,6 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
     public static final String APPLICATION_SUBSCRIBED_ATTRIBUTE =
             ClientCredentialAuthenticationFilter.class.getName() + ".subscribed";
 
-    private static final String RUNTIME_API_PATH = "/runtime/apis";
     private static final String INTERNAL_CHECK_PATH = "/internal/credential-check";
     private static final String BASIC_PREFIX = "Basic ";
 
@@ -61,11 +61,14 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
 
     private final ObjectMapper objectMapper;
     private final WebClient checkClient;
+    private final TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer;
 
     public ClientCredentialAuthenticationFilter(
             ObjectMapper objectMapper,
+            TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer,
             @Value("${API_MANAGEMENT_SERVICE_URL:http://localhost:8081}") String apiManagementServiceUrl) {
         this.objectMapper = objectMapper;
+        this.trustedIdentityHeaderSanitizer = trustedIdentityHeaderSanitizer;
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MILLIS)
                 .responseTimeout(RESPONSE_TIMEOUT);
@@ -84,7 +87,7 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
         String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-        if (!isRuntimeApiPath(path) || !isBasicAuthorization(authorization)) {
+        if (!RuntimeApiPath.isRuntimePath(path) || !isBasicAuthorization(authorization)) {
             return chain.filter(exchange);
         }
         long startTime = System.currentTimeMillis();
@@ -108,17 +111,13 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                                 path,
                                 routeId(exchange),
                                 System.currentTimeMillis() - startTime);
-                        yield chain.filter(stripAuthorization(exchange));
+                        yield chain.filter(withTrustedClientCredentialIdentity(exchange, identity));
                     }
                     case INVALID -> writeError(exchange, path, HttpStatus.UNAUTHORIZED,
                             CODE_INVALID, MESSAGE_INVALID, startTime);
                     case UNAVAILABLE -> writeError(exchange, path, HttpStatus.SERVICE_UNAVAILABLE,
                             CODE_UNAVAILABLE, MESSAGE_UNAVAILABLE, startTime);
                 });
-    }
-
-    private boolean isRuntimeApiPath(String path) {
-        return path.equals(RUNTIME_API_PATH) || path.startsWith(RUNTIME_API_PATH + "/");
     }
 
     private boolean isBasicAuthorization(String authorization) {
@@ -193,17 +192,22 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
         }
     }
 
-    private ServerWebExchange stripAuthorization(ServerWebExchange exchange) {
-        ServerHttpRequestDecorator stripped = new ServerHttpRequestDecorator(exchange.getRequest()) {
+    private ServerWebExchange withTrustedClientCredentialIdentity(
+            ServerWebExchange exchange, ClientCredentialIdentity identity) {
+        ServerWebExchange sanitized = trustedIdentityHeaderSanitizer.sanitize(exchange);
+        ServerHttpRequestDecorator decorated = new ServerHttpRequestDecorator(sanitized.getRequest()) {
             @Override
             public HttpHeaders getHeaders() {
                 HttpHeaders headers = new HttpHeaders();
                 headers.putAll(super.getHeaders());
                 headers.remove(HttpHeaders.AUTHORIZATION);
+                headers.set(TrustedIdentityHeaders.USER_ID, String.valueOf(identity.ownerUserId()));
+                headers.set(TrustedIdentityHeaders.APPLICATION_ID, String.valueOf(identity.applicationId()));
+                headers.set(TrustedIdentityHeaders.CLIENT_ID, identity.clientId());
                 return HttpHeaders.readOnlyHttpHeaders(headers);
             }
         };
-        return exchange.mutate().request(stripped).build();
+        return sanitized.mutate().request(decorated).build();
     }
 
     private Mono<Void> writeError(

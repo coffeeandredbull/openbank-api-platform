@@ -2,7 +2,9 @@ package com.openbank.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.ClientCredentialIdentity;
+import com.openbank.gateway.auth.TrustedIdentityHeaders;
 import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
+import com.openbank.gateway.filter.TrustedIdentityHeaderSanitizer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -24,6 +26,7 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -107,6 +110,7 @@ class ClientCredentialAuthenticationFilterTest {
         HIT.set(false);
         filter = new ClientCredentialAuthenticationFilter(
                 new ObjectMapper(),
+                new TrustedIdentityHeaderSanitizer(),
                 "http://127.0.0.1:" + CHECK_SERVER.getAddress().getPort());
     }
 
@@ -115,10 +119,15 @@ class ClientCredentialAuthenticationFilterTest {
     }
 
     private Result call(String path, String authorization) {
+        return call(path, authorization, Map.of());
+    }
+
+    private Result call(String path, String authorization, Map<String, String> extraHeaders) {
         MockServerHttpRequest.BaseBuilder<?> builder = MockServerHttpRequest.get(path);
         if (authorization != null) {
             builder.header(HttpHeaders.AUTHORIZATION, authorization);
         }
+        extraHeaders.forEach(builder::header);
         MockServerWebExchange exchange = MockServerWebExchange.from(builder.build());
         AtomicBoolean forwarded = new AtomicBoolean(false);
         AtomicReference<ServerWebExchange> downstream = new AtomicReference<>();
@@ -223,7 +232,10 @@ class ClientCredentialAuthenticationFilterTest {
     void unreachableCheckServiceReturns503() {
         String unreachableUrl = "http://127.0.0.1:" + freePort();
         ClientCredentialAuthenticationFilter unreachableFilter =
-                new ClientCredentialAuthenticationFilter(new ObjectMapper(), unreachableUrl);
+                new ClientCredentialAuthenticationFilter(
+                        new ObjectMapper(),
+                        new TrustedIdentityHeaderSanitizer(),
+                        unreachableUrl);
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts")
                         .header(HttpHeaders.AUTHORIZATION, basicHeader())
@@ -340,6 +352,81 @@ class ClientCredentialAuthenticationFilterTest {
         filter.filter(exchange, chain).block();
         assertThat(downstream.get().getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION)).isNull();
         assertThat(downstream.get().getRequest().getHeaders().getFirst("X-Custom")).isEqualTo("custom-value");
+    }
+
+    @Test
+    void validClientCredentialsInjectTrustedIdentityHeaders() {
+        Result result = call("/runtime/apis/payments/v1/accounts", basicHeader());
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders())
+                .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("42"))
+                .containsEntry(TrustedIdentityHeaders.APPLICATION_ID, List.of("7"))
+                .containsEntry(TrustedIdentityHeaders.CLIENT_ID, List.of(CLIENT_ID))
+                .doesNotContainKey(TrustedIdentityHeaders.ROLES);
+    }
+
+    @Test
+    void rolesHeaderIsNeverAddedForClientCredentials() {
+        Result result = call("/runtime/apis/payments/v1/accounts", basicHeader());
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders())
+                .doesNotContainKey(TrustedIdentityHeaders.ROLES);
+    }
+
+    @Test
+    void clientSuppliedIdentityHeadersCannotOverrideVerifiedValues() {
+        Result result = call("/runtime/apis/payments/v1/accounts", basicHeader(), Map.of(
+                TrustedIdentityHeaders.USER_ID, "attacker",
+                TrustedIdentityHeaders.ROLES, "ADMIN",
+                TrustedIdentityHeaders.APPLICATION_ID, "attacker-app",
+                TrustedIdentityHeaders.CLIENT_ID, "attacker-client"));
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders())
+                .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("42"))
+                .containsEntry(TrustedIdentityHeaders.APPLICATION_ID, List.of("7"))
+                .containsEntry(TrustedIdentityHeaders.CLIENT_ID, List.of(CLIENT_ID))
+                .doesNotContainKey(TrustedIdentityHeaders.ROLES);
+    }
+
+    @Test
+    void clientSecretIsNeverForwardedInHeaders() {
+        Result result = call("/runtime/apis/payments/v1/accounts", basicHeader());
+
+        String encoded = Base64.getEncoder().encodeToString(
+                (CLIENT_ID + ":" + CLIENT_SECRET).getBytes(StandardCharsets.UTF_8));
+        List<String> headerValues = result.downstream().getRequest().getHeaders().values().stream()
+                .flatMap(List::stream)
+                .toList();
+        assertThat(result.downstream().getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION)).isNull();
+        assertThat(headerValues)
+                .noneMatch(value -> value.contains(CLIENT_SECRET))
+                .noneMatch(value -> value.contains("Basic " + encoded));
+    }
+
+    @Test
+    void nonRuntimeClientCredentialRequestDoesNotGetTrustedIdentityHeaders() {
+        Result result = call("/accounts/1", basicHeader());
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders())
+                .doesNotContainKeys(
+                        TrustedIdentityHeaders.USER_ID,
+                        TrustedIdentityHeaders.ROLES,
+                        TrustedIdentityHeaders.APPLICATION_ID,
+                        TrustedIdentityHeaders.CLIENT_ID);
+    }
+
+    @Test
+    void unrelatedHeadersArePreservedForClientCredentialRequests() {
+        Result result = call("/runtime/apis/payments/v1/accounts", basicHeader(),
+                Map.of("X-Custom", "custom-value"));
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders().getFirst("X-Custom"))
+                .isEqualTo("custom-value");
     }
 
     private static int freePort() {
