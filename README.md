@@ -261,6 +261,21 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   path), and the three backend services now expose the `health` actuator
   endpoint (previously only the gateway did). **Nothing in Phase 18 stores,
   caches, or rates anything in Redis.**
+- **Phase 20 — API Gateway (runtime upstream resolution hardening):** the
+  managed-API invocation route `/runtime/apis/**` keeps forwarding with the
+  full original path, method, query, body, and headers unchanged, but the
+  upstream target is now **validated at startup**. `MANAGED_API_TARGET_URL`
+  (default `http://localhost:8084`) must resolve to an absolute `http(s)` URL
+  with a host and must not contain credentials/userinfo, a fragment, or
+  whitespace; an invalid value aborts gateway startup with a generic message
+  that never echoes the configured value. The upstream is
+  **configuration-only**: the gateway never derives a target host from query
+  parameters, request headers, the `Authorization` header, or path input — it
+  is not a dynamic API registry and never queries PostgreSQL — so it cannot be
+  turned into an open proxy. An unreachable or timed-out managed target still
+  returns `503` + code `UPSTREAM_SERVICE_UNAVAILABLE` with a fixed, leak-free
+  message, and the authentication → subscription enforcement → rate limiting →
+  forwarding order is unchanged.
 - **Planned phases (subject to change):** API Gateway client-credential
   authentication (using these credentials), subscription tiers / Redis-backed
   rate limits, credential rotation/revocation and status, Redis-backed token

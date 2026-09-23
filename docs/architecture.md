@@ -99,7 +99,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 ## API Gateway Responsibilities
 
-**Implemented (Phases 15–17).** The `gateway-service`
+**Implemented (Phases 15–20).** The `gateway-service`
 (Spring Cloud Gateway) listens on port `8080` and performs:
 
 - **Single entry point**: all requests — from the Developer Portal and from
@@ -118,6 +118,16 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     versioned APIs (an API consumer invoking a published API through the
     gateway) and is where subscription enforcement applies. Platform-management
     routes are **not** gated by subscriptions.
+  - **Runtime upstream resolution (Phase 20)** is configuration-only and
+    validated at startup: `MANAGED_API_TARGET_URL` must resolve to an absolute
+    `http(s)` URL with a host and must not contain credentials/userinfo, a
+    fragment, or whitespace. Malformed values abort gateway startup with a
+    generic message that never echoes the configured value. The gateway never
+    accepts an upstream host from query parameters, request headers, the
+    `Authorization` header, or path input — it is not a dynamic API registry
+    and never queries PostgreSQL. Failure behavior is unchanged: an
+    unreachable or timed-out managed target returns `503` + code
+    `UPSTREAM_SERVICE_UNAVAILABLE` with a fixed message.
 - **Authentication (Phase 16)**: a global JWT filter validates the
   `Authorization: Bearer <jwt>` header before routing. Only `POST /users`,
   `POST /auth/login`, and `GET /actuator/health` are public; all other routed

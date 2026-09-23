@@ -399,6 +399,19 @@ Implemented behavior:
   contains the upstream host, port, URL, exception class, or stack trace
   (covered by tests). Backend application errors (401/403/404/...) pass
   through unchanged, so clients still see the real backend error shape.
+- **Upstream selection is configuration-only and validated at startup (Phase
+  20):** the runtime upstream (`MANAGED_API_TARGET_URL`, default
+  `http://localhost:8084`) is trusted application configuration, never client
+  input. The gateway does not accept an upstream host, URL, or port from query
+  parameters, request headers, the `Authorization` header, or path segments, so
+  it cannot be turned into an open proxy; there is no arbitrary per-request URL
+  to inspect beyond the single configured value, and no SSRF surface from
+  request-controlled URLs. At startup the value must be an absolute `http(s)`
+  URL with a host; credentials/userinfo, fragments, unsupported schemes,
+  missing hosts, and whitespace are all rejected, and malformed values abort
+  startup with a generic error that never echoes the configured value (tests
+  cover every case). The gateway has no dynamic API registry and never queries
+  PostgreSQL for upstream resolution.
 - **Diagnostics-only logging:** each routed request logs method, path, route
   id, status, and duration. The gateway **never logs the `Authorization`
   header, JWT/token material, cookies, or any request/response body** — login

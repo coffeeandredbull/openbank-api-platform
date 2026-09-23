@@ -114,7 +114,7 @@
 
 ## Example Endpoint Structure
 
-### Gateway (implemented — Phases 15–17)
+### Gateway (implemented — Phases 15–20)
 
 The `gateway-service` (Spring Cloud Gateway, port `8080`) exposes **no business
 endpoints of its own**; it forwards the existing service paths unchanged and
@@ -130,6 +130,16 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
 - The upstream sees exactly the path, query, method, body, and headers the
   client sent — the URI is **not rewritten** (no `StripPrefix`). Any path not
   in the table returns the gateway's own `404`.
+- **Runtime upstream validation (Phase 20):** the `/runtime/apis/**` target is
+  configured via `MANAGED_API_TARGET_URL` (development default
+  `http://localhost:8084`) and validated at startup: absolute `http(s)` URL, a
+  host present, and no credentials/userinfo, fragment, or whitespace. Invalid
+  values abort gateway startup with a generic message that never echoes the
+  configured value. The target is **configuration-only** — a client-controlled
+  query, header, or path value can never choose or override the upstream, and
+  the gateway has no dynamic registry. Forwarding (path, query, method, body,
+  headers) is unchanged, and an unreachable or timed-out target still returns
+  `503` + code `UPSTREAM_SERVICE_UNAVAILABLE` with a fixed, leak-free message.
 - **Authentication (Phase 16):** the gateway requires
   `Authorization: Bearer <jwt>` on every routed path except `POST /users`,
   `POST /auth/login`, and `GET /actuator/health` (method-sensitive: e.g.
