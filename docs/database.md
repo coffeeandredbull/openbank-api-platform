@@ -158,10 +158,9 @@ Transaction together because they share one database and money rules.
 
 ### Analytics Service
 
-| Entity | Key fields (planned) | Notes |
+| Entity | Implemented columns | Notes |
 | --- | --- | --- |
-| `request_logs` | id, api_version_id, application_id, user_id, path, http_status, latency_ms, method, occurred_at | telemetry intake |
-| `daily_aggregates` | id, day, api_version_id, application_id, request_count, error_count, p50/p95 latency | precomputed aggregates for dashboard queries |
+| `runtime_analytics_events` | id, event_timestamp, api_context, api_version, http_method, status_code, latency_ms, authentication_type, user_id, application_id | one row per managed API invocation (Phase 23, Slices 3–5). Append-only, immutable. `event_timestamp` is an `Instant`; `status_code` is an int constrained to 100–599; `latency_ms` is a non-negative long; `authentication_type` is a persisted string enum (`JWT` / `CLIENT_CREDENTIAL`); `user_id`/`application_id` are plain identifiers (nullable for JWT callers). No request/response bodies, tokens, headers, or secrets are ever stored. Indexed on `event_timestamp` (Phase 23, Slice 6) for time-windowed aggregation. Usage summaries are computed **on demand** in PostgreSQL (`GET /analytics/usage`, Slice 6) — no precomputed aggregate tables exist yet.
 
 ## Important Relationships
 
@@ -191,8 +190,9 @@ Transaction together because they share one database and money rules.
   planned debit/credit balance-affecting entries remain future work.
 - `accounts` **1—n** `transactions` — transaction history per account (DB-level
   FK). Implemented (Phase 14).
-- Analytics rows reference API versions and applications **by ID** (cross
-  service; ingested via telemetry).
+- Analytics rows reference applications and users **by ID** (cross service;
+  ingested via the gateway's telemetry; API context/version are stored as
+  strings on the event).
 
 ## Data Ownership Summary
 

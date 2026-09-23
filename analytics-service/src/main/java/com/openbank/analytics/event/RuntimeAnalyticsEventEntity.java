@@ -7,13 +7,15 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import org.springframework.http.HttpMethod;
 
 import java.time.Instant;
 
 @Entity
-@Table(name = "runtime_analytics_events")
+@Table(name = "runtime_analytics_events",
+        indexes = @Index(name = "idx_runtime_analytics_events_timestamp", columnList = "event_timestamp"))
 public class RuntimeAnalyticsEventEntity {
 
     @Id

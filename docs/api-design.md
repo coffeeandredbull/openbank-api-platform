@@ -539,6 +539,19 @@ the request body.
   never credentials, tokens, headers, or bodies. Filtering, sorting, and
   pagination are executed in PostgreSQL (JpaSpecificationExecutor + Pageable);
   no rows are filtered or paged in memory.
+- Usage summary (Phase 23, Slice 6):
+  `GET /analytics/usage?from=...&to=...&apiContext=...&apiVersion=...` — same
+  `ADMIN`/`DEVELOPER` JWT protection and the same 401/403 error shape as
+  `/analytics/events`. All parameters optional; `from`/`to` are inclusive
+  ISO-8601 `Instant` bounds (from after `to` → `400 INVALID_REQUEST_PARAMETER`,
+  malformed `Instant` → `400`), `apiContext`/`apiVersion` are exact matches.
+  Returns a single-row summary computed entirely in PostgreSQL (one aggregate
+  `SELECT`, no `GROUP BY`, no rows loaded into Java):
+  `{ "totalRequests": long, "successfulRequests": long, "clientErrorRequests": long,
+  "serverErrorRequests": long, "averageLatencyMs": double }`, where
+  `successful/clientError/serverError` are 2xx/4xx/5xx counts. An empty or
+  fully filtered-out window returns `200` with zero counts and
+  `averageLatencyMs: 0.0` (handled by `COALESCE(AVG(latency_ms), 0)`).
 - Planned (later): `GET /analytics/applications/{appId}/usage?since=...&until=...` —
   counts per API/status/latency buckets for the Developer Portal.
 
