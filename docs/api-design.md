@@ -521,8 +521,26 @@ the request body.
 - Planned (later): `GET /accounts/{accountId}/transactions?from=...&to=...&page=1&size=20`.
 
 ### Analytics Service
-- `GET /analytics/applications/{appId}/usage?since=...&until=...` — counts
-  per API/status/latency buckets for the Developer Portal.
+- Public query (Phase 23, Slice 5):
+  `GET /analytics/events?apiContext=...&apiVersion=...&authenticationType=...&statusCode=...&from=...&to=...&page=0&size=20` —
+  requires an `ADMIN` or `DEVELOPER` JWT; an anonymous, malformed, or invalid
+  token is answered `401 UNAUTHENTICATED` and a valid token whose role is not
+  `ADMIN`/`DEVELOPER` is answered `403 ACCESS_DENIED` (each via the platform
+  error shape, without disclosing why or echoing token material). All
+  parameters are optional: `apiContext`, `apiVersion`, and `authenticationType`
+  (`JWT`/`CLIENT_CREDENTIAL`) are exact matches, `statusCode` is an exact match
+  (100–599), `from`/`to` are inclusive `Instant` bounds (ISO-8601; `from` after
+  `to` is rejected), and `page ≥ 0`, `1 ≤ size ≤ 100` (default `0`/`20`). Any
+  invalid value → `400 INVALID_REQUEST_PARAMETER`. Returns
+  `{ "items": [...], "page", "size", "totalElements", "totalPages", "last" }`
+  ordered newest-first (`event_timestamp DESC, id DESC`). Each `item` exposes
+  only `id`, `timestamp`, `apiContext`, `apiVersion`, `httpMethod`,
+  `statusCode`, `latencyMs`, `authenticationType`, `userId`, `applicationId` —
+  never credentials, tokens, headers, or bodies. Filtering, sorting, and
+  pagination are executed in PostgreSQL (JpaSpecificationExecutor + Pageable);
+  no rows are filtered or paged in memory.
+- Planned (later): `GET /analytics/applications/{appId}/usage?since=...&until=...` —
+  counts per API/status/latency buckets for the Developer Portal.
 
 ## Why These Choices (interview-ready)
 

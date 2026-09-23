@@ -30,7 +30,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers
 @SpringBootTest
 @AutoConfigureMockMvc
-@TestPropertySource(properties = "app.internal.analytics-token=" + RuntimeAnalyticsEventIngestionIntegrationTest.TOKEN)
+@TestPropertySource(properties = {
+        "app.internal.analytics-token=" + RuntimeAnalyticsEventIngestionIntegrationTest.TOKEN,
+        "app.jwt.secret=integration-test-jwt-secret-value-0123456789-ab"
+})
 class RuntimeAnalyticsEventIngestionIntegrationTest {
 
     static final String TOKEN = "test-analytics-internal-token";

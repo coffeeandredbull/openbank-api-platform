@@ -19,6 +19,8 @@ server:
     include-message: never
 
 app:
+  jwt:
+    secret: ${JWT_SECRET:}
   internal:
     analytics-token: ${ANALYTICS_INTERNAL_TOKEN:}
 
