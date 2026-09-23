@@ -508,8 +508,47 @@ Implemented behavior:
   (a configuration test asserts the YAML contains no secret/password/jwt/token
   material).
 
-Not implemented yet (future phases): subscription tiers, credential
-rotation/revocation/status, and gateway-issued telemetry for analytics.
+Not implemented yet (future phases): subscription tiers and credential
+rotation/revocation/status. Gateway-issued runtime analytics telemetry is
+implemented (Phase 23) — see the Analytics Service section below.
+
+## Analytics Service — Implemented (Phase 23)
+
+- **JWT protection for query endpoints:** `GET /analytics/events` and
+  `GET /analytics/usage` accept only valid shared-signature HS256 bearer JWTs
+  (verified locally against the `JWT_SECRET` environment variable with
+  nimbus-jose-jwt; the secret must be at least 32 bytes). Every other endpoint
+  fails closed (`.anyRequest().denyAll()`); only `GET /actuator/health` is
+  public.
+- **ADMIN/DEVELOPER authorization:** both analytics endpoints require an
+  `ADMIN` or `DEVELOPER` role in the JWT. Missing, malformed, or expired tokens
+  return `401 UNAUTHENTICATED`; other roles return `403 ACCESS_DENIED`. There
+  is no per-user or per-application segmentation — the summary is a
+  platform-wide global aggregate.
+- **Internal ingestion boundary (`/internal/*`):** `POST
+  /internal/analytics/events` is guarded by a servlet filter that runs *before*
+  Spring Security (`Ordered.HIGHEST_PRECEDENCE`) and requires the shared
+  internal token; the runtime events are the only production traffic that
+  reaches the service directly on its own port (the gateway exposes no `/analytics`
+  route, so the internal endpoint is never reachable through the gateway or via
+  user JWTs).
+- **`ANALYTICS_INTERNAL_TOKEN`:** the shared secret for gateway→Analytics
+  delivery, read from the `ANALYTICS_INTERNAL_TOKEN` environment variable and
+  sent as the `X-Internal-Service-Token` request header on the internal
+  ingestion call. It never appears in configuration, responses, or logs, and
+  delivery is disabled entirely unless the token is set — a blank value means
+  the feature is off, so no event is ever transmitted unauthenticated.
+- **Constant-time token comparison:** the Analytics Service compares a SHA-256
+  digest of the expected token against a digest of the presented token with
+  `MessageDigest.isEqual` (constant-time on fixed-length digests), so a
+  missing, wrong, or malformed token always fails closed to `401`, and error
+  responses never reveal which check failed.
+- **No header forwarding to the Analytics Service:** the gateway builds the
+  internal delivery request from the event data only. Client `Authorization`
+  values (Bearer or Basic) and the trusted-identity headers (`X-User-Id`,
+  `X-Roles`, `X-Application-Id`, `X-Client-Id`) are never forwarded to the
+  Analytics Service; only the caller's numeric `userId`/`applicationId` are
+  included in the event payload (tests assert this).
 
 ## Authorization / RBAC
 

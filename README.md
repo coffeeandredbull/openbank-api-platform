@@ -64,7 +64,10 @@ to them, and manage credentials.
 > Phase 21 — **client-credential authentication, application-scoped
 > subscription enforcement, and Redis-backed application rate limiting**;
 > Phase 22 — **trusted identity headers supplied to managed APIs from verified
-> gateway authentication**), and
+> gateway authentication**), the **Analytics Service (Phase 23 — runtime
+> analytics: gateway event capture on `/runtime/apis/**`, bounded-queue
+> delivery, internal-token ingestion, event query, and global usage
+> summary)**, and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -338,6 +341,23 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   JWT locally / re-checks ownership (defense in depth). Verified by focused
   unit tests and an end-to-end integration test against a real managed
   upstream.
+- **Phase 23 — Analytics Service (runtime analytics):** for every valid
+  `/runtime/apis/**` invocation the gateway captures a runtime analytics event
+  (api context/version, HTTP method, status, latency, authentication type, and
+  the caller's `userId`/`applicationId`) and delivers it asynchronously — one
+  in-memory bounded queue plus a single daemon worker, fire-and-forget, never
+  blocking or slowing runtime requests, full-queue events silently dropped — to
+  the Analytics Service's internal ingestion endpoint. Delivery uses the shared
+  `ANALYTICS_INTERNAL_TOKEN` (`X-Internal-Service-Token` header, compared in
+  constant time, fail closed) and is disabled entirely when the token is not
+  set; client `Authorization` and trusted-identity headers are never forwarded.
+  The Analytics Service persists events to PostgreSQL (append-only, timestamp
+  index) and protects `GET /analytics/events` and `GET /analytics/usage` with
+  `ADMIN`/`DEVELOPER` JWTs: paged newest-first listing with exact-match
+  filters (api context/version, authentication type, status code) and inclusive
+  from/to bounds, plus a single-row global usage summary (`totalRequests`,
+  2xx/4xx/5xx counts, `averageLatencyMs`) computed in PostgreSQL. Verified by
+  unit and Testcontainers integration tests.
 - **Planned phases (subject to change):** subscription tiers, credential
   rotation/revocation and status, Redis-backed token revocation and caches,
   the remaining services, the Developer Portal, shared infrastructure
@@ -363,8 +383,10 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   user, `PENDING` payment creation, and transaction records of type `PAYMENT`.
   Planned extensions: real payment processing, balances/wallets, refunds,
   settlement, and richer transaction history.
-- **Analytics Service:** aggregated request usage and performance metrics
-  published from gateway/service activity.
+- **Analytics Service:** runtime analytics (gateway event capture, delivery,
+  ingestion, event query, and global usage summary) is implemented (Phase 23).
+  Planned extensions: developer-facing usage dashboards/charts (Developer
+  Portal) and per-application/per-user / grouped-bucketed breakdowns.
 - **API Gateway:** central entry point — **routing is implemented (Phase
   15)**, **JWT authentication is implemented (Phase 16)**, **subscription
   enforcement for managed API invocations is implemented (Phases 17 and 21 —
@@ -374,13 +396,15 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   `X-User-Id`/`X-Roles` for users and `X-User-Id`/`X-Application-Id`/
   `X-Client-Id` for applications, runtime routes only, never trusted from the
   client)**, and **Redis
-  connectivity is plumbed (Phase 18) and now used for rate-limit counters**;
-  request observability for the Analytics Service remains planned.
+  connectivity is plumbed (Phase 18) and now used for rate-limit counters**,
+  and the gateway publishes request observability to the Analytics Service
+  (Phase 23).
 - **Developer Portal:** React/TypeScript UI to browse APIs, register, create
   applications, subscribe, and view usage analytics.
 - **Shared infrastructure:** PostgreSQL as system of record; Redis is **connected
-  but not yet used for any business function** (Phase 18 — caching, token
-  storage, and rate-limit counters remain planned).
+  and used for distributed rate-limit counters in the gateway** (Phase 21 —
+  fixed-window counters per user/application per API version; Phase 18 added
+  connectivity and health monitoring). Caching and token storage remain planned.
 - **CI/CD & orchestration:** Docker images, Docker Compose for local
   development, GitHub Actions pipelines, Kubernetes manifests.
 
@@ -421,5 +445,6 @@ docs/
 identity-service/    (implemented — Phases 2–7)
 api-management-service/  (implemented — Phases 8–13, API catalog + versioning + lifecycle + applications + subscriptions + credentials)
 payment-service/     (implemented — Phase 14, Account + Payment + Transaction foundations)
-gateway-service/     (implemented — Phases 15–22, routing + JWT/client-credential authentication + subscription enforcement + Redis rate limiting + trusted identity headers)
+gateway-service/     (implemented — Phases 15–22, routing + JWT/client-credential authentication + subscription enforcement + Redis rate limiting + trusted identity headers; Phase 23 gateway analytics capture/delivery)
+analytics-service/   (implemented — Phase 23, runtime analytics event ingestion + event query + global usage summary)
 ```
