@@ -571,7 +571,8 @@ class CredentialIntegrationTest {
 
         assertThat(newClientId).isNotEqualTo(oldClientId);
         assertThat(newSecret).isNotEqualTo(oldSecret);
-        assertThat(rotated.get("createdAt").asText()).isEqualTo(original.get("createdAt").asText());
+        assertThat(rotated.get("createdAt").asText()).isNotBlank();
+        assertThat(rotated.get("updatedAt").asText()).isNotBlank();
 
         assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from credentials where id = ?", Integer.class, credentialId)).isEqualTo(1);

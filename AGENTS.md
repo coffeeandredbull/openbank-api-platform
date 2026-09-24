@@ -6,9 +6,9 @@ OpenBank API Platform is an educational enterprise API-management platform inspi
 
 ## Repository status
 
-- Fresh repository: no commits yet, only this file. No build files, no source code.
-- Do not run build/test/lint/typecheck commands until the relevant build files exist (`pom.xml`, `package.json`, etc.) — nothing compiles yet.
-- The active git repo's top-level is `C:\Users\www` (the home directory), not this project folder. `git add` from here stages the entire home tree — always use explicit paths and check `git status` before staging.
+- The git repo's top-level is this project folder (`C:\Users\www\Desktop\openbank-api-platform`), with an active commit history (Identity, API Management, gateway, payments, analytics, infrastructure; currently at Phase 24). Always check `git status` before staging; never stage unrelated files.
+- Builds exist: run build/test/lint from `api-management-service/` (`.\\mvnw.cmd -B test`), with Docker up for Testcontainers.
+- Never commit, push, or amend unless explicitly asked.
 - On Windows; the default shell is `pwsh` (PowerShell 7).
 
 ## Technology stack (do not change without asking)

@@ -70,7 +70,10 @@ to them, and manage credentials.
 > summary)**, the **subscription tier foundation (Phase 24 — `subscription_tiers`
 > registry + required `tier_id` binding on every subscription, plus the
 > **subscription lifecycle/status** state machine: `PENDING` → `ACTIVE` /
-> `DENIED` / `REVOKED`, ADMIN-only status management, since Phase 24)**, and
+> `DENIED` / `REVOKED`, ADMIN-only status management, since Phase 24)**, the
+> **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
+> status, ADMIN-only revocation and rotation, ACTIVE-only runtime
+> authentication), and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -379,13 +382,34 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    manages the lifecycle; invalid transitions → `409
    INVALID_SUBSCRIPTION_STATUS_TRANSITION`, a missing subscription → `404`, a
    malformed/absent status → `400 VALIDATION_FAILED`. Only **`ACTIVE`**
-   subscriptions now satisfy the internal `GET /internal/subscription-check`
-   and `GET /internal/credential-check` checks, so `PENDING`/`DENIED`/`REVOKED`
-   subscriptions stop counting for gateway enforcement (the gateway itself is
-   unchanged — the API Management Service remains the source of truth).
+subscriptions now satisfy the internal `GET /internal/subscription-check`
+    and `GET /internal/credential-check` checks, so `PENDING`/`DENIED`/`REVOKED`
+    subscriptions stop counting for gateway enforcement (the gateway itself is
+    unchanged — the API Management Service remains the source of truth).
+- **Phase 24, Slice 3 — API Management Service (credential lifecycle — status,
+   revocation & rotation):** credentials now carry a **status** (`ACTIVE`/
+   `REVOKED`, `EnumType.STRING`, stored as a `varchar`, `ACTIVE` on creation;
+   `REVOKED` is terminal). An **ADMIN-only** `PATCH /credentials/{credentialId}/status`
+   revokes a credential (any other transition — including `ACTIVE → ACTIVE` and
+   `REVOKED → ACTIVE` — returns `409
+   INVALID_CREDENTIAL_STATUS_TRANSITION`; missing credential → existing `404
+   CREDENTIAL_NOT_FOUND`, malformed/absent status → `400 VALIDATION_FAILED`).
+   An **ADMIN-only** `POST /credentials/{credentialId}/rotate` replaces the
+   `clientId` and `clientSecretHash` **in place** (same database row, same
+   Application, rewrapping any client id collision with the same bounded
+   `SecureRandom` retry policy) and returns the new `clientId` + plaintext
+   `clientSecret` exactly once; a `REVOKED` credential cannot be rotated
+   (`409`). Rotation is immediate: the old `clientId`/`clientSecret` stop
+   authenticating and only the new pair works, both enforced exclusively in the
+   API Management Service. Credential responses (`GET`, `GET /{id}`, PATCH,
+   rotation-as-well-as-creation only once for the secret) now expose `status`
+   and never expose `clientSecretHash`. The internal `GET /internal/credential-check`
+   now authenticates **only `ACTIVE`** credentials (a `REVOKED` credential →
+   `authenticated: false`), while subscription enforcement is unchanged (the
+   gateway itself is untouched).
 - **Planned phases (subject to change):** tier-based rate limiting and tier
-   lifecycle, credential rotation/revocation and status, Redis-backed token
-   revocation and caches, the remaining services, the Developer Portal, shared
+   lifecycle, Redis-backed token revocation and caches, credential expiry and
+   scopes, the remaining services, the Developer Portal, shared
    infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
    and Kubernetes manifests will be built in small, explicitly requested phases
    and verified (compile + tests) at each step.

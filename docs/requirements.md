@@ -68,8 +68,21 @@
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
-- Credential rotation, revocation, and status are **planned** (Phase 13 has no
-  credential lifecycle).
+- **Credential lifecycle (implemented, Phase 24, Slice 3):** credentials carry a
+  status (`ACTIVE`/`REVOKED`, `ACTIVE` on creation, `REVOKED` terminal,
+  persisted as `EnumType.STRING`). An **ADMIN-only** `PATCH
+  /credentials/{credentialId}/status` moves a credential to `REVOKED` (any
+  other transition — `ACTIVE → ACTIVE`, `REVOKED → REVOKED`, `REVOKED →
+  ACTIVE` — returns `409 INVALID_CREDENTIAL_STATUS_TRANSITION`);
+  an **ADMIN-only** `POST /credentials/{credentialId}/rotate` generates a new
+  `clientId` + `clientSecret`, stores only the new BCrypt hash, updates the
+  **same database row** (same Application), returns the new plaintext secret
+  exactly once, and invalidates the old pair immediately. GET/LIST/PATCH
+  responses expose `status` but never the secret or its hash. The gateway-facing
+  internal `GET /internal/credential-check` authenticates **only `ACTIVE`**
+  credentials, so a `REVOKED` credential stops working even with a correct
+  secret; subscription enforcement is unchanged. The API Management Service
+  remains the source of truth (no gateway changes, no Redis).
 - The Subscription Service decides whether a given application may call a given
   API version (planned; the gateway enforcement layer, which will authenticate
   applications with the Phase 13 credentials).
@@ -191,9 +204,13 @@
   version; the link is unique per (application, API version).
 - Tier defines allowed rates (requests/second or per hour, burst) — planned,
   bound to credentials issued per application.
-- Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — planned;
-  Phase 12 subscriptions carry no lifecycle state.
-- Credentials are bound to an application, not a user — planned.
+- Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
+  (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
+  subscriptions satisfy the internal checks).
+- Credentials are bound to an application, not a user — implemented (Phase 13);
+  credential **status / revocation / rotation** are implemented (Phase 24,
+  Slice 3, see the API Management section above). Per-credential scopes and
+  expiry remain planned.
 
 ## Rate Limiting Requirements
 

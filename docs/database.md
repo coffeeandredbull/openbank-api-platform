@@ -123,29 +123,37 @@ above. There is **no** admin tier CRUD endpoint yet and **no** rate-limit,
 pricing, or lifecycle fields — only the domain foundation. `created_at` is
 write-once; `updated_at` is set on creation.
 
-**Implemented so far (Phase 13) — `credentials`:** application credentials are
-now implemented in the **API Management Service** (they previously appeared
-only in the planned Subscription Service section below). Actual implemented
-columns: `id`, `application_id`, `client_id`, `client_secret_hash`,
-`created_at`, `updated_at`. `application_id` is a `NOT NULL` **foreign key** to
-`applications` (same service, allowed); `client_id` and `client_secret_hash`
-are `NOT NULL`. A **unique constraint** on `client_id` (DB-level
+**Implemented so far (Phase 13; lifecycle Phase 24 Slice 3) — `credentials`:**
+application credentials are now implemented in the **API Management Service**
+(they previously appeared only in the planned Subscription Service section
+below). Actual implemented columns: `id`, `application_id`,
+`client_id`, `client_secret_hash`, `status`, `created_at`, `updated_at`.
+`application_id` is a `NOT NULL` **foreign key** to `applications` (same
+service, allowed); `client_id`, `client_secret_hash`, and `status` are
+`NOT NULL` (`status` is a `varchar` holding `ACTIVE`/`REVOKED`, `ACTIVE` on
+creation). A **unique constraint** on `client_id` (DB-level
 `uc_credential_client_id`) guarantees each credential's client id is unique;
 the service also checks for existing ids up front and, if a collision somehow
 occurs, regenerates and retries instead of exposing a database error. Only the
 BCrypt **hash** of the client secret is stored — the plaintext secret is
-returned once at creation and is never persisted, retrieved, or logged. A
-credential has **no** status, expiry, scopes, permissions, rate limit, or
-gateway configuration fields; credential rotation/revocation/status remain
-planned. `created_at` is write-once; `updated_at` is set on creation (both
-equal at creation time). Ownership is logical: Credential → Application →
-`owner_user_id`, with no user table and no cross-service foreign key.
+returned once at creation (and once at rotation) and is never persisted,
+retrieved, or logged. Credential **status** with **revocation** and **rotation**
+are implemented (Phase 24, Slice 3): `PATCH /credentials/{id}/status` moves
+`ACTIVE → REVOKED` (terminal; everything else → `409`), and
+`POST /credentials/{id}/rotate` replaces `client_id`/`client_secret_hash` **in
+place** — same row, same `application_id`, status stays `ACTIVE`, new plaintext
+secret shown once — so the count of `credentials` rows never changes on
+rotation. Expiry, scopes, permissions, rate limit, and gateway-facing status
+defaults remain planned. `created_at` is write-once; `updated_at` is set on
+creation and on every status/rotation change. Ownership is logical: Credential →
+Application → `owner_user_id`, with no user table and no cross-service foreign
+key.
 
 ### Subscription Service
 
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
-| `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13) — see above; scopes, rotation/status (`revoked`) remain planned |
+| `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3) — see above; `api_key_hash`, scopes, and expiry remain planned |
 | `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description only; rate-limit/pricing fields remain planned |
 | `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 

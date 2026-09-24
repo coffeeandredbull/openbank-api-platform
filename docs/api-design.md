@@ -446,33 +446,62 @@ the request body.
   generated **server-side** and are not accepted from the client (extra body
   fields are ignored). Returns `201 Created` with a `Location: /credentials/{id}`
   header and body (`id`, `applicationId`, `clientId`, `clientSecret`,
-  `createdAt`, `updatedAt`). The plaintext `clientSecret` is returned
-  **exactly once**, in this creation response only.
+  `status`, `createdAt`, `updatedAt`). The plaintext `clientSecret` is returned
+  **exactly once**, in this creation response only. New credentials start with
+  `status: "ACTIVE"`.
 - `GET /credentials/{credentialId}` — the caller's **own** credential
   (applications the caller owns). Returns `CredentialResponse` (`id`,
-  `applicationId`, `clientId`, `createdAt`, `updatedAt`) — **never** the
-  `clientSecret` or `clientSecretHash`.
+  `applicationId`, `clientId`, `status`, `createdAt`, `updatedAt`) — **never**
+  the `clientSecret` or `clientSecretHash`.
 - `GET /credentials` — list the caller's **own** credentials in ascending `id`
   order (owner-scoped; other users' credentials never appear, no secrets).
+- `PATCH /credentials/{credentialId}/status` — **ADMIN-only** credential
+  lifecycle management (a global management operation keyed by credential id,
+  mirroring the subscription lifecycle endpoint — **not** owner-scoped). Body:
+  `{ "status": "REVOKED" }`. Allowed transition: `ACTIVE → REVOKED`.
+  Re-applying the current state (`ACTIVE → ACTIVE`, `REVOKED → REVOKED`) and
+  any restore (`REVOKED → ACTIVE`) return `409
+  INVALID_CREDENTIAL_STATUS_TRANSITION`; a missing credential → `404
+  CREDENTIAL_NOT_FOUND`; a missing/invalid `status` → `400 VALIDATION_FAILED`
+  (`fieldErrors.status`). `REVOKED` is terminal. Response is the same
+  `CredentialResponse` (status updated, never a secret).
+- `POST /credentials/{credentialId}/rotate` — **ADMIN-only** credential
+  rotation (global, not owner-scoped). The existing credential row is updated
+  **in place**: a new server-side `clientId` and a new `SecureRandom`
+  256-bit `clientSecret` are generated, only the new BCrypt hash is stored, the
+  status stays `ACTIVE`, and the response returns the **new** `clientId` and
+  plaintext `clientSecret` **exactly once** (same shape as creation, plus
+  `status`). The old `clientId`/`clientSecret` stop authenticating immediately.
+  A `REVOKED` credential cannot be rotated → `409
+  INVALID_CREDENTIAL_STATUS_TRANSITION`; a missing credential → `404
+  CREDENTIAL_NOT_FOUND`. `clientId` collision retries reuse the bounded
+  creation policy (never an unbounded loop).
 - Authorization is uniform for `ADMIN` and `DEVELOPER` with owner-based
   semantics, exactly like applications/subscriptions: `ADMIN` owns what it
-  creates and has **no** global access. Credential ownership is derived through
-  Credential → Application → ownerUserId. Accessing a credential that does not
-  exist **or belongs to an application the caller does not own** returns `404
-  CREDENTIAL_NOT_FOUND` (no existence leak). Creating a credential against an
-  application the caller does not own (or that does not exist) returns `404
-  APPLICATION_NOT_FOUND`.
+  creates and has **no** global access for reads — but **lifecycle management
+  (PATCH status, rotate) is an ADMIN-only global operation** by credential id,
+  exactly like the subscription lifecycle endpoint. Credential ownership is
+  derived through Credential → Application → ownerUserId. Accessing a credential
+  that does not exist **or belongs to an application the caller does not own**
+  returns `404 CREDENTIAL_NOT_FOUND` (no existence leak). Creating a credential
+  against an application the caller does not own (or that does not exist)
+  returns `404 APPLICATION_NOT_FOUND`.
 - `clientId` uniqueness: generated as a random UUID, unique per credential. A
   service-level existence check plus a database unique constraint on
   `client_id`; if a collision somehow occurs, the service regenerates and
-  retries rather than surfacing a database error.
+  retries rather than surfacing a database error. Rotation (same row, new id)
+  uses the identical bounded policy.
 - Secret hashing: the `clientSecret` is hashed with BCrypt (the same
   `PasswordEncoder` infrastructure as user passwords) and **only the hash** is
-  stored. The plaintext secret cannot be retrieved after creation.
-- Validation: `applicationId` is required (`@NotNull`); violations return `400
-  VALIDATION_FAILED`, malformed JSON returns `400 MALFORMED_REQUEST`.
-- No credential lifecycle yet: no rotation, revocation, status, expiry, scopes,
-  permissions, or rate limits. Those remain planned.
+  stored. The plaintext secret cannot be retrieved after creation or rotation.
+- Validation: `applicationId` is required for creation (`@NotNull`); `status`
+  is required for the status endpoint (`@NotNull`) and must be a valid
+  `CredentialStatus` value; violations return `400 VALIDATION_FAILED`, malformed
+  JSON returns `400 MALFORMED_REQUEST`.
+- Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3).
+  Expiry, scopes, permissions, and rate limits remain planned. The runtime
+  consumer is the internal `GET /internal/credential-check` (see the Gateway
+  section), which authenticates only `ACTIVE` credentials.
 
 ### Subscription Service
 
@@ -484,9 +513,11 @@ the request body.
 > above. The subscription schema carries a **tier reference**
 > (`subscription_tiers`, Phase 24) and a **status/lifecycle state machine**
 > (`PATCH /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions
-> section above). Credential rotation/revocation/status and subscription
-> deletion remain planned. They are repeated here as the planned contract for
-> the gateway/portal view.
+> section above), and application credentials carry a **status lifecycle with
+> revocation and rotation** (`PATCH /credentials/{id}/status`,
+> `POST /credentials/{id}/rotate`, Phase 24 Slice 3; see the Credentials section
+> above). Subscription deletion and credential expiry/scopes remain planned.
+> They are repeated here as the planned contract for the gateway/portal view.
 - `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
 - `GET    /subscriptions/{id}` — subscription status.

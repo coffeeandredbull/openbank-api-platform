@@ -130,10 +130,11 @@ Implemented behavior:
   no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
 
 Not implemented yet (future phases): RS256, subscription tier-based access
-control/rate limits, and credential lifecycle. (Gateway-level subscription
-checks are implemented later — Phases 17 and 21 — and the subscription
+control/rate limits, and credential expiry/scopes. (Gateway-level subscription
+checks are implemented later — Phases 17 and 21 — the subscription
 **status lifecycle** is implemented in the API Management Service in Phase 24,
-Slice 2; see below.)
+Slice 2, and the **credential lifecycle** — `ACTIVE`/`REVOKED` status,
+ADMIN-only revocation and rotation — in Phase 24, Slice 3; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -258,10 +259,32 @@ Implemented behavior:
   keys, not in the route matcher; the security filter only authenticates.
   Error responses (all 4xx, including 500) never expose `client_secret_hash`,
   SQL, constraint names, or the plaintext secret.
+- **Credential lifecycle (implemented, Phase 24, Slice 3):** credentials carry
+  a status (`ACTIVE`/`REVOKED`, persisted as `EnumType.STRING`, `ACTIVE` on
+  creation). **Revocation and rotation are ADMIN-only global operations** keyed
+  by credential id (like the subscription lifecycle endpoint) and are **not**
+  owner-scoped; normal reads stay owner-scoped as above.
+  - `PATCH /credentials/{id}/status` with `{"status":"REVOKED"}` moves
+    `ACTIVE → REVOKED`; `REVOKED` is terminal. `ACTIVE → ACTIVE`,
+    `REVOKED → REVOKED`, and `REVOKED → ACTIVE` all return `409
+    INVALID_CREDENTIAL_STATUS_TRANSITION` — revoking a credential is
+    irreversible on purpose (compromise containment), and an attacker can
+    never flip a revoked credential back to `ACTIVE`.
+  - `POST /credentials/{id}/rotate` replaces the `clientId` and
+    `clientSecretHash` **in place** (same DB row, same Application), backstopped
+    by the same bounded `SecureRandom` client-id retry policy. A `REVOKED`
+    credential cannot be rotated (`409`). The new plaintext secret is returned
+    exactly once; the old pair stops authenticating immediately.
+  - **Runtime enforcement:** the internal `GET /internal/credential-check`
+    authenticates **only `ACTIVE`** credentials (checked before BCrypt
+    `matches`), so a revoked or rotated-away credential yields
+    `{"authenticated":false}` even with a correct secret value. All read/lifecycle
+    responses expose `status` but never `clientSecret` or `clientSecretHash`,
+    and rotation keeps a single `credentials` row (no second credential).
 
-Not implemented yet (future phases): credential rotation, revocation, status,
-expiry, scopes, gateway-side verification/authentication of these credentials,
-and profile/scope enforcement.
+Not implemented yet (future phases): credential expiry, scopes, gateway-side
+verification of these credentials beyond the existing check, and
+profile/scope enforcement.
 
 ## Account/Payment/Transaction Ownership — Implemented (Phase 14)
 
@@ -513,9 +536,11 @@ Implemented behavior:
   (a configuration test asserts the YAML contains no secret/password/jwt/token
   material).
 
-Not implemented yet (future phases): subscription tiers and credential
-rotation/revocation/status. Gateway-issued runtime analytics telemetry is
-implemented (Phase 23) — see the Analytics Service section below.
+Not implemented yet (future phases): subscription tiers and credential expiry/
+scopes. Credential **status/revocation/rotation** are implemented (Phase 24,
+Slice 3) — see the Credential Security section below. Gateway-issued runtime
+analytics telemetry is implemented (Phase 23) — see the Analytics Service
+section below.
 
 ## Analytics Service — Implemented (Phase 23)
 
@@ -614,8 +639,18 @@ implemented (Phase 23) — see the Analytics Service section below.
   - The plaintext secret is generated server-side from `SecureRandom` (256-bit
     entropy), shown **once** at creation, and never logged, retrievable, or
     exposed by later responses.
-  - Rotation/revocation/status are **planned** (Phase 13 intentionally has no
-    credential lifecycle).
+  - **Status / revocation / rotation (implemented, Phase 24, Slice 3):** each
+    credential is `ACTIVE` on creation and can be moved to the terminal
+    `REVOKED` state by an ADMIN-only `PATCH /credentials/{id}/status`;
+    `REVOKED → ACTIVE` and same-state transitions are impossible (`409`).
+    An ADMIN-only `POST /credentials/{id}/rotate` replaces both the `clientId`
+    and the stored hash **in place** (no second row) and returns the new
+    plaintext secret exactly once. The internal
+    `GET /internal/credential-check` authenticates **only `ACTIVE`**
+    credentials, so revocation and rotation take effect immediately — a
+    revoked or pre-rotation secret never authenticates, even with the exact
+    correct value, and the check never returns the secret or its hash. Credential
+    expiry and scopes remain planned.
 - The gateway **authentication** step that consumes these credentials is
   **implemented (Phase 21)** — see "Gateway Foundations" above. The secret is
   presented as a Basic header, verified server-side on every request (BCrypt
@@ -698,7 +733,7 @@ implemented (Phase 23) — see the Analytics Service section below.
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
-| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Since Phase 24 (Slice 2) only **active** subscriptions satisfy the checks (an ADMIN-only status lifecycle manages `PENDING/ACTIVE/DENIED/REVOKED`); tier-based enforcement and Redis caching remain planned |
+| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Since Phase 24 (Slice 2) only **active** subscriptions satisfy the checks (an ADMIN-only status lifecycle manages `PENDING/ACTIVE/DENIED/REVOKED`); since Phase 24 (Slice 3) the application flow additionally authenticates **only `ACTIVE` credentials** — `GET /internal/credential-check` rejects `REVOKED` credentials (the ADMIN-only status/rotation endpoints manage `ACTIVE`/`REVOKED`). Tier-based enforcement and Redis caching remain planned |
 | Client-credential gateway authentication | **Implemented (Phase 21)** — `/runtime/apis/**` accepts `Authorization: Basic base64(clientId:clientSecret)`; the gateway verifies the credential (and the application's subscription) via the internal `GET /internal/credential-check` endpoint (BCrypt against the stored hash, direct PostgreSQL query, no cache) and **strips the Basic header before forwarding**; unknown/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`, check failure → `503 CREDENTIAL_SERVICE_UNAVAILABLE` (fail closed), no subscription → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic on `/apis/**` → `401`); secrets/hashes are never stored, returned, forwarded, or logged by the gateway |
 | Trusted identity headers (gateway → managed APIs) | **Implemented (Phase 22)** — after authenticating a `/runtime/apis/**` request the gateway adds verified identity headers (`X-User-Id` + `X-Roles` for the JWT/user flow; `X-User-Id` + `X-Application-Id` + `X-Client-Id` for the client-credential/application flow) before forwarding, keeps Bearer forwarding / Basic stripping unchanged, applies them only on runtime routes, and always strips client-supplied values of these four headers (never trusted from the client); platform-management routes receive none. `X-Scopes` remains planned |
 | Rate limiting | **Implemented (Phase 21)** — the gateway rate-limits `/runtime/apis/**` before routing with Redis fixed-window counters per API version (`rate_limit:user:{userId}:{context}:{version}` for JWT callers, `rate_limit:app:{applicationId}:{context}:{version}` for application callers; `RATE_LIMIT_REQUESTS` default `100` per `RATE_LIMIT_WINDOW_SECONDS` default `60` s); exceed → `429 RATE_LIMIT_EXCEEDED` with `Retry-After`, Redis failure → `503 RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). Tiers and per-subscription limits remain planned |
@@ -729,10 +764,14 @@ implemented (Phase 23) — see the Analytics Service section below.
 > caller's verified identity to the consumed API as gateway-generated
 > `X-User-Id`/`X-Roles` (user flow) and `X-User-Id`/`X-Application-Id`/
 > `X-Client-Id` (application flow) headers (Phase 22), always stripping any
-> client-supplied values of those headers. Scope enforcement, tier-based access
-> control, and credential lifecycle remain planned; subscription **status**
+> client-supplied values of those headers. Scope enforcement and tier-based access
+> control remain planned; subscription **status**
 > (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`) is enforced by the API Management
-> Service's internal checks (Phase 24, Slice 2). Each backend service still validates
+> Service's internal checks (Phase 24, Slice 2) and credential **status**
+> (`ACTIVE`/`REVOKED`, with ADMIN-only revocation/rotation) is enforced by
+> `GET /internal/credential-check` — only `ACTIVE` credentials authenticate
+> (Phase 24, Slice 3). PostgreSQL remains the system of record and the checks
+> are uncached. Each backend service still validates
 > the JWT locally, so the gateway is not a single point of trust for
 > authentication. Redis is connected across all four services (Phase 18) with
 > health monitoring via the dedicated `redisHealth` health group and is now
