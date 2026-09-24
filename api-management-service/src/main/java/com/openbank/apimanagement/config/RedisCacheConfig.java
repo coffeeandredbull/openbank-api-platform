@@ -28,12 +28,26 @@ import java.time.Duration;
 
 /**
  * Redis-backed read-through caching for selected non-sensitive API Management
- * read models (API catalog by id, API version by api id + version id,
- * subscription tier by id). This is a performance optimization only:
- * PostgreSQL remains the source of truth, cache keys contain only database
- * identifiers (never user identity or secrets), and every cache failure is
- * swallowed so a Redis outage degrades to a plain PostgreSQL read instead of
- * an error.
+ * read models, all keyed by database identifiers only: API catalog by api id
+ * ({@code apiCatalog::{apiId}}), API version by api id + version id
+ * ({@code apiVersion::{apiId}::{versionId}}), subscription tier by id
+ * ({@code subscriptionTier::{tierId}}). This is a performance optimization
+ * only: PostgreSQL remains the source of truth, cache keys contain only
+ * database identifiers (never user identity or secrets), and every cache
+ * failure is swallowed so a Redis outage degrades to a plain PostgreSQL read
+ * instead of an error.
+ *
+ * <p>Consistency model (Phase 24 Slice 7): because every read model is keyed
+ * by ids, a create only adds a brand-new id that was never resolvable - and
+ * therefore never cached - so no existing entry can go stale and creates
+ * perform no eviction (the new id is naturally a cache miss on first read). The
+ * only mutation that changes a cached value in place today is the API version
+ * lifecycle change, which evicts exactly its own {@code apiVersion} key
+ * post-commit via {@link com.openbank.apimanagement.cache.CacheInvalidationService}.
+ * There is deliberately no cached list/filter read model ({@code list()}
+ * queries PostgreSQL directly), so no list-wide staleness exists to manage; if
+ * a future read were cached with a list/aggregate shape, that mutation would
+ * need its own targeted invalidation.
  */
 @Configuration
 @EnableCaching

@@ -387,11 +387,15 @@ separate (the management service does not read the gateway's shared Redis).
   tier (`subscriptionTier`, key `subscriptionTier::<tierId>`). Keys hold only
   database ids (no user identity, no secrets); values are JSON documents with an
   explicit type hint (`GenericJackson2JsonRedisSerializer` + default typing,
-  60s default TTL via `spring.cache.redis.time-to-live`). Read path is
-  cache-lookup → PostgreSQL on miss → populate; mutations (`ApiService.create`,
-  `ApiVersionService.create`, `SubscriptionTierService.create`) clear the whole
-  cache only after a successful transaction, and a version lifecycle change
-  evicts just that version's entry. Behaviors worth noting: a Redis failure never breaks a request (each cache
+60s default TTL via `spring.cache.redis.time-to-live`). Read path is
+   cache-lookup → PostgreSQL on miss → populate. Because every cached read
+   model is keyed by a database id, a **create never evicts** — it only adds a
+   fresh id that was never resolvable (hence never cached), so no existing
+   entry can go stale and each new id is naturally a miss on first read. The
+   only in-place mutation of a cached value today is the API version lifecycle
+   change, which evicts exactly its own `apiVersion::<apiId>::<versionId>` key
+   **after commit** via `CacheInvalidationService` (Slice 7 hardening; whole-cache
+   clearing is deliberately absent). Behaviors worth noting: a Redis failure never breaks a request (each cache
   interaction goes through a `CacheErrorHandler` that logs and treats a failed
   read as a miss and a failed write/evict as a no-op), authorization decisions
   are **never cached** (the internal subscription/credential checks are

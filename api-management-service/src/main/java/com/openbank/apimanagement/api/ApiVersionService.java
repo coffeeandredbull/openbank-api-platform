@@ -28,6 +28,13 @@ public class ApiVersionService {
         this.cacheInvalidationService = cacheInvalidationService;
     }
 
+    /**
+     * Creates an API version. The {@code apiVersion} cache is keyed by
+     * {@code (apiId, versionId)} and a create only introduces a new version id
+     * that was never resolvable (therefore never cached); existing cached
+     * versions of the same API are untouched by a create, so no eviction is
+     * needed - the new version id is a cache miss on its first read.
+     */
     @Transactional
     public ApiVersionResponse create(Long apiId, CreateApiVersionRequest request) {
         Api api = apiRepository.findById(apiId)
@@ -37,7 +44,6 @@ public class ApiVersionService {
         }
         try {
             ApiVersion saved = apiVersionRepository.save(new ApiVersion(api, request.version()));
-            cacheInvalidationService.evictAll("apiVersion");
             return ApiVersionResponse.from(saved);
         } catch (DataIntegrityViolationException e) {
             throw new ApiVersionAlreadyExistsException(apiId, request.version());

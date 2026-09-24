@@ -1,6 +1,5 @@
 package com.openbank.apimanagement.api;
 
-import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ContextPathAlreadyExistsException;
 import org.junit.jupiter.api.Test;
@@ -27,9 +26,6 @@ class ApiServiceTest {
 
     @Mock
     private ApiRepository apiRepository;
-
-    @Mock
-    private CacheInvalidationService cacheInvalidationService;
 
     @InjectMocks
     private ApiService apiService;
@@ -59,8 +55,6 @@ class ApiServiceTest {
         assertThat(response.contextPath()).isEqualTo("/payments");
         assertThat(response.createdAt()).isEqualTo(Instant.parse("2026-09-21T10:00:00Z"));
         assertThat(response.updatedAt()).isEqualTo(Instant.parse("2026-09-21T10:00:00Z"));
-
-        verify(cacheInvalidationService).evictAll("apiCatalog");
     }
 
     @Test

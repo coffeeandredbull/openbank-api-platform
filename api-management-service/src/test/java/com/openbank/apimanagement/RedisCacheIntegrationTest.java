@@ -7,7 +7,12 @@ import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.openbank.apimanagement.api.ApiService;
+import com.openbank.apimanagement.api.ApiVersionLifecycle;
+import com.openbank.apimanagement.api.ApiVersionService;
 import com.openbank.apimanagement.api.CreateApiRequest;
+import com.openbank.apimanagement.api.UpdateApiVersionLifecycleRequest;
+import com.openbank.apimanagement.subscription.SubscriptionTier;
+import com.openbank.apimanagement.subscription.SubscriptionTierService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -92,6 +97,12 @@ class RedisCacheIntegrationTest {
     private ApiService apiService;
 
     @Autowired
+    private ApiVersionService apiVersionService;
+
+    @Autowired
+    private SubscriptionTierService subscriptionTierService;
+
+    @Autowired
     private TransactionTemplate transactionTemplate;
 
     @BeforeEach
@@ -108,7 +119,7 @@ class RedisCacheIntegrationTest {
     }
 
     @Test
-    void apiCatalogReadHitIsServedFromRedisAndCreateEvictsAllCatalogEntries() throws Exception {
+    void apiCatalogReadHitIsServedFromRedisAndCreateDoesNotEvictExistingEntries() throws Exception {
         Long apiId = createApi("/cache-api-" + SEQUENCE.incrementAndGet());
 
         String original = getAndReadApi(apiId);
@@ -125,11 +136,48 @@ class RedisCacheIntegrationTest {
         assertThat(servedFromCache).isEqualTo(original);
         assertThat(servedFromCache).doesNotContain("Mutated Out Of Band");
 
-        Long otherApi = createApi("/cache-api-" + SEQUENCE.incrementAndGet());
+        Long newApi = createApi("/cache-api-" + SEQUENCE.incrementAndGet());
 
-        assertThat(stringRedisTemplate.hasKey(key)).as("create must evict every apiCatalog entry")
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a create must not evict still-valid per-id apiCatalog entries")
+                .isTrue();
+        assertThat(stringRedisTemplate.hasKey("apiCatalog::" + newApi))
+                .as("the new id is a fresh miss; it is only cached once read")
                 .isFalse();
-        assertThat(stringRedisTemplate.hasKey("apiCatalog::" + otherApi)).isFalse();
+    }
+
+    @Test
+    void apiVersionCreateDoesNotEvictOtherCachedVersions() throws Exception {
+        Long apiId = createApi("/cache-version-create-" + SEQUENCE.incrementAndGet());
+        Long v1 = createVersion(apiId, "v1");
+        getVersion(apiId, v1);
+        String v1Key = "apiVersion::" + apiId + "::" + v1;
+        assertThat(stringRedisTemplate.hasKey(v1Key)).isTrue();
+
+        Long v2 = createVersion(apiId, "v2");
+
+        assertThat(stringRedisTemplate.hasKey(v1Key))
+                .as("creating a new version must not evict cached versions of the same api")
+                .isTrue();
+        assertThat(stringRedisTemplate.hasKey("apiVersion::" + apiId + "::" + v2))
+                .as("the new version id is a fresh miss until read")
+                .isFalse();
+    }
+
+    @Test
+    void subscriptionTierCreateDoesNotEvictExistingCachedTiers() {
+        SubscriptionTier first = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60);
+        SubscriptionTier readBack = subscriptionTierService.get(first.getId());
+        assertThat(readBack.getName()).isEqualTo(first.getName());
+        String key = "subscriptionTier::" + first.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        subscriptionTierService.create("cache-tier-" + SEQUENCE.incrementAndGet(), "second tier", 200, 60);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("tier creation must not evict other cached tiers (per-id keying)")
+                .isTrue();
     }
 
     @Test
@@ -167,6 +215,31 @@ class RedisCacheIntegrationTest {
         String refreshed = getVersion(apiId, versionId);
         assertThat(refreshed).contains("PUBLISHED");
         assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+    }
+
+    @Test
+    void rolledBackLifecycleChangeDoesNotEvictTheCachedVersion() throws Exception {
+        Long apiId = createApi("/cache-lifecycle-rollback-" + SEQUENCE.incrementAndGet());
+        Long versionId = createVersion(apiId, "v1");
+        getVersion(apiId, versionId);
+        String key = "apiVersion::" + apiId + "::" + versionId;
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
+            apiVersionService.changeLifecycle(apiId, versionId,
+                    new UpdateApiVersionLifecycleRequest(ApiVersionLifecycle.PUBLISHED));
+            throw new IllegalStateException("force rollback after a successful lifecycle change");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a rolled-back lifecycle change must not evict the still-valid cached version")
+                .isTrue();
+        String cachedAfterRollback = stringRedisTemplate.opsForValue().get(key);
+        assertThat(cachedAfterRollback).contains("CREATED");
+
+        String dbLifecycle = jdbcTemplate.queryForObject(
+                "SELECT lifecycle FROM api_versions WHERE id = ?", String.class, versionId);
+        assertThat(dbLifecycle).isEqualTo("CREATED");
     }
 
     @Test

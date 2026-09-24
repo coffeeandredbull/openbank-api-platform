@@ -431,9 +431,13 @@ a subscribed request with a missing/malformed policy fails closed with `503`
    the system of record; the cache is a read-through optimization with a
    configurable TTL (`spring.cache.redis.time-to-live`, default `60s`, values
    JSON-serialized with an explicit type hint so records/entities round-trip).
-   Read path: cache lookup → PostgreSQL on miss → populate; mutations evict
-   after success (`create` clears all entries, version lifecycle changes evict
-   only that version). A Redis outage is **fail-open on reads**: a
+   Read path: cache lookup → PostgreSQL on miss → populate. Because every
+   cached read model is keyed by a database id, a **create never evicts** (it
+   only introduces a fresh id that was never cacheable — a natural miss on
+   first read, so no existing entry can go stale); the single in-place mutation
+   of a cached value — the version **lifecycle change** — evicts exactly its
+   own `apiVersion::<apiId>::<versionId>` key **after commit** (Slice 7). A
+   Redis outage is **fail-open on reads**: a
    `CacheErrorHandler` treats cache failures as misses (PostgreSQL fallback, no
    `503`) while health groups stay accurate (`redis`/`cache` contributors
    excluded from the primary aggregate, `redisHealth` group still reports

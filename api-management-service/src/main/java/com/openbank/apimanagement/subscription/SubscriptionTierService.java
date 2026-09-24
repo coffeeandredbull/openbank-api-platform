@@ -1,6 +1,5 @@
 package com.openbank.apimanagement.subscription;
 
-import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.springframework.cache.annotation.Cacheable;
@@ -17,15 +16,19 @@ public class SubscriptionTierService {
     private static final String NO_LEADING_OR_TRAILING_WHITESPACE = "\\S(?:.*\\S)?";
 
     private final SubscriptionTierRepository subscriptionTierRepository;
-    private final CacheInvalidationService cacheInvalidationService;
 
-    public SubscriptionTierService(
-            SubscriptionTierRepository subscriptionTierRepository,
-            CacheInvalidationService cacheInvalidationService) {
+    public SubscriptionTierService(SubscriptionTierRepository subscriptionTierRepository) {
         this.subscriptionTierRepository = subscriptionTierRepository;
-        this.cacheInvalidationService = cacheInvalidationService;
     }
 
+    /**
+     * Creates a subscription tier. The {@code subscriptionTier} cache is keyed
+     * by the tier's database id and a create only introduces a fresh id that
+     * was never resolvable (therefore never cached), so no existing cache entry
+     * can become stale and no eviction is needed. Tiers have no update/delete
+     * mutation today, so the cache is only invalidated if such a mutation is
+     * ever introduced.
+     */
     @Transactional
     public SubscriptionTier create(String name, String description, int requestsPerWindow, int windowSeconds) {
         validate(name, description, requestsPerWindow, windowSeconds);
@@ -33,10 +36,8 @@ public class SubscriptionTierService {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
         try {
-            SubscriptionTier tier = subscriptionTierRepository.save(
+            return subscriptionTierRepository.save(
                     new SubscriptionTier(name, description, requestsPerWindow, windowSeconds));
-            cacheInvalidationService.evictAll("subscriptionTier");
-            return tier;
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }

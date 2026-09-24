@@ -73,7 +73,7 @@ class ApiVersionServiceTest {
         assertThat(response.createdAt()).isNotNull();
         assertThat(response.updatedAt()).isNotNull();
 
-        verify(cacheInvalidationService).evictAll("apiVersion");
+        verify(cacheInvalidationService, never()).evict(any(), any());
     }
 
     @Test

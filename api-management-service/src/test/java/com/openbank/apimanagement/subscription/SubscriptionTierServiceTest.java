@@ -1,6 +1,5 @@
 package com.openbank.apimanagement.subscription;
 
-import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
@@ -25,9 +24,6 @@ class SubscriptionTierServiceTest {
 
     @Mock
     private SubscriptionTierRepository subscriptionTierRepository;
-
-    @Mock
-    private CacheInvalidationService cacheInvalidationService;
 
     @InjectMocks
     private SubscriptionTierService subscriptionTierService;
@@ -56,8 +52,6 @@ class SubscriptionTierServiceTest {
         assertThat(created.getDescription()).isEqualTo("Standard access");
         assertThat(created.getRequestsPerWindow()).isEqualTo(500);
         assertThat(created.getWindowSeconds()).isEqualTo(30);
-
-        verify(cacheInvalidationService).evictAll("subscriptionTier");
     }
 
     @Test
