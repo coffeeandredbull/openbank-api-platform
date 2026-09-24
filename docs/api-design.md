@@ -180,7 +180,7 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   invoked API version is identified from the path as
   `/runtime/apis/{context}/{version}/...`; the caller's user id is derived
   **only** from the validated JWT `sub` claim, and the gateway calls the API
-  Management Service's internal `GET /internal/subscription-check?contextPath={context}&version={version}` endpoint (authenticated; not reachable through any gateway route; returns only `{"subscribed": bool}` from a direct PostgreSQL query — no cache). Decision table:
+  Management Service's internal `GET /internal/subscription-check?contextPath={context}&version={version}` endpoint (authenticated; not reachable through any gateway route; returns `{"subscribed": bool}` plus, when subscribed, the active subscription's tier policy `{"tierId","tierName","requestsPerWindow","windowSeconds"}` from a direct PostgreSQL query — no cache). Decision table:
   - valid JWT + subscribed → request forwarded unchanged;
   - valid JWT + not subscribed (or subscription belonging to another user) →
     `403` + code `SUBSCRIPTION_REQUIRED`; stable shape
@@ -215,6 +215,8 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   BCrypt against the stored hash — direct PostgreSQL query, no cache, no plaintext
   secret or hash ever returned/forwarded/logged) and returns
   `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool}`
+  plus, when subscribed, the active subscription's tier policy
+  (`tierId`, `tierName`, `requestsPerWindow`, `windowSeconds`)
   (any failure returns `{"authenticated":false}`). Decision table:
   - credential not found / secret mismatch / malformed credential → `401` +
     code `CLIENT_CREDENTIAL_INVALID`; stable shape
@@ -231,6 +233,10 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
     to the target API version → `403` + code `SUBSCRIPTION_REQUIRED` (same body
     as Phase 17; decided by the same single check — no second network call,
     identity is the application's `applicationId`);
+  - confirmed subscription (`subscribed:true`) **without** a valid tier policy
+    (missing/malformed `requestsPerWindow`/`windowSeconds`) in the check
+    response → `503` + code `CREDENTIAL_SERVICE_UNAVAILABLE` /
+    `SUBSCRIPTION_SERVICE_UNAVAILABLE` (fail closed, Phase 24 Slice 4);
   - malformed runtime path with Basic → `403` + code `SUBSCRIPTION_REQUIRED`
     (mirrors the JWT flow, no check call).
   The Basic header is then **stripped before forwarding**, so the consumed
@@ -256,13 +262,19 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   - Applied **only** on `/runtime/apis/**`; platform-management routes receive
     none. Managed APIs receive them as enriched context, while each backend
     still validates the JWT locally / re-checks ownership (defense in depth).
-- **Rate limiting (Phase 21 — Redis-backed, per API version):** every
-  `/runtime/apis/**` request is rate limited before routing via Redis
-  fixed-window counters keyed `rate_limit:user:{userId}:{context}:{version}`
-  (JWT callers) or `rate_limit:app:{applicationId}:{context}:{version}`
-  (client-credential callers), with `RATE_LIMIT_REQUESTS` (default `100`)
-  requests per `RATE_LIMIT_WINDOW_SECONDS` (default `60`) slot. Exceeded →
-  `429` + code `RATE_LIMIT_EXCEEDED` (`{"timestamp","status":429,
+- **Rate limiting (Phase 21 — Redis-backed, per API version; policy-driven since
+  Phase 24 Slice 4):** every `/runtime/apis/**` request is rate limited before
+  routing via Redis fixed-window counters keyed
+  `rate_limit:user:{userId}:{context}:{version}` (JWT callers) or
+  `rate_limit:app:{applicationId}:{context}:{version}` (client-credential
+  callers). The limit/window are **no longer configured directly on the
+  gateway** — each check response (subscription or credential) carries the
+  active subscription's tier policy (`requestsPerWindow` requests per
+  `windowSeconds`, defaults `100`/`60`), and the gateway applies it to the
+  request; a subscribed request whose policy is missing or malformed fails
+  closed with `503` `RATE_LIMIT_SERVICE_UNAVAILABLE` before the limiter is
+  contacted. Exceeded → `429` + code `RATE_LIMIT_EXCEEDED`
+  (`{"timestamp","status":429,
   "error":"Too Many Requests","path","code":"RATE_LIMIT_EXCEEDED",
   "message":"Rate limit exceeded","fieldErrors":{}}`, plus a `Retry-After`
   header); Redis/counter failure → `503` + code
@@ -410,8 +422,9 @@ the request body.
 - A subscription carries a **tier reference** (Phase 24): tier id + name are
   returned and the `tier_id` column is a `NOT NULL` foreign key to the
   `subscription_tiers` table. It carries **no** credentials (API key / client
-  id+secret) or rate limit; tier-based rate limiting and tier lifecycle remain
-  planned.
+  id+secret). Each tier now carries its rate-limit policy
+  (`requestsPerWindow`/`windowSeconds`, Phase 24 Slice 4) that the gateway
+  enforces per active subscription; tier lifecycle and pricing remain planned.
 - **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
   a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
   and a nullable `revokedAt` timestamp (set when a subscription is revoked).
@@ -499,7 +512,8 @@ the request body.
   `CredentialStatus` value; violations return `400 VALIDATION_FAILED`, malformed
   JSON returns `400 MALFORMED_REQUEST`.
 - Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3).
-  Expiry, scopes, permissions, and rate limits remain planned. The runtime
+  Expiry, scopes, and permissions remain planned (rate limits are enforced per
+  subscription tier, not per credential). The runtime
   consumer is the internal `GET /internal/credential-check` (see the Gateway
   section), which authenticates only `ACTIVE` credentials.
 

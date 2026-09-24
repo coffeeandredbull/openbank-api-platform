@@ -38,9 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
-                "JWT_SECRET=" + GatewayTestJwt.SECRET,
-                "RATE_LIMIT_REQUESTS=1000",
-                "RATE_LIMIT_WINDOW_SECONDS=60"
+                "JWT_SECRET=" + GatewayTestJwt.SECRET
         })
 @AutoConfigureWebTestClient
 class GatewayRuntimeRoutingIntegrationTest {
@@ -93,7 +91,9 @@ class GatewayRuntimeRoutingIntegrationTest {
             Map<String, String> params = parseQuery(query);
             boolean subscribed = SUBSCRIPTIONS.contains(
                     params.getOrDefault("contextPath", "") + "|" + params.getOrDefault("version", ""));
-            respond(exchange, 200, "{\"subscribed\":" + subscribed + "}");
+            respond(exchange, 200, "{\"subscribed\":" + subscribed + ","
+                    + "\"tierId\":1,\"tierName\":\"Gold\","
+                    + "\"requestsPerWindow\":1000,\"windowSeconds\":60}");
             return;
         }
         if ("managed".equals(name)) {

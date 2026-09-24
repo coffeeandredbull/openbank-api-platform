@@ -10,8 +10,7 @@ import java.net.URISyntaxException;
  * Runtime configuration for the gateway's best-effort delivery of captured
  * analytics events to the analytics service (Phase 23, Slice 4). Values are
  * read directly from environment variables — there is no application.yml
- * section, mirroring {@code RateLimitProperties} and
- * {@code ManagedApiUpstreamProperties}. The internal token doubles as the
+ * section, mirroring {@code ManagedApiUpstreamProperties}. The internal token doubles as the
  * delivery switch: when it is blank, delivery is disabled entirely.
  */
 @Component

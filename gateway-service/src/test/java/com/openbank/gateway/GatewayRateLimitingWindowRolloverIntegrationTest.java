@@ -34,8 +34,6 @@ import static org.assertj.core.api.Assertions.assertThat;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "JWT_SECRET=" + GatewayTestJwt.SECRET,
-                "RATE_LIMIT_REQUESTS=1",
-                "RATE_LIMIT_WINDOW_SECONDS=1",
                 "spring.data.redis.password=" + GatewayRateLimitingWindowRolloverIntegrationTest.TEST_REDIS_PASSWORD
         })
 @AutoConfigureWebTestClient
@@ -82,7 +80,9 @@ class GatewayRateLimitingWindowRolloverIntegrationTest {
             Map<String, String> params = parseQuery(exchange.getRequestURI().getRawQuery());
             boolean subscribed = SUBSCRIPTIONS.contains(
                     params.getOrDefault("contextPath", "") + "|" + params.getOrDefault("version", ""));
-            respond(exchange, 200, "{\"subscribed\":" + subscribed + "}");
+            respond(exchange, 200, "{\"subscribed\":" + subscribed + ","
+                    + "\"tierId\":1,\"tierName\":\"Gold\","
+                    + "\"requestsPerWindow\":1,\"windowSeconds\":1}");
             return;
         }
         if ("managed".equals(name)) {

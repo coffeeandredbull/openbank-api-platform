@@ -1,5 +1,6 @@
 package com.openbank.apimanagement.credential;
 
+import com.openbank.apimanagement.subscription.SubscriptionPolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -25,7 +26,8 @@ class CredentialCheckControllerTest {
     @Test
     void authenticatedResponseIsReturnedWith200() throws Exception {
         when(credentialCheckService.check("Basic dmFsaWQ6c3VwZXItc2VjcmV0", "/payments", "v1"))
-                .thenReturn(CredentialCheckResponse.authenticated(10L, 42L, true));
+                .thenReturn(CredentialCheckResponse.authenticated(
+                        10L, 42L, new SubscriptionPolicy(15L, "Developer", 100, 60)));
 
         mockMvc.perform(get("/internal/credential-check")
                         .param("contextPath", "/payments")
@@ -35,7 +37,11 @@ class CredentialCheckControllerTest {
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").value(15))
+                .andExpect(jsonPath("$.tierName").value("Developer"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
     }
 
     @Test

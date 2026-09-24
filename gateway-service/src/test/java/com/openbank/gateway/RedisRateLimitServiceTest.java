@@ -1,7 +1,7 @@
 package com.openbank.gateway;
 
 import com.openbank.gateway.ratelimit.RateLimitKeyGenerator;
-import com.openbank.gateway.ratelimit.RateLimitProperties;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.openbank.gateway.ratelimit.RateLimitService.Decision;
 import com.openbank.gateway.ratelimit.RateLimitService.State;
 import com.openbank.gateway.ratelimit.RedisRateLimitService;
@@ -27,9 +27,11 @@ import static org.mockito.Mockito.when;
 
 class RedisRateLimitServiceTest {
 
+    private static final RateLimitPolicy POLICY = new RateLimitPolicy(2, 60);
+
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final RedisRateLimitService service = new RedisRateLimitService(
-            redisTemplate, new RateLimitProperties(2, 60), new RateLimitKeyGenerator());
+            redisTemplate, new RateLimitKeyGenerator());
 
     @BeforeEach
     void reset() {
@@ -41,8 +43,8 @@ class RedisRateLimitServiceTest {
         when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
                 .thenReturn("1", "2");
 
-        assertThat(service.evaluate(7, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
-        assertThat(service.evaluate(7, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
+        assertThat(service.evaluate(7, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
+        assertThat(service.evaluate(7, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
     }
 
     @Test
@@ -52,7 +54,7 @@ class RedisRateLimitServiceTest {
         when(redisTemplate.getExpire(eq("rate_limit:7:/payments:v1"), eq(TimeUnit.SECONDS)))
                 .thenReturn(25L);
 
-        Decision decision = service.evaluate(7, "/payments", "v1");
+        Decision decision = service.evaluate(7, "/payments", "v1", POLICY);
         assertThat(decision.state()).isEqualTo(State.DENIED);
         assertThat(decision.retryAfterSeconds()).isEqualTo(25L);
     }
@@ -63,7 +65,7 @@ class RedisRateLimitServiceTest {
                 .thenReturn("3");
         when(redisTemplate.getExpire(anyString(), eq(TimeUnit.SECONDS))).thenReturn(-1L);
 
-        Decision decision = service.evaluate(7, "/payments", "v1");
+        Decision decision = service.evaluate(7, "/payments", "v1", POLICY);
         assertThat(decision.state()).isEqualTo(State.DENIED);
         assertThat(decision.retryAfterSeconds()).isEqualTo(60L);
     }
@@ -73,7 +75,7 @@ class RedisRateLimitServiceTest {
         doThrow(new RedisConnectionFailureException("connection refused"))
                 .when(redisTemplate).execute(any(RedisScript.class), anyList(), any(Object[].class));
 
-        assertThat(service.evaluate(7, "/payments", "v1").state()).isEqualTo(State.UNAVAILABLE);
+        assertThat(service.evaluate(7, "/payments", "v1", POLICY).state()).isEqualTo(State.UNAVAILABLE);
     }
 
     @Test
@@ -81,7 +83,7 @@ class RedisRateLimitServiceTest {
         when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
                 .thenReturn("1");
 
-        service.evaluate(7, "/payments", "v1");
+        service.evaluate(7, "/payments", "v1", POLICY);
 
         ArgumentCaptor<RedisScript<?>> scriptCaptor =
                 ArgumentCaptor.forClass(RedisScript.class);
@@ -105,7 +107,7 @@ class RedisRateLimitServiceTest {
         when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
                 .thenReturn("1");
 
-        service.evaluateForApplication(12, "/payments", "v1");
+        service.evaluateForApplication(12, "/payments", "v1", POLICY);
 
         ArgumentCaptor<List<String>> keysCaptor = ArgumentCaptor.forClass(List.class);
         verify(redisTemplate).execute(any(RedisScript.class), keysCaptor.capture(), any(Object[].class));
@@ -119,6 +121,31 @@ class RedisRateLimitServiceTest {
         when(redisTemplate.getExpire(eq("rate_limit:app:12:/payments:v1"), eq(TimeUnit.SECONDS)))
                 .thenReturn(20L);
 
-        assertThat(service.evaluateForApplication(12, "/payments", "v1").state()).isEqualTo(State.DENIED);
+        assertThat(service.evaluateForApplication(12, "/payments", "v1", POLICY).state()).isEqualTo(State.DENIED);
+    }
+
+    @Test
+    void theLimitAndWindowComeFromThePolicyForEachEvaluation() {
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn("4");
+        when(redisTemplate.getExpire(anyString(), eq(TimeUnit.SECONDS))).thenReturn(-1L);
+
+        Decision denied = service.evaluate(7, "/payments", "v1", new RateLimitPolicy(3, 30));
+
+        assertThat(denied.state()).isEqualTo(State.DENIED);
+        assertThat(denied.retryAfterSeconds()).isEqualTo(30L);
+
+        ArgumentCaptor<Object> argsCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(redisTemplate).execute(any(RedisScript.class), anyList(), argsCaptor.capture());
+        assertThat(argsCaptor.getAllValues()).containsExactly("30");
+    }
+
+    @Test
+    void aStricterPolicyRejectsTheSameCounterValue() {
+        when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+                .thenReturn("2");
+
+        assertThat(service.evaluate(7, "/payments", "v1", new RateLimitPolicy(1, 60)).state())
+                .isEqualTo(State.DENIED);
     }
 }

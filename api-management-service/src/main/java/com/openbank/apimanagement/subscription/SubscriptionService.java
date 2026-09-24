@@ -88,30 +88,38 @@ public class SubscriptionService {
     }
 
     @Transactional(readOnly = true)
-    public boolean isSubscribed(Long ownerUserId, String contextPath, String version) {
-        Api api = apiRepository.findByContextPath(contextPath).orElse(null);
-        if (api == null) {
-            return false;
-        }
-        ApiVersion apiVersion = apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
+    public SubscriptionPolicy findActivePolicy(Long ownerUserId, String contextPath, String version) {
+        ApiVersion apiVersion = findApiVersion(contextPath, version);
         if (apiVersion == null) {
-            return false;
+            return null;
         }
-        return subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
-                apiVersion.getId(), ownerUserId, SubscriptionStatus.ACTIVE);
+        return subscriptionRepository
+                .findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                        apiVersion.getId(), ownerUserId, SubscriptionStatus.ACTIVE)
+                .filter(subscription -> subscription.getStatus() == SubscriptionStatus.ACTIVE)
+                .map(SubscriptionPolicy::from)
+                .orElse(null);
     }
 
     @Transactional(readOnly = true)
-    public boolean isSubscribedByApplication(Long applicationId, String contextPath, String version) {
+    public SubscriptionPolicy findActivePolicyByApplication(Long applicationId, String contextPath, String version) {
+        ApiVersion apiVersion = findApiVersion(contextPath, version);
+        if (apiVersion == null) {
+            return null;
+        }
+        return subscriptionRepository
+                .findByApiVersionIdAndApplicationIdAndStatus(
+                        apiVersion.getId(), applicationId, SubscriptionStatus.ACTIVE)
+                .filter(subscription -> subscription.getStatus() == SubscriptionStatus.ACTIVE)
+                .map(SubscriptionPolicy::from)
+                .orElse(null);
+    }
+
+    private ApiVersion findApiVersion(String contextPath, String version) {
         Api api = apiRepository.findByContextPath(contextPath).orElse(null);
         if (api == null) {
-            return false;
+            return null;
         }
-        ApiVersion apiVersion = apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
-        if (apiVersion == null) {
-            return false;
-        }
-        return subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
-                apiVersion.getId(), applicationId, SubscriptionStatus.ACTIVE);
+        return apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
     }
 }

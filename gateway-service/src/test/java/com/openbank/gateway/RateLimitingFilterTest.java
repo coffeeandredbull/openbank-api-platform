@@ -7,6 +7,7 @@ import com.openbank.gateway.auth.UserRole;
 import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
 import com.openbank.gateway.filter.JwtAuthenticationFilter;
 import com.openbank.gateway.filter.RateLimitingFilter;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.openbank.gateway.ratelimit.RateLimitService;
 import com.openbank.gateway.ratelimit.RateLimitService.State;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,10 +31,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class RateLimitingFilterTest {
 
-    record Call(long userId, String contextPath, String version) {
+    static final RateLimitPolicy POLICY = new RateLimitPolicy(100, 60);
+
+    record Call(long userId, String contextPath, String version, RateLimitPolicy policy) {
     }
 
-    record AppCall(long applicationId, String contextPath, String version) {
+    record AppCall(long applicationId, String contextPath, String version, RateLimitPolicy policy) {
     }
 
     record Result(boolean forwarded, HttpStatusCode status, String body, String retryAfter) {
@@ -47,14 +50,15 @@ class RateLimitingFilterTest {
         long retryAfter;
 
         @Override
-        public Decision evaluate(long userId, String contextPath, String version) {
-            calls.add(new Call(userId, contextPath, version));
+        public Decision evaluate(long userId, String contextPath, String version, RateLimitPolicy policy) {
+            calls.add(new Call(userId, contextPath, version, policy));
             return decision();
         }
 
         @Override
-        public Decision evaluateForApplication(long applicationId, String contextPath, String version) {
-            appCalls.add(new AppCall(applicationId, contextPath, version));
+        public Decision evaluateForApplication(long applicationId, String contextPath, String version,
+                RateLimitPolicy policy) {
+            appCalls.add(new AppCall(applicationId, contextPath, version, policy));
             return decision();
         }
 
@@ -87,6 +91,7 @@ class RateLimitingFilterTest {
         if (identity != null) {
             exchange.getAttributes().put(JwtAuthenticationFilter.IDENTITY_ATTRIBUTE, identity);
         }
+        exchange.getAttributes().put(RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE, POLICY);
         return run(exchange);
     }
 
@@ -94,6 +99,7 @@ class RateLimitingFilterTest {
         MockServerWebExchange exchange = MockServerWebExchange.from(request.build());
         exchange.getAttributes().put(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE,
                 new ClientCredentialIdentity("client-abc", applicationId, 42L));
+        exchange.getAttributes().put(RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE, POLICY);
         return run(exchange);
     }
 
@@ -130,7 +136,7 @@ class RateLimitingFilterTest {
     void allowedRequestIsForwardedWithTheAuthenticatedJwtSubject() {
         Result result = call("/runtime/apis/payments/v1/accounts", new JwtIdentity(42L, UserRole.DEVELOPER));
         assertThat(result.forwarded()).isTrue();
-        assertThat(rateLimitService.calls).containsExactly(new Call(42L, "/payments", "v1"));
+        assertThat(rateLimitService.calls).containsExactly(new Call(42L, "/payments", "v1", POLICY));
     }
 
     @Test
@@ -186,7 +192,7 @@ class RateLimitingFilterTest {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + userOneToken),
                 new JwtIdentity(99L, UserRole.DEVELOPER));
         assertThat(result.forwarded()).isTrue();
-        assertThat(rateLimitService.calls).containsExactly(new Call(99L, "/payments", "v1"));
+        assertThat(rateLimitService.calls).containsExactly(new Call(99L, "/payments", "v1", POLICY));
     }
 
     @Test
@@ -195,7 +201,7 @@ class RateLimitingFilterTest {
         Result result = call("/runtime/apis/payments/v1/accounts", admin());
         assertThat(result.forwarded()).isFalse();
         assertThat(result.status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
-        assertThat(rateLimitService.calls).containsExactly(new Call(1L, "/payments", "v1"));
+        assertThat(rateLimitService.calls).containsExactly(new Call(1L, "/payments", "v1", POLICY));
     }
 
     @Test
@@ -227,7 +233,7 @@ class RateLimitingFilterTest {
     void applicationClientCredentialsAreRateLimitedPerApplicationAndTarget() {
         Result result = call(MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts"), 12L);
         assertThat(result.forwarded()).isTrue();
-        assertThat(rateLimitService.appCalls).containsExactly(new AppCall(12L, "/payments", "v1"));
+        assertThat(rateLimitService.appCalls).containsExactly(new AppCall(12L, "/payments", "v1", POLICY));
         assertThat(rateLimitService.calls).isEmpty();
     }
 
@@ -250,8 +256,8 @@ class RateLimitingFilterTest {
         call(MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts"), 12L);
         call(MockServerHttpRequest.get("/runtime/apis/accounts/v2/balances"), 99L);
         assertThat(rateLimitService.appCalls).containsExactly(
-                new AppCall(12L, "/payments", "v1"),
-                new AppCall(99L, "/accounts", "v2"));
+                new AppCall(12L, "/payments", "v1", POLICY),
+                new AppCall(99L, "/accounts", "v2", POLICY));
     }
 
     @Test
@@ -265,9 +271,28 @@ class RateLimitingFilterTest {
                 new JwtIdentity(5L, UserRole.ADMIN));
         exchange.getAttributes().put(ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE,
                 new ClientCredentialIdentity("client-abc", 12L, 42L));
+        exchange.getAttributes().put(RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE, POLICY);
         run(exchange);
-        assertThat(rateLimitService.appCalls).containsExactly(new AppCall(12L, "/payments", "v1"));
+        assertThat(rateLimitService.appCalls).containsExactly(new AppCall(12L, "/payments", "v1", POLICY));
         assertThat(rateLimitService.calls).isEmpty();
+    }
+
+    @Test
+    void missingRateLimitPolicyFailsClosedWithoutContactingTheRateLimiter() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts").build());
+        exchange.getAttributes().put(JwtAuthenticationFilter.IDENTITY_ATTRIBUTE, admin());
+
+        Result result = run(exchange);
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body())
+                .contains("\"status\":503")
+                .contains("\"code\":\"RATE_LIMIT_SERVICE_UNAVAILABLE\"")
+                .contains("\"message\":\"Rate limiting service unavailable\"");
+        assertThat(rateLimitService.calls).isEmpty();
+        assertThat(rateLimitService.appCalls).isEmpty();
     }
 
     @Test

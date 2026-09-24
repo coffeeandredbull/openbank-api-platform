@@ -13,7 +13,6 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -36,10 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
-@TestPropertySource(properties = {
-        "RATE_LIMIT_REQUESTS=1000",
-        "RATE_LIMIT_WINDOW_SECONDS=3600"
-})
 class GatewayRuntimeIdentityHeaderIntegrationTest {
 
     record CapturedRequest(String name, String method, String path, String query,
@@ -49,8 +44,12 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
     private static final String CLIENT_ID = "client-integration-0001";
     private static final String CLIENT_SECRET = "integration-super-secret";
 
+    private static final String AUTHENTICATED_BODY = "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+            + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}";
+
     private static final AtomicReference<String> CREDENTIAL_BODY = new AtomicReference<>(
-            "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+            AUTHENTICATED_BODY);
     private static final AtomicInteger CREDENTIAL_STATUS = new AtomicInteger(200);
 
     private static final AtomicReference<CapturedRequest> MANAGED = new AtomicReference<>();
@@ -98,7 +97,9 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
             return;
         }
         if ("api-management".equals(name) && "/internal/subscription-check".equals(path)) {
-            respond(exchange, 200, "{\"subscribed\":true}");
+            respond(exchange, 200, "{\"subscribed\":true,"
+                    + "\"tierId\":1,\"tierName\":\"Gold\","
+                    + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}");
             return;
         }
 
@@ -139,8 +140,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
 
     @BeforeEach
     void reset() {
-        CREDENTIAL_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+        CREDENTIAL_BODY.set(AUTHENTICATED_BODY);
         CREDENTIAL_STATUS.set(200);
         MANAGED.set(null);
         MANAGEMENT_CAPTURE.set(null);

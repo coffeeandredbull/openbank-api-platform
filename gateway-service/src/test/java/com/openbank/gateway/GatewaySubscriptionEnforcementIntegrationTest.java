@@ -102,7 +102,9 @@ class GatewaySubscriptionEnforcementIntegrationTest {
                 status = 200;
                 boolean subscribed = SUBSCRIPTIONS.contains(
                         params.getOrDefault("contextPath", "") + "|" + params.getOrDefault("version", ""));
-                responseBody = "{\"subscribed\":" + subscribed + "}";
+                responseBody = "{\"subscribed\":" + subscribed + ","
+                        + "\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":1000,\"windowSeconds\":60}";
             }
             respond(exchange, status, responseBody);
             return;

@@ -36,8 +36,10 @@
   application credentials are **implemented** (Phase 13, in the API Management
   Service); the subscription **tier foundation** is **implemented** (Phase 24, in
   the API Management Service); the subscription **status lifecycle** is
-  **implemented** (Phase 24, Slice 2, in the API Management Service); credential
-  lifecycle, tier rate limits, and gateway tier enforcement remain planned.
+  **implemented** (Phase 24, Slice 2, in the API Management Service); the
+  credential lifecycle is **implemented** (Phase 24, Slice 3) and **tier rate
+  limits with gateway enforcement** are **implemented** (Phase 24, Slice 4);
+  tier lifecycle/admin CRUD remain planned.
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
   link (`applicationId` + `apiVersionId` + `tierId`), `GET /subscriptions/{subscriptionId}`
@@ -46,7 +48,8 @@
   (application, API version) — duplicates are rejected with `409`. Each
   subscription references a **tier** (`tierId`/`tierName` in responses, Phase
   24) and carries a **status** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24
-  Slice 2) but still carries no credentials or rate limit.
+  Slice 2); it carries no credentials — its rate limit is derived from the
+  **tier's** `requestsPerWindow`/`windowSeconds` policy (Phase 24, Slice 4).
 - **Subscription lifecycle (implemented, Phase 24, Slice 2):** a subscription is
   created `PENDING`; an **ADMIN-only** `PATCH /subscriptions/{subscriptionId}/status`
   moves it through a strict state machine (`PENDING → ACTIVE | DENIED | REVOKED`,
@@ -62,9 +65,18 @@
   hash is stored; the plaintext secret is returned exactly once at creation.
   `GET /credentials/{id}` and `GET /credentials` never return the secret or its
   hash. Ownership flows Credential → Application → owner (JWT `sub`).
-- An application can be **subscribed** to an API version under a rate-limit
-  **tier** (planned; the tier registry itself — `subscription_tiers`,
-  Phase 24 — is implemented, but tier-backed rate limits are not yet applied).
+- An application's subscription is enforced under a rate-limit **tier**
+  (**implemented, Phase 24, Slice 4**): the `subscription_tiers` registry
+  (Phase 24) now carries the policy columns `requests_per_window`
+  (default `100`) and `window_seconds` (default `60`), validated `> 0` at
+  creation. The internal `GET /internal/subscription-check` and
+  `GET /internal/credential-check` responses include the active subscription's
+  tier policy (`tierId`, `tierName`, `requestsPerWindow`, `windowSeconds`), and
+  the gateway enforces that policy per request via its existing Redis
+  fixed-window counters — with no gateway rate-limit configuration. A
+  subscription/credential check that confirms access but supplies a
+  missing/malformed policy **fails closed** (`503`) before the limiter is
+  contacted. Tier lifecycle/admin CRUD and per-tier pricing remain planned.
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
@@ -202,8 +214,11 @@
 - Applications and subscriptions are implemented in the API Management Service
   (Phases 11–12). Subscriptions reference the owning application and an API
   version; the link is unique per (application, API version).
-- Tier defines allowed rates (requests/second or per hour, burst) — planned,
-  bound to credentials issued per application.
+- Tier defines allowed rates (requests per window, burst) — implemented for the
+  rate-limit policy (Phase 24, Slice 4): tiers carry `requests_per_window`/
+  `window_seconds` and the gateway enforces the active subscription's tier policy
+  per request; tier lifecycle/admin CRUD, per-hour/burst variants, and pricing
+  remain planned.
 - Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
   (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
   subscriptions satisfy the internal checks).

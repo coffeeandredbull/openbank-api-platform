@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -77,7 +78,29 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").isNumber())
+                .andExpect(jsonPath("$.tierName").isNotEmpty())
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
+    }
+
+    @Test
+    void checkReturnsTheActiveSubscriptionsTierRateLimitPolicy() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        Long tierId = createTier(2500, 15);
+        Long subscriptionId = createSubscription("42", "DEVELOPER", versionId, tierId);
+        activateSubscription(subscriptionId);
+
+        mockMvc.perform(get("/internal/subscription-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").value(tierId))
+                .andExpect(jsonPath("$.requestsPerWindow").value(2500))
+                .andExpect(jsonPath("$.windowSeconds").value(15));
     }
 
     @Test
@@ -90,20 +113,28 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()))
+                .andExpect(jsonPath("$.tierName").value(nullValue()))
+                .andExpect(jsonPath("$.requestsPerWindow").value(nullValue()))
+                .andExpect(jsonPath("$.windowSeconds").value(nullValue()));
     }
 
     @Test
     void checkReturnsFalseWhenTheOnlySubscriptionIsDenied() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
         setStatus(createSubscription("42", "DEVELOPER", versionId), "DENIED");
+        Long tierId = jdbcTemplate.queryForObject(
+                "select id from subscription_tiers order by id desc limit 1", Long.class);
 
         mockMvc.perform(get("/internal/subscription-check")
                         .param("contextPath", "/payments")
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
+        assertThat(tierId).isNotNull();
     }
 
     @Test
@@ -116,7 +147,9 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()))
+                .andExpect(jsonPath("$.requestsPerWindow").value(nullValue()));
     }
 
     @Test
@@ -128,7 +161,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -142,7 +176,9 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
     }
 
     @Test
@@ -155,7 +191,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -170,7 +207,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -180,7 +218,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -192,7 +231,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v99")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -204,7 +244,8 @@ class SubscriptionCheckIntegrationTest {
                         .param("version", "v1")
                         .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -218,7 +259,9 @@ class SubscriptionCheckIntegrationTest {
                         .param("userId", "999")
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
     }
 
     @Test
@@ -336,6 +379,10 @@ class SubscriptionCheckIntegrationTest {
     }
 
     private Long createSubscription(String userId, String role, Long apiVersionId) throws Exception {
+        return createSubscription(userId, role, apiVersionId, createTier());
+    }
+
+    private Long createSubscription(String userId, String role, Long apiVersionId, Long tierId) throws Exception {
         String appBody = mockMvc.perform(post("/applications")
                         .header("Authorization", "Bearer " + token(userId, role, 3600))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -363,7 +410,7 @@ class SubscriptionCheckIntegrationTest {
                                   "apiVersionId": %d,
                                   "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId, createTier())))
+                                """.formatted(applicationId, apiVersionId, tierId)))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()
@@ -388,11 +435,16 @@ class SubscriptionCheckIntegrationTest {
     }
 
     private Long createTier() {
+        return createTier(100, 60);
+    }
+
+    private Long createTier(int requestsPerWindow, int windowSeconds) {
         String name = "tier-" + System.nanoTime();
         jdbcTemplate.update(
-                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
-                        + "VALUES (?, ?, now(), now())",
-                name, "Check test tier");
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES (?, ?, ?, ?, now(), now())",
+                name, "Check test tier", requestsPerWindow, windowSeconds);
         return jdbcTemplate.queryForObject(
                 "select id from subscription_tiers where name = ?", Long.class, name);
     }

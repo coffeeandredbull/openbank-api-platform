@@ -22,10 +22,31 @@ public class SubscriptionCheckController {
             @AuthenticationPrincipal JwtIdentity identity,
             @RequestParam String contextPath,
             @RequestParam String version) {
-        boolean subscribed = subscriptionService.isSubscribed(identity.userId(), contextPath, version);
-        return new SubscriptionCheckResponse(subscribed);
+        SubscriptionPolicy policy = subscriptionService.findActivePolicy(identity.userId(), contextPath, version);
+        if (policy == null) {
+            return SubscriptionCheckResponse.notSubscribed();
+        }
+        return SubscriptionCheckResponse.subscribed(policy);
     }
 
-    public record SubscriptionCheckResponse(boolean subscribed) {
+    public record SubscriptionCheckResponse(
+            boolean subscribed,
+            Long tierId,
+            String tierName,
+            Integer requestsPerWindow,
+            Integer windowSeconds) {
+
+        public static SubscriptionCheckResponse notSubscribed() {
+            return new SubscriptionCheckResponse(false, null, null, null, null);
+        }
+
+        public static SubscriptionCheckResponse subscribed(SubscriptionPolicy policy) {
+            return new SubscriptionCheckResponse(
+                    true,
+                    policy.tierId(),
+                    policy.tierName(),
+                    policy.requestsPerWindow(),
+                    policy.windowSeconds());
+        }
     }
 }

@@ -233,82 +233,121 @@ class SubscriptionServiceTest {
 
     @ParameterizedTest
     @EnumSource(value = ApiVersionLifecycle.class)
-    void isSubscribedIgnoresTheApiVersionLifecycleState(ApiVersionLifecycle lifecycle) {
+    void findActivePolicyIgnoresTheApiVersionLifecycleState(ApiVersionLifecycle lifecycle) {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.ACTIVE);
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L, lifecycle)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+        when(subscriptionRepository.findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
                 20L, 42L, SubscriptionStatus.ACTIVE))
-                .thenReturn(true);
+                .thenReturn(Optional.of(stored));
 
-        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isTrue();
+        SubscriptionPolicy policy = subscriptionService.findActivePolicy(42L, "/payments", "v1");
+
+        assertThat(policy).isNotNull();
+        assertThat(policy.tierId()).isEqualTo(15L);
+        assertThat(policy.tierName()).isEqualTo("Developer");
+        assertThat(policy.requestsPerWindow()).isEqualTo(100);
+        assertThat(policy.windowSeconds()).isEqualTo(60);
     }
 
     @Test
-    void isSubscribedReturnsFalseWhenTheOnlySubscriptionIsPending() {
+    void findActivePolicyReturnsTheTierPolicyOfTheActiveSubscription() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.ACTIVE);
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+        when(subscriptionRepository.findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
                 20L, 42L, SubscriptionStatus.ACTIVE))
-                .thenReturn(false);
+                .thenReturn(Optional.of(stored));
 
-        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isFalse();
+        SubscriptionPolicy policy = subscriptionService.findActivePolicy(42L, "/payments", "v1");
+
+        assertThat(policy.tierId()).isEqualTo(15L);
+        assertThat(policy.tierName()).isEqualTo("Developer");
+        assertThat(policy.requestsPerWindow()).isEqualTo(100);
+        assertThat(policy.windowSeconds()).isEqualTo(60);
     }
 
     @Test
-    void isSubscribedByApplicationRequiresAnActiveSubscription() {
+    void findActivePolicyReturnsNullWhenTheOnlySubscriptionIsNotActive() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.PENDING);
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
-                20L, 55L, SubscriptionStatus.ACTIVE))
-                .thenReturn(true);
+        when(subscriptionRepository.findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                20L, 42L, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(stored));
 
-        assertThat(subscriptionService.isSubscribedByApplication(55L, "/payments", "v1")).isTrue();
+        assertThat(subscriptionService.findActivePolicy(42L, "/payments", "v1")).isNull();
     }
 
     @Test
-    void isSubscribedByApplicationReturnsFalseWhenTheOnlySubscriptionIsNotActive() {
+    void findActivePolicyByApplicationReturnsTheTierPolicyOfTheActiveSubscription() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.ACTIVE);
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
+        when(subscriptionRepository.findByApiVersionIdAndApplicationIdAndStatus(
                 20L, 55L, SubscriptionStatus.ACTIVE))
-                .thenReturn(false);
+                .thenReturn(Optional.of(stored));
 
-        assertThat(subscriptionService.isSubscribedByApplication(55L, "/payments", "v1")).isFalse();
+        SubscriptionPolicy policy = subscriptionService.findActivePolicyByApplication(55L, "/payments", "v1");
+
+        assertThat(policy).isNotNull();
+        assertThat(policy.tierId()).isEqualTo(15L);
+        assertThat(policy.tierName()).isEqualTo("Developer");
+        assertThat(policy.requestsPerWindow()).isEqualTo(100);
+        assertThat(policy.windowSeconds()).isEqualTo(60);
     }
 
     @Test
-    void isSubscribedReturnsFalseWhenThereIsNoMatchingApi() {
+    void findActivePolicyByApplicationReturnsNullWhenTheOnlySubscriptionIsNotActive() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.DENIED);
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionRepository.findByApiVersionIdAndApplicationIdAndStatus(
+                20L, 55L, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(stored));
+
+        assertThat(subscriptionService.findActivePolicyByApplication(55L, "/payments", "v1")).isNull();
+    }
+
+    @Test
+    void findActivePolicyReturnsNullWhenThereIsNoMatchingApi() {
         when(apiRepository.findByContextPath("/no-such-api")).thenReturn(Optional.empty());
 
-        assertThat(subscriptionService.isSubscribed(42L, "/no-such-api", "v1")).isFalse();
+        assertThat(subscriptionService.findActivePolicy(42L, "/no-such-api", "v1")).isNull();
         verify(subscriptionRepository, never())
-                .existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
+                .findByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
     }
 
     @Test
-    void isSubscribedReturnsFalseWhenTheApiVersionDoesNotExist() {
+    void findActivePolicyReturnsNullWhenTheApiVersionDoesNotExist() {
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v9")).thenReturn(Optional.empty());
 
-        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v9")).isFalse();
+        assertThat(subscriptionService.findActivePolicy(42L, "/payments", "v9")).isNull();
         verify(subscriptionRepository, never())
-                .existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
+                .findByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
     }
 
     @Test
-    void isSubscribedReturnsFalseWhenTheUserHoldsNoSubscriptionForTheApiVersion() {
+    void findActivePolicyReturnsNullWhenTheUserHoldsNoSubscriptionForTheApiVersion() {
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+        when(subscriptionRepository.findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
                 20L, 42L, SubscriptionStatus.ACTIVE))
-                .thenReturn(false);
+                .thenReturn(Optional.empty());
 
-        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isFalse();
+        assertThat(subscriptionService.findActivePolicy(42L, "/payments", "v1")).isNull();
     }
 
     @ParameterizedTest
@@ -437,7 +476,7 @@ class SubscriptionServiceTest {
     }
 
     private SubscriptionTier tier(Long id, String name) {
-        SubscriptionTier tier = new SubscriptionTier(name, "Standard access");
+        SubscriptionTier tier = new SubscriptionTier(name, "Standard access", 100, 60);
         setField(tier, "id", id);
         setField(tier, "createdAt", TIMESTAMP);
         setField(tier, "updatedAt", TIMESTAMP);

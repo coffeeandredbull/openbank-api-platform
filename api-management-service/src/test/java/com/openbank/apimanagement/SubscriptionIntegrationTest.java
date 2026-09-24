@@ -641,8 +641,9 @@ class SubscriptionIntegrationTest {
     private Long createTier() {
         String name = "tier-" + System.nanoTime();
         jdbcTemplate.update(
-                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
-                        + "VALUES (?, ?, now(), now())",
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES (?, ?, 100, 60, now(), now())",
                 name, "Integration test tier");
         return jdbcTemplate.queryForObject(
                 "select id from subscription_tiers where name = ?", Long.class, name);

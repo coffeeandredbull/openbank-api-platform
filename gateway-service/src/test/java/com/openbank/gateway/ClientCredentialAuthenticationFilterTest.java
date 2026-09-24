@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.ClientCredentialIdentity;
 import com.openbank.gateway.auth.TrustedIdentityHeaders;
 import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
+import com.openbank.gateway.filter.RateLimitingFilter;
 import com.openbank.gateway.filter.TrustedIdentityHeaderSanitizer;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -44,8 +46,12 @@ class ClientCredentialAuthenticationFilterTest {
             ServerWebExchange downstream) {
     }
 
+    private static final String AUTHENTICATED_BODY = "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+            + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+            + "\"requestsPerWindow\":100,\"windowSeconds\":60}";
+
     private static final AtomicReference<String> RESPONSE_BODY =
-            new AtomicReference<>("{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+            new AtomicReference<>(AUTHENTICATED_BODY);
     private static final AtomicInteger RESPONSE_STATUS = new AtomicInteger(200);
     private static final AtomicReference<Map<String, String>> LAST_QUERY = new AtomicReference<>();
     private static final AtomicReference<String> LAST_AUTHORIZATION = new AtomicReference<>();
@@ -102,8 +108,7 @@ class ClientCredentialAuthenticationFilterTest {
 
     @BeforeEach
     void reset() {
-        RESPONSE_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+        RESPONSE_BODY.set(AUTHENTICATED_BODY);
         RESPONSE_STATUS.set(200);
         LAST_QUERY.set(null);
         LAST_AUTHORIZATION.set(null);
@@ -168,7 +173,7 @@ class ClientCredentialAuthenticationFilterTest {
     }
 
     @Test
-    void authenticatedIdentityAndSubscriptionAreStoredAsExchangeAttributes() {
+    void authenticatedIdentitySubscriptionAndRateLimitPolicyAreStoredAsExchangeAttributes() {
         Result result = call("/runtime/apis/payments/v1/accounts");
 
         ServerWebExchange downstream = result.downstream();
@@ -176,10 +181,14 @@ class ClientCredentialAuthenticationFilterTest {
                 ClientCredentialAuthenticationFilter.CLIENT_CREDENTIAL_ATTRIBUTE);
         Object subscribed = downstream.getAttribute(
                 ClientCredentialAuthenticationFilter.APPLICATION_SUBSCRIBED_ATTRIBUTE);
+        Object policy = downstream.getAttribute(
+                RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE);
         assertThat(identity)
                 .isEqualTo(new ClientCredentialIdentity(CLIENT_ID, 7L, 42L));
         assertThat(subscribed)
                 .isEqualTo(Boolean.TRUE);
+        assertThat(policy)
+                .isEqualTo(new RateLimitPolicy(100, 60));
     }
 
     @Test
@@ -195,6 +204,21 @@ class ClientCredentialAuthenticationFilterTest {
                 ClientCredentialAuthenticationFilter.APPLICATION_SUBSCRIBED_ATTRIBUTE);
         assertThat(subscribed)
                 .isEqualTo(Boolean.FALSE);
+        Object policy = result.downstream().getAttribute(
+                RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE);
+        assertThat(policy).isNull();
+    }
+
+    @Test
+    void subscribedResponseWithoutRateLimitPolicyFailsClosedAs503() {
+        RESPONSE_BODY.set(
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"");
     }
 
     @Test

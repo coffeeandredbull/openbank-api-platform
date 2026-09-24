@@ -27,6 +27,7 @@ import java.util.Base64;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -85,7 +86,10 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").isNumber())
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
     }
 
     @Test
@@ -103,7 +107,9 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()))
+                .andExpect(jsonPath("$.requestsPerWindow").value(nullValue()));
     }
 
     @Test
@@ -120,7 +126,8 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -138,7 +145,8 @@ class CredentialCheckIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(callingAppId))
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -152,7 +160,8 @@ class CredentialCheckIntegrationTest {
                         .header("Authorization", basicHeader(credential)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authenticated").value(true))
-                .andExpect(jsonPath("$.subscribed").value(false));
+                .andExpect(jsonPath("$.subscribed").value(false))
+                .andExpect(jsonPath("$.tierId").value(nullValue()));
     }
 
     @Test
@@ -297,7 +306,10 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
-                .andExpect(jsonPath("$.subscribed").value(true));
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").isNumber())
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60));
     }
 
     private Long createApiWithVersion(String contextPath, String version) throws Exception {
@@ -390,8 +402,9 @@ class CredentialCheckIntegrationTest {
     private Long createTier() {
         String name = "tier-" + System.nanoTime();
         jdbcTemplate.update(
-                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
-                        + "VALUES (?, ?, now(), now())",
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES (?, ?, 100, 60, now(), now())",
                 name, "Credential check tier");
         return jdbcTemplate.queryForObject(
                 "select id from subscription_tiers where name = ?", Long.class, name);

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.ClientCredentialIdentity;
 import com.openbank.gateway.auth.JwtIdentity;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.openbank.gateway.ratelimit.RateLimitService;
 import com.openbank.gateway.ratelimit.RuntimeApiPath;
 import org.slf4j.Logger;
@@ -33,6 +34,8 @@ public class RateLimitingFilter implements GlobalFilter, Ordered {
     private static final Logger log = LoggerFactory.getLogger(RateLimitingFilter.class);
 
     private static final String RUNTIME_API_PATH = "/runtime/apis";
+
+    public static final String RATE_LIMIT_POLICY_ATTRIBUTE = "openbank.rateLimitPolicy";
 
     private static final String CODE_EXCEEDED = "RATE_LIMIT_EXCEEDED";
     private static final String MESSAGE_EXCEEDED = "Rate limit exceeded";
@@ -71,13 +74,19 @@ public class RateLimitingFilter implements GlobalFilter, Ordered {
             return writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
                     MESSAGE_UNAVAILABLE, path, startTime);
         }
+        RateLimitPolicy policy = exchange.getAttribute(RATE_LIMIT_POLICY_ATTRIBUTE);
+        if (policy == null) {
+            log.warn("gateway rate limiter missing policy for method={} path={}", requestMethod(exchange), path);
+            return writeError(exchange, HttpStatus.SERVICE_UNAVAILABLE, CODE_UNAVAILABLE,
+                    MESSAGE_UNAVAILABLE, path, startTime);
+        }
         Mono<RateLimitService.Decision> decision;
         if (clientIdentity != null) {
             decision = Mono.fromCallable(() -> rateLimitService.evaluateForApplication(
-                    clientIdentity.applicationId(), target.contextPath(), target.version()));
+                    clientIdentity.applicationId(), target.contextPath(), target.version(), policy));
         } else {
             decision = Mono.fromCallable(() -> rateLimitService.evaluate(
-                    identity.userId(), target.contextPath(), target.version()));
+                    identity.userId(), target.contextPath(), target.version(), policy));
         }
         return decision
                 .subscribeOn(Schedulers.boundedElastic())

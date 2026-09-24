@@ -50,21 +50,23 @@ class SubscriptionTierIntegrationTest {
 
     @Test
     void serviceCreatesPersistsAndReadsBackATier() {
-        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access");
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
 
         assertThat(created.getId()).isNotNull();
 
         SubscriptionTier stored = subscriptionTierRepository.findById(created.getId()).orElseThrow();
         assertThat(stored.getName()).isEqualTo("Gold");
         assertThat(stored.getDescription()).isEqualTo("Premium access");
+        assertThat(stored.getRequestsPerWindow()).isEqualTo(1000);
+        assertThat(stored.getWindowSeconds()).isEqualTo(60);
         assertThat(stored.getCreatedAt()).isEqualTo(stored.getUpdatedAt());
     }
 
     @Test
     void serviceRejectsDuplicateTierName() {
-        subscriptionTierService.create("Gold", "Premium access");
+        subscriptionTierService.create("Gold", "Premium access", 1000, 60);
 
-        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "Another description"))
+        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "Another description", 100, 60))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Gold");
 
@@ -74,18 +76,24 @@ class SubscriptionTierIntegrationTest {
 
     @Test
     void serviceRejectsInvalidNamesWithoutPersisting() {
-        assertThatThrownBy(() -> subscriptionTierService.create("", "x"))
+        assertThatThrownBy(() -> subscriptionTierService.create("", "x", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("name is required");
-        assertThatThrownBy(() -> subscriptionTierService.create(" Gold ", "x"))
+        assertThatThrownBy(() -> subscriptionTierService.create(" Gold ", "x", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("whitespace");
-        assertThatThrownBy(() -> subscriptionTierService.create("a".repeat(101), "x"))
+        assertThatThrownBy(() -> subscriptionTierService.create("a".repeat(101), "x", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("100");
-        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "a".repeat(501)))
+        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "a".repeat(501), 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("500");
+        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "x", 0, 60))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requestsPerWindow");
+        assertThatThrownBy(() -> subscriptionTierService.create("Gold", "x", 100, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("windowSeconds");
 
         assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from subscription_tiers", Long.class)).isZero();
@@ -94,12 +102,14 @@ class SubscriptionTierIntegrationTest {
     @Test
     void duplicateTierNamesAreRejectedByTheDatabaseUniqueConstraint() {
         jdbcTemplate.update(
-                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
-                        + "VALUES ('Gold', 'Premium', now(), now())");
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES ('Gold', 'Premium', 1000, 60, now(), now())");
 
         assertThatThrownBy(() -> jdbcTemplate.update(
-                "INSERT INTO subscription_tiers (name, description, created_at, updated_at) "
-                        + "VALUES ('Gold', 'Another', now(), now())"))
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES ('Gold', 'Another', 100, 60, now(), now())"))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
 
         assertThat(jdbcTemplate.queryForObject(
@@ -114,7 +124,7 @@ class SubscriptionTierIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "name", "description", "created_at", "updated_at");
+                "id", "name", "description", "requests_per_window", "window_seconds", "created_at", "updated_at");
 
         List<String> nullableColumns = jdbcTemplate.queryForList(
                 "select column_name from information_schema.columns "
@@ -136,6 +146,20 @@ class SubscriptionTierIntegrationTest {
                         + "and column_name = 'description'",
                 Integer.class);
         assertThat(descriptionLength).isEqualTo(500);
+
+        String defaultRequestsPerWindow = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscription_tiers' "
+                        + "and column_name = 'requests_per_window'",
+                String.class);
+        assertThat(defaultRequestsPerWindow).isEqualTo("100");
+
+        String defaultWindowSeconds = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscription_tiers' "
+                        + "and column_name = 'window_seconds'",
+                String.class);
+        assertThat(defaultWindowSeconds).isEqualTo("60");
 
         List<String> uniqueColumns = jdbcTemplate.queryForList(
                 "select a.attname from pg_constraint con "

@@ -1,6 +1,7 @@
 package com.openbank.apimanagement.credential;
 
 import com.openbank.apimanagement.application.Application;
+import com.openbank.apimanagement.subscription.SubscriptionPolicy;
 import com.openbank.apimanagement.subscription.SubscriptionService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -46,10 +47,10 @@ public class CredentialCheckService {
             return CredentialCheckResponse.unauthorized();
         }
         Application application = credential.getApplication();
-        boolean subscribed = subscriptionService.isSubscribedByApplication(
+        SubscriptionPolicy policy = subscriptionService.findActivePolicyByApplication(
                 application.getId(), contextPath, version);
         return CredentialCheckResponse.authenticated(
-                application.getId(), application.getOwnerUserId(), subscribed);
+                application.getId(), application.getOwnerUserId(), policy);
     }
 
     private ClientCredentials parseBasic(String authorization) {

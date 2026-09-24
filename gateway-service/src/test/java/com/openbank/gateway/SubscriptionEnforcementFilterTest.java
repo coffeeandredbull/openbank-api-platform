@@ -6,7 +6,9 @@ import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.auth.UserRole;
 import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
 import com.openbank.gateway.filter.JwtAuthenticationFilter;
+import com.openbank.gateway.filter.RateLimitingFilter;
 import com.openbank.gateway.filter.SubscriptionEnforcementFilter;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -93,7 +95,9 @@ class SubscriptionEnforcementFilterTest {
 
     @BeforeEach
     void reset() {
-        RESPONSE_BODY.set("{\"subscribed\":true}");
+        RESPONSE_BODY.set(
+                "{\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":100,\"windowSeconds\":60}");
         RESPONSE_STATUS.set(200);
         LAST_QUERY.set(null);
         LAST_AUTHORIZATION.set(null);
@@ -135,6 +139,35 @@ class SubscriptionEnforcementFilterTest {
         assertThat(result.forwarded()).isTrue();
         assertThat(LAST_QUERY.get()).containsEntry("contextPath", "/payments");
         assertThat(LAST_QUERY.get()).containsEntry("version", "v1");
+    }
+
+    @Test
+    void allowedRequestStoresTheRateLimitPolicyOnTheExchange() {
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts").build());
+        exchange.getAttributes().put(
+                JwtAuthenticationFilter.IDENTITY_ATTRIBUTE,
+                new JwtIdentity(1L, UserRole.ADMIN));
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+        GatewayFilterChain chain = ex -> {
+            forwarded.set(true);
+            return Mono.empty();
+        };
+        filter.filter(exchange, chain).block();
+        assertThat(forwarded).isTrue();
+        Object policy = exchange.getAttribute(
+                RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE);
+        assertThat(policy).isEqualTo(new RateLimitPolicy(100, 60));
+    }
+
+    @Test
+    void subscribedResponseWithoutRateLimitPolicyFailsClosedAs503() {
+        RESPONSE_BODY.set("{\"subscribed\":true}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"SUBSCRIPTION_SERVICE_UNAVAILABLE\"");
     }
 
     @Test

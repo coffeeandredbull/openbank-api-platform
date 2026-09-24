@@ -103,25 +103,32 @@ any race condition to `409 SUBSCRIPTION_ALREADY_EXISTS`. **Status lifecycle
 `REVOKED`); new subscriptions are created `PENDING`. `revoked_at` is the only
 nullable column and is set when a subscription is transitioned to `REVOKED`
 (the terminal state). Only `ACTIVE` subscriptions satisfy the internal
-subscription/credential checks used for gateway enforcement. Credentials and
-tier rate-limit fields remain planned. Two subscriptions may target the same
+subscription/credential checks used for gateway enforcement. Credentials (now
+implemented, see below) carry no rate limit of their own; the rate limit comes
+from the subscription's tier. Two subscriptions may target the same
 API version (different applications) and the same application may subscribe to
 multiple API versions. `created_at` is write-once; `updated_at` is set on
 creation (both equal at creation time) and on every status change.
 
-**Implemented so far (Phase 24) — `subscription_tiers`:** tier definitions are
+**Implemented so far (Phase 24, Slice 4) — `subscription_tiers`:** tier definitions are
 now a real table in the **API Management Service**. Actual implemented columns:
 `id` (identity), `name` (`varchar(100)`, `NOT NULL`, unique — DB-level
 `uc_subscription_tier_name`), `description` (`varchar(500)`, nullable),
+`requests_per_window` (`integer`, `NOT NULL`, default `100`), `window_seconds`
+(`integer`, `NOT NULL`, default `60`),
 `created_at`, `updated_at`. Tiers are created through the service layer
 (`SubscriptionTierService`), which validates that the name is non-blank, has no
-leading/trailing whitespace, is at most 100 characters, and the description is
-at most 500 characters; a duplicate name is rejected up front as `409
+leading/trailing whitespace, is at most 100 characters, the description is
+at most 500 characters, and since Phase 24 Slice 4 that `requestsPerWindow` >
+0 and `windowSeconds` > 0 (non-positive values fail creation); a duplicate name
+is rejected up front as `409
 SUBSCRIPTION_TIER_ALREADY_EXISTS` and the unique constraint backs that up for
 race conditions. Subscriptions reference tiers via the `tier_id` foreign key
-above. There is **no** admin tier CRUD endpoint yet and **no** rate-limit,
-pricing, or lifecycle fields — only the domain foundation. `created_at` is
-write-once; `updated_at` is set on creation.
+above, and the internal subscription/credential checks return the tier's
+`requests_per_window`/`window_seconds` policy to the gateway for rate limiting.
+There is **no** admin tier CRUD endpoint yet and **no** pricing or lifecycle
+fields — only the domain foundation plus the enforced rate-limit policy.
+`created_at` is write-once; `updated_at` is set on creation.
 
 **Implemented so far (Phase 13; lifecycle Phase 24 Slice 3) — `credentials`:**
 application credentials are now implemented in the **API Management Service**
@@ -154,7 +161,7 @@ key.
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3) — see above; `api_key_hash`, scopes, and expiry remain planned |
-| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description only; rate-limit/pricing fields remain planned |
+| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4); pricing/burst and admin tier CRUD remain planned |
 | `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service

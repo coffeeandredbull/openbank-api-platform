@@ -80,7 +80,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Credentials carry their own **status lifecycle** (Phase 24, Slice 3): `ACTIVE`/`REVOKED` (varchar, `ACTIVE` on creation), with ADMIN-only `PATCH /credentials/{id}/status` (revocation, terminal) and `POST /credentials/{id}/rotate` (rotates `clientId` + hash **in place**, new plaintext secret shown once) — and the internal `GET /internal/credential-check` authenticates **only `ACTIVE`** credentials. Tier-based rate limiting, auto-approval policy, deletion, credential expiry/scopes, and Redis caching of the checks remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Credentials carry their own **status lifecycle** (Phase 24, Slice 3): `ACTIVE`/`REVOKED` (varchar, `ACTIVE` on creation), with ADMIN-only `PATCH /credentials/{id}/status` (revocation, terminal) and `POST /credentials/{id}/rotate` (rotates `clientId` + hash **in place**, new plaintext secret shown once) — and the internal `GET /internal/credential-check` authenticates **only `ACTIVE`** credentials. Since Phase 24 Slice 4, subscription tiers carry their rate-limit policy (`requestsPerWindow` default `100` / `windowSeconds` default `60`, both validated) and the internal subscription/credential checks surface it to the gateway, which enforces it per request. Tier admin CRUD/lifecycle, auto-approval policy, deletion, credential expiry/scopes, and Redis caching of the checks remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Owns the **runtime analytics events** (Phase 23): a PostgreSQL-backed service (port `8083`) that persists one record per managed API invocation — timestamp, API context/version, HTTP method, status code, latency, authentication type, and the caller's `userId` / `applicationId` (plain identifiers, nullable for JWT callers). Enum values are stored as strings, and no request/response bodies, tokens, or secrets are ever stored. Events are ingested only on the internal `POST /internal/analytics/events` endpoint (since Phase 23 Slice 4), authenticated with a shared internal token (`X-Internal-Service-Token`, compared in constant time) and answered `202 Accepted` without a body. Since Phase 23 Slice 5 there is one public endpoint: `GET /analytics/events`, protected by an `ADMIN`/`DEVELOPER` JWT, returning paged events newest-first (`event_timestamp DESC, id DESC`) with exact-match filters, inclusive time bounds, and a 100-row page cap; filtering, sorting, and pagination run in PostgreSQL. Since Phase 23 Slice 6 there is also `GET /analytics/usage` — an `ADMIN`/`DEVELOPER`-protected single-row usage summary (`totalRequests`, 2xx/4xx/5xx counts, `averageLatencyMs`) computed entirely in PostgreSQL, honoring the same `from`/`to` (inclusive) + `apiContext`/`apiVersion` filters and returning zeros for empty windows. Grouped/bucketed aggregations for the Developer Portal remain planned. |
 
@@ -174,12 +174,17 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   the API Management Service's internal
   `GET /internal/subscription-check?contextPath=...&version=...` endpoint with
   the same `Authorization` header. That endpoint is authenticated, is **not**
-  reachable through any gateway route, and returns only `{"subscribed": bool}`
-  from a **direct PostgreSQL query** (the system of record — no Redis, no
+  reachable through any gateway route, and returns `{"subscribed": bool}` plus,
+  when subscribed, the active subscription's tier policy
+  (`tierId`, `tierName`, `requestsPerWindow`, `windowSeconds`), from a
+  **direct PostgreSQL query** (the system of record — no Redis, no
   cache). Outcomes:
   - subscribed → request is forwarded unchanged to the managed API target;
   - valid JWT but not subscribed (including a subscription owned by another
     user) → `403` + code `SUBSCRIPTION_REQUIRED`;
+  - confirmed subscription without a valid tier policy in the response →
+    `503` + code `SUBSCRIPTION_SERVICE_UNAVAILABLE` (fail closed, Phase 24
+    Slice 4);
   - the check itself fails (unreachable, timeout, 5xx, malformed) → `503` +
     code `SUBSCRIPTION_SERVICE_UNAVAILABLE`. The gateway **fails closed**: an
     unverified or unsubscribed request is never forwarded.
@@ -203,13 +208,17 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     Basic header (not routable through the gateway; `permitAll` in the service
     by design — the Basic header is the credential, not a bearer token);
   - treats the response `{"authenticated":bool,"applicationId":N,
-    "ownerUserId":N,"subscribed":bool}` as both the **credential verdict** and
+    "ownerUserId":N,"subscribed":bool}` plus, when subscribed, the active
+    subscription's tier policy (`tierId`, `tierName`, `requestsPerWindow`,
+    `windowSeconds`) as both the **credential verdict** and
     the **subscription verdict** for the authenticated application (identity =
     application, never a user), decided against PostgreSQL directly (no cache);
   - **strips the Basic header** (decorated request) before forwarding, so the
     consumed backend never sees the client secret;
   - fails closed: invalid/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`;
     check unreachable/failed/malformed → `503 CREDENTIAL_SERVICE_UNAVAILABLE`;
+    confirmed subscription without a valid tier policy → `503
+    CREDENTIAL_SERVICE_UNAVAILABLE` (Phase 24 Slice 4);
     valid credentials but unsubscribed application (or malformed runtime path)
     → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic
     on `/apis/**` → `401 UNAUTHENTICATED`); a request with both Bearer and
@@ -238,12 +247,17 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     limit → `-100` global filter). Backend services still treat these headers
     as enriched context and continue to validate the JWT locally / re-check
     ownership (defense in depth).
-- **Rate limiting (Phase 21 — Redis-backed)**: every `/runtime/apis/**` request
+- **Rate limiting (Phase 21 — Redis-backed; policy-driven since Phase 24 Slice
+  4)**: every `/runtime/apis/**` request
   is rate limited before routing with Redis fixed-window counters per API
   version — `rate_limit:user:{userId}:{context}:{version}` for JWT callers,
   `rate_limit:app:{applicationId}:{context}:{version}` for client-credential
-  callers — configured by `RATE_LIMIT_REQUESTS` (default `100`) /
-  `RATE_LIMIT_WINDOW_SECONDS` (default `60`). Exceeded → `429` + code
+  callers. The limit/window are **not gateway configuration**: each internal
+  subscription/credential check response carries the active subscription's tier
+  policy (`requestsPerWindow` requests per `windowSeconds`, defaults `100`/`60`)
+  and the gateway applies it per request (missing/malformed policy on a
+  confirmed subscription → `503` `..._SERVICE_UNAVAILABLE`, fail closed, before
+  the limiter is contacted). Exceeded → `429` + code
   `RATE_LIMIT_EXCEEDED` with `Retry-After`; Redis/counter failure → `503` + code
   `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). This is the first business
   use of the Phase 18 Redis infrastructure.
@@ -260,12 +274,13 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   Since Phase 18 it reports `UP` **independently of Redis** (see "Redis Role"
   below); `GET /actuator/health/redisHealth` is the dedicated Redis view.
 - The Phase 17–21 gateway performs **no CORS handling** and no business logic;
-  tiered/policy-based rate limiting and observability remain planned (below).
+  observability beyond the Phase 23 analytics capture remains planned (below).
 
 **Planned (later phases):**
 
-- **Subscription tiers / policy-based rate limiting**: per-subscription or
-  per-tier limits on top of the current fixed per-API-version counters.
+- **Tier lifecycle / tier admin CRUD**: management of the `subscription_tiers`
+  registry and pricing/hard limits on top of the policy fields the gateway
+  already enforces (Phase 24 Slice 4).
 - **Observability**: emits request telemetry for the Analytics Service.
 - The gateway stays thin about business logic; it routes and enforces, but does
   not implement account, payment, or transaction rules.
@@ -366,8 +381,10 @@ record.
 > subscriptions, and since Phase 24 (Slice 3) the application flow's
 > `GET /internal/credential-check` authenticates only **`ACTIVE` credentials**
 > (revoked or rotated-away credentials fail even with the correct secret
-> value). Caching for the subscription/credential checks and tier-based
-> rate limiting remain planned.
+> value). Since Phase 24 (Slice 4) step 4's rate limit is driven by the
+> **active subscription's tier policy** returned by the checks instead of
+> gateway-level configuration. Caching for the subscription/credential checks
+> and tier lifecycle management remain planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.
@@ -378,7 +395,9 @@ record.
    internal check against PostgreSQL) and **subscription status** (Phase 24,
    Slice 2 — only `ACTIVE` counts) with the Subscription Service
    (or a cached copy — caching planned).
-4. The gateway applies **rate limiting** for the application, incrementing a
+4. The gateway applies **rate limiting** for the application against the
+   active subscription's tier policy (`requestsPerWindow`/`windowSeconds`,
+   Phase 24 Slice 4), incrementing a
    Redis counter; on exceed it responds `429`.
 5. The gateway **routes** the request to the owning backend service
    (e.g. the Payment Service's Transaction domain for `GET /transactions`),

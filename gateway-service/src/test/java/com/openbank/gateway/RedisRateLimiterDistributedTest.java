@@ -1,7 +1,7 @@
 package com.openbank.gateway;
 
 import com.openbank.gateway.ratelimit.RateLimitKeyGenerator;
-import com.openbank.gateway.ratelimit.RateLimitProperties;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.openbank.gateway.ratelimit.RateLimitService.State;
 import com.openbank.gateway.ratelimit.RedisRateLimitService;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +29,7 @@ class RedisRateLimiterDistributedTest {
                     "--requirepass", TEST_REDIS_PASSWORD);
 
     private final RateLimitKeyGenerator keyGenerator = new RateLimitKeyGenerator();
+    private static final RateLimitPolicy POLICY = new RateLimitPolicy(2, 60);
 
     @BeforeEach
     void resetSharedCounters() {
@@ -50,7 +51,7 @@ class RedisRateLimiterDistributedTest {
     }
 
     private RedisRateLimitService newClient(StringRedisTemplate template) {
-        return new RedisRateLimitService(template, new RateLimitProperties(2, 60), keyGenerator);
+        return new RedisRateLimitService(template, keyGenerator);
     }
 
     @Test
@@ -60,11 +61,11 @@ class RedisRateLimiterDistributedTest {
         RedisRateLimitService clientA = newClient(templateA);
         RedisRateLimitService clientB = newClient(templateB);
 
-        assertThat(clientA.evaluate(1, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
-        assertThat(clientA.evaluate(1, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
+        assertThat(clientA.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
+        assertThat(clientA.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
 
-        assertThat(clientB.evaluate(1, "/payments", "v1").state()).isEqualTo(State.DENIED);
-        assertThat(clientB.evaluate(1, "/payments", "v1").state()).isEqualTo(State.DENIED);
+        assertThat(clientB.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.DENIED);
+        assertThat(clientB.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.DENIED);
 
         String key = keyGenerator.keyFor(1, "/payments", "v1");
         assertThat(templateA.hasKey(key)).isTrue();
@@ -77,11 +78,11 @@ class RedisRateLimiterDistributedTest {
         RedisRateLimitService clientA = newClient(newTemplate());
         RedisRateLimitService clientB = newClient(newTemplate());
 
-        assertThat(clientA.evaluate(1, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
-        assertThat(clientA.evaluate(1, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
+        assertThat(clientA.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
+        assertThat(clientA.evaluate(1, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
 
-        assertThat(clientB.evaluate(2, "/payments", "v1").state()).isEqualTo(State.ALLOWED);
-        assertThat(clientB.evaluate(1, "/accounts", "v1").state()).isEqualTo(State.ALLOWED);
-        assertThat(clientB.evaluate(1, "/payments", "v2").state()).isEqualTo(State.ALLOWED);
+        assertThat(clientB.evaluate(2, "/payments", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
+        assertThat(clientB.evaluate(1, "/accounts", "v1", POLICY).state()).isEqualTo(State.ALLOWED);
+        assertThat(clientB.evaluate(1, "/payments", "v2", POLICY).state()).isEqualTo(State.ALLOWED);
     }
 }

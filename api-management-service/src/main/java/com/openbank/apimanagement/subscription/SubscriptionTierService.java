@@ -20,19 +20,20 @@ public class SubscriptionTierService {
     }
 
     @Transactional
-    public SubscriptionTier create(String name, String description) {
-        validate(name, description);
+    public SubscriptionTier create(String name, String description, int requestsPerWindow, int windowSeconds) {
+        validate(name, description, requestsPerWindow, windowSeconds);
         if (subscriptionTierRepository.existsByName(name)) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
         try {
-            return subscriptionTierRepository.save(new SubscriptionTier(name, description));
+            return subscriptionTierRepository.save(
+                    new SubscriptionTier(name, description, requestsPerWindow, windowSeconds));
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
     }
 
-    private void validate(String name, String description) {
+    private void validate(String name, String description, int requestsPerWindow, int windowSeconds) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("name is required");
         }
@@ -44,6 +45,12 @@ public class SubscriptionTierService {
         }
         if (description != null && description.length() > MAX_DESCRIPTION_LENGTH) {
             throw new IllegalArgumentException("description must not exceed " + MAX_DESCRIPTION_LENGTH + " characters");
+        }
+        if (requestsPerWindow <= 0) {
+            throw new IllegalArgumentException("requestsPerWindow must be greater than 0");
+        }
+        if (windowSeconds <= 0) {
+            throw new IllegalArgumentException("windowSeconds must be greater than 0");
         }
     }
 }

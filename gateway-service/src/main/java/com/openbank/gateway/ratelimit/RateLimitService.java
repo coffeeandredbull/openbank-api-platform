@@ -2,9 +2,9 @@ package com.openbank.gateway.ratelimit;
 
 public interface RateLimitService {
 
-    Decision evaluate(long userId, String contextPath, String version);
+    Decision evaluate(long userId, String contextPath, String version, RateLimitPolicy policy);
 
-    Decision evaluateForApplication(long applicationId, String contextPath, String version);
+    Decision evaluateForApplication(long applicationId, String contextPath, String version, RateLimitPolicy policy);
 
     enum State {
         ALLOWED, DENIED, UNAVAILABLE

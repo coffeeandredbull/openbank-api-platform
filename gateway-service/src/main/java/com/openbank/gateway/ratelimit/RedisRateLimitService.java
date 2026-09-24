@@ -25,44 +25,41 @@ public class RedisRateLimitService implements RateLimitService {
             new DefaultRedisScript<>(INCR_AND_EXPIRE_ONCE_LUA, String.class);
 
     private final StringRedisTemplate redisTemplate;
-    private final RateLimitProperties properties;
     private final RateLimitKeyGenerator keyGenerator;
 
-    public RedisRateLimitService(StringRedisTemplate redisTemplate,
-            RateLimitProperties properties,
-            RateLimitKeyGenerator keyGenerator) {
+    public RedisRateLimitService(StringRedisTemplate redisTemplate, RateLimitKeyGenerator keyGenerator) {
         this.redisTemplate = redisTemplate;
-        this.properties = properties;
         this.keyGenerator = keyGenerator;
     }
 
     @Override
-    public Decision evaluate(long userId, String contextPath, String version) {
-        return evaluateWithKey(keyGenerator.keyFor(userId, contextPath, version));
+    public Decision evaluate(long userId, String contextPath, String version, RateLimitPolicy policy) {
+        return evaluateWithKey(keyGenerator.keyFor(userId, contextPath, version), policy);
     }
 
     @Override
-    public Decision evaluateForApplication(long applicationId, String contextPath, String version) {
-        return evaluateWithKey(keyGenerator.keyForApplication(applicationId, contextPath, version));
+    public Decision evaluateForApplication(long applicationId, String contextPath, String version,
+            RateLimitPolicy policy) {
+        return evaluateWithKey(keyGenerator.keyForApplication(applicationId, contextPath, version), policy);
     }
 
-    private Decision evaluateWithKey(String key) {
+    private Decision evaluateWithKey(String key, RateLimitPolicy policy) {
         try {
             String currentValue = redisTemplate.execute(
                     INCR_AND_EXPIRE_ONCE,
                     List.of(key),
-                    String.valueOf(properties.windowSeconds()));
+                    String.valueOf(policy.windowSeconds()));
             if (currentValue == null) {
                 return Decision.unavailable();
             }
             long current = Long.parseLong(currentValue);
-            if (current <= properties.requests()) {
+            if (current <= policy.requestsPerWindow()) {
                 return Decision.allowed();
             }
             Long ttlSeconds = redisTemplate.getExpire(key, TimeUnit.SECONDS);
             long retryAfter = ttlSeconds != null && ttlSeconds > 0
                     ? ttlSeconds
-                    : properties.windowSeconds();
+                    : policy.windowSeconds();
             return Decision.denied(retryAfter);
         } catch (RuntimeException ex) {
             log.warn("gateway rate limiter unavailable for key={}", key);

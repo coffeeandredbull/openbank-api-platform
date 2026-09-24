@@ -12,7 +12,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -35,10 +34,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
-@TestPropertySource(properties = {
-        "RATE_LIMIT_REQUESTS=1000",
-        "RATE_LIMIT_WINDOW_SECONDS=3600"
-})
 class GatewayAnalyticsQueueFullIntegrationTest {
 
     @Container
@@ -79,11 +74,15 @@ class GatewayAnalyticsQueueFullIntegrationTest {
         String path = exchange.getRequestURI().getPath();
         if ("api-management".equals(name) && "/internal/credential-check".equals(path)) {
             respond(exchange, 200,
-                    "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+                    "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true,"
+                            + "\"tierId\":1,\"tierName\":\"Gold\","
+                            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}");
             return;
         }
         if ("api-management".equals(name) && "/internal/subscription-check".equals(path)) {
-            respond(exchange, 200, "{\"subscribed\":true}");
+            respond(exchange, 200, "{\"subscribed\":true,"
+                    + "\"tierId\":1,\"tierName\":\"Gold\","
+                    + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}");
             return;
         }
         respond(exchange, 201, "{\"upstream\":\"" + name + "\"}");

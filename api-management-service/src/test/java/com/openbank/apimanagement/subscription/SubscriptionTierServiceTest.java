@@ -28,32 +28,36 @@ class SubscriptionTierServiceTest {
     private SubscriptionTierService subscriptionTierService;
 
     @Test
-    void createPersistsTierWithNameDescriptionAndTimestamps() {
+    void createPersistsTierWithNameDescriptionPolicyAndTimestamps() {
         when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
             SubscriptionTier tier = invocation.getArgument(0);
             setField(tier, "id", 1L);
             return tier;
         });
 
-        SubscriptionTier created = subscriptionTierService.create("Developer", "Standard access");
+        SubscriptionTier created = subscriptionTierService.create("Developer", "Standard access", 500, 30);
 
         ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
         verify(subscriptionTierRepository).save(captor.capture());
         SubscriptionTier persisted = captor.getValue();
         assertThat(persisted.getName()).isEqualTo("Developer");
         assertThat(persisted.getDescription()).isEqualTo("Standard access");
+        assertThat(persisted.getRequestsPerWindow()).isEqualTo(500);
+        assertThat(persisted.getWindowSeconds()).isEqualTo(30);
         assertThat(persisted.getCreatedAt()).isEqualTo(persisted.getUpdatedAt());
 
         assertThat(created.getId()).isEqualTo(1L);
         assertThat(created.getName()).isEqualTo("Developer");
         assertThat(created.getDescription()).isEqualTo("Standard access");
+        assertThat(created.getRequestsPerWindow()).isEqualTo(500);
+        assertThat(created.getWindowSeconds()).isEqualTo(30);
     }
 
     @Test
     void createAllowsInternalWhitespaceInTheName() {
         when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        SubscriptionTier created = subscriptionTierService.create("Developer Tier", "Standard access");
+        SubscriptionTier created = subscriptionTierService.create("Developer Tier", "Standard access", 100, 60);
 
         assertThat(created.getName()).isEqualTo("Developer Tier");
     }
@@ -62,7 +66,7 @@ class SubscriptionTierServiceTest {
     void createAllowsNullDescription() {
         when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        SubscriptionTier created = subscriptionTierService.create("Developer", null);
+        SubscriptionTier created = subscriptionTierService.create("Developer", null, 100, 60);
 
         assertThat(created.getDescription()).isNull();
     }
@@ -70,7 +74,7 @@ class SubscriptionTierServiceTest {
     @ParameterizedTest
     @ValueSource(strings = {"", "   ", "\t"})
     void createRejectsBlankName(String name) {
-        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("name is required");
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
@@ -78,7 +82,7 @@ class SubscriptionTierServiceTest {
 
     @Test
     void createRejectsNullName() {
-        assertThatThrownBy(() -> subscriptionTierService.create(null, "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create(null, "Standard access", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("name is required");
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
@@ -87,7 +91,7 @@ class SubscriptionTierServiceTest {
     @ParameterizedTest
     @ValueSource(strings = {" Developer", "Developer ", "\tDeveloper"})
     void createRejectsLeadingOrTrailingWhitespace(String name) {
-        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("leading or trailing whitespace");
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
@@ -96,7 +100,7 @@ class SubscriptionTierServiceTest {
     @Test
     void createRejectsNameLongerThan100Characters() {
         String name = "a".repeat(101);
-        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create(name, "Standard access", 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("100")
                 .hasMessageContaining("characters");
@@ -106,7 +110,7 @@ class SubscriptionTierServiceTest {
     @Test
     void createRejectsDescriptionLongerThan500Characters() {
         String description = "a".repeat(501);
-        assertThatThrownBy(() -> subscriptionTierService.create("Developer", description))
+        assertThatThrownBy(() -> subscriptionTierService.create("Developer", description, 100, 60))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("500")
                 .hasMessageContaining("characters");
@@ -117,7 +121,7 @@ class SubscriptionTierServiceTest {
     void createRejectsDuplicateNameBeforePersisting() {
         when(subscriptionTierRepository.existsByName("Developer")).thenReturn(true);
 
-        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access", 100, 60))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Developer");
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
@@ -129,9 +133,27 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.save(any(SubscriptionTier.class)))
                 .thenThrow(new DataIntegrityViolationException("could not execute statement; constraint"));
 
-        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access"))
+        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access", 100, 60))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Developer");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, -100})
+    void createRejectsNonPositiveRequestsPerWindow(int requestsPerWindow) {
+        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access", requestsPerWindow, 60))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requestsPerWindow");
+        verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, -100})
+    void createRejectsNonPositiveWindowSeconds(int windowSeconds) {
+        assertThatThrownBy(() -> subscriptionTierService.create("Developer", "Standard access", 100, windowSeconds))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("windowSeconds");
+        verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
     }
 
     private void setField(Object target, String name, Object value) {

@@ -30,6 +30,12 @@ public class SubscriptionTier {
     @Column(length = 500)
     private String description;
 
+    @Column(name = "requests_per_window", nullable = false, columnDefinition = "integer not null default 100")
+    private int requestsPerWindow;
+
+    @Column(name = "window_seconds", nullable = false, columnDefinition = "integer not null default 60")
+    private int windowSeconds;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -39,9 +45,11 @@ public class SubscriptionTier {
     protected SubscriptionTier() {
     }
 
-    public SubscriptionTier(String name, String description) {
+    public SubscriptionTier(String name, String description, int requestsPerWindow, int windowSeconds) {
         this.name = name;
         this.description = description;
+        this.requestsPerWindow = requestsPerWindow;
+        this.windowSeconds = windowSeconds;
         Instant now = Instant.now();
         this.createdAt = now;
         this.updatedAt = now;
@@ -57,6 +65,14 @@ public class SubscriptionTier {
 
     public String getDescription() {
         return description;
+    }
+
+    public int getRequestsPerWindow() {
+        return requestsPerWindow;
+    }
+
+    public int getWindowSeconds() {
+        return windowSeconds;
     }
 
     public Instant getCreatedAt() {

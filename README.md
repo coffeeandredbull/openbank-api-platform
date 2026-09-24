@@ -318,16 +318,18 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   so the consumed backend never sees the credentials. JWT (user) invocation is
   unchanged (Bearer forwarded intact, `Bearer` + `Basic` together → the
   client-credential flow wins), subscription enforcement and rate limiting take
-  the same application identity, and platform-management routes still require a
-  Bearer JWT (Basic there → `401` `UNAUTHENTICATED`). Both flows are now
-  **rate limited via Redis** — fixed-window counters per API version, keyed
-  `rate_limit:user:{userId}:{context}:{version}` (user flow) and
-  `rate_limit:app:{applicationId}:{context}:{version}` (application flow, added
-  here): the limit (`RATE_LIMIT_REQUESTS`, default `100`) is evaluated before
-  routing, over-limit requests get `429` + code `RATE_LIMIT_EXCEEDED` with a
-  `Retry-After` header, and a Redis failure returns `503` + code
-  `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed) — this is Redis's **first
-  business use**. All new rejection bodies keep the stable
+the same application identity, and platform-management routes still require a
+   Bearer JWT (Basic there → `401` `UNAUTHENTICATED`). Both flows are now
+   **rate limited via Redis** — fixed-window counters per API version, keyed
+   `rate_limit:user:{userId}:{context}:{version}` (user flow) and
+   `rate_limit:app:{applicationId}:{context}:{version}` (application flow, added
+   here): the **active subscription's tier** supplies the policy
+   (`requestsPerWindow` requests per `windowSeconds` window, enforced since
+   Phase 24 Slice 4) that is evaluated before routing, over-limit requests get
+   `429` + code `RATE_LIMIT_EXCEEDED` with a
+   `Retry-After` header, and a Redis failure returns `503` + code
+   `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed) — this is Redis's **first
+   business use**. All new rejection bodies keep the stable
   `{timestamp,status,error,path,code,message,fieldErrors}` shape and never
   expose the credentials, hashes, upstream URLs, or internal responses.
 - **Phase 22 — API Gateway (trusted identity headers):** after successful
@@ -366,14 +368,14 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    2xx/4xx/5xx counts, `averageLatencyMs`) computed in PostgreSQL. Verified by
    unit and Testcontainers integration tests.
 - **Phase 24 — API Management Service (subscription tier domain foundation):**
-   a `subscription_tiers` table (`name` unique, `description`, timestamps, no
-   rate-limit/pricing fields yet) with service-layer validation and `409`
+   a `subscription_tiers` table (`name` unique, `description`, timestamps;
+   `requests_per_window`/`window_seconds` rate-limit fields added in Phase 24
+   Slice 4) with service-layer validation and `409`
    conflict handling, and every subscription now references a **required tier**
    (`tier_id` FK): `POST /subscriptions` accepts `tierId` (missing tier → `404
    SUBSCRIPTION_TIER_NOT_FOUND`), and `GET /subscriptions[/{id}]` responses
-   expose `tierId` + `tierName`. No tier admin CRUD and no tier-based rate
-   limiting yet; the internal subscription/credential checks and gateway
-   behavior are unchanged.
+   expose `tierId` + `tierName`. No tier admin CRUD yet; tier-based rate
+   limiting is implemented in Phase 24 Slice 4 (below).
 - **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
    subscriptions now carry a **status state machine** — `PENDING → ACTIVE →
    REVOKED`, `PENDING → DENIED → ACTIVE/REVOKED` (REVOKED is terminal) — and a
@@ -404,11 +406,24 @@ subscriptions now satisfy the internal `GET /internal/subscription-check`
    API Management Service. Credential responses (`GET`, `GET /{id}`, PATCH,
    rotation-as-well-as-creation only once for the secret) now expose `status`
    and never expose `clientSecretHash`. The internal `GET /internal/credential-check`
-   now authenticates **only `ACTIVE`** credentials (a `REVOKED` credential →
-   `authenticated: false`), while subscription enforcement is unchanged (the
-   gateway itself is untouched).
-- **Planned phases (subject to change):** tier-based rate limiting and tier
-   lifecycle, Redis-backed token revocation and caches, credential expiry and
+now authenticates **only `ACTIVE`** credentials (a `REVOKED` credential →
+    `authenticated: false`), while subscription enforcement is unchanged (the
+    gateway itself is untouched).
+- **Phase 24, Slice 4 — tier-based distributed rate limiting:** `SubscriptionTier`
+   now carries a rate-limit policy (`requestsPerWindow`, default `100`, and
+   `windowSeconds`, default `60`, both validated > 0 at creation). The internal
+   `GET /internal/subscription-check` and `GET /internal/credential-check`
+   responses now include the active subscription's tier policy (`tierId`,
+   `tierName`, `requestsPerWindow`, `windowSeconds`), and the gateway uses it as
+   the per-request rate-limit policy for both JWT and client-credential flows —
+   the fixed `RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS` configuration is
+   removed. Redis behaviour is unchanged (fixed-window counters, EXPIRE-once,
+   key shapes `rate_limit:user:{userId}:{context}:{version}` /
+   `rate_limit:app:{applicationId}:{context}:{version}`, TTL = policy window);
+   a subscribed request with a missing/malformed policy fails closed with `503`
+   `RATE_LIMIT_SERVICE_UNAVAILABLE` before the limiter is contacted.
+- **Planned phases (subject to change):** tier admin CRUD/lifecycle,
+   Redis-backed token revocation and caches, credential expiry and
    scopes, the remaining services, the Developer Portal, shared
    infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
    and Kubernetes manifests will be built in small, explicitly requested phases
@@ -426,7 +441,8 @@ subscriptions now satisfy the internal `GET /internal/subscription-check`
   Basic application, subscription, and application credential management is
   already implemented in the API Management Service (Phases 11–13). The API
   Gateway already authenticates applications with the issued client credentials
-  and enforces the application's subscription and API rate limit (Phase 21).
+  and enforces the application's subscription and API rate limit (Phase 21,
+  policy-driven from the subscription tier since Phase 24 Slice 4).
 - **Account / Payment / Transaction:** the `payment-service` already hosts the
   Account, Payment, and Transaction foundations (Phase 14) — one account per
   user, `PENDING` payment creation, and transaction records of type `PAYMENT`.

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openbank.gateway.auth.ClientCredentialIdentity;
 import com.openbank.gateway.auth.TrustedIdentityHeaders;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import com.openbank.gateway.ratelimit.RuntimeApiPath;
 import io.netty.channel.ChannelOption;
 import org.slf4j.Logger;
@@ -103,7 +104,12 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                         ClientCredentialIdentity identity = new ClientCredentialIdentity(
                                 basic.clientId(), outcome.applicationId(), outcome.ownerUserId());
                         exchange.getAttributes().put(CLIENT_CREDENTIAL_ATTRIBUTE, identity);
-                        exchange.getAttributes().put(APPLICATION_SUBSCRIBED_ATTRIBUTE, outcome.subscribed());
+                        boolean subscribed = outcome.policy() != null;
+                        exchange.getAttributes().put(APPLICATION_SUBSCRIBED_ATTRIBUTE, subscribed);
+                        if (outcome.policy() != null) {
+                            exchange.getAttributes().put(
+                                    RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE, outcome.policy());
+                        }
                         log.info("gateway client credentials accepted applicationId={} method={} path={} "
                                         + "routeId={} durationMs={}",
                                 outcome.applicationId(),
@@ -164,12 +170,18 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                     || !node.path("ownerUserId").isIntegralNumber()) {
                 return CheckOutcome.unavailable();
             }
-            boolean subscribed = node.path("subscribed").asBoolean(false);
+            RateLimitPolicy policy = null;
+            if (node.path("subscribed").asBoolean(false)) {
+                policy = RateLimitPolicyParser.parse(node);
+                if (policy == null) {
+                    return CheckOutcome.unavailable();
+                }
+            }
             return new CheckOutcome(
                     CheckState.AUTHENTICATED,
                     node.path("applicationId").asLong(),
                     node.path("ownerUserId").asLong(),
-                    subscribed);
+                    policy);
         } catch (JsonProcessingException e) {
             return CheckOutcome.unavailable();
         }
@@ -266,14 +278,14 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
     }
 
     private record CheckOutcome(
-            CheckState state, long applicationId, long ownerUserId, boolean subscribed) {
+            CheckState state, long applicationId, long ownerUserId, RateLimitPolicy policy) {
 
         static CheckOutcome invalid() {
-            return new CheckOutcome(CheckState.INVALID, 0, 0, false);
+            return new CheckOutcome(CheckState.INVALID, 0, 0, null);
         }
 
         static CheckOutcome unavailable() {
-            return new CheckOutcome(CheckState.UNAVAILABLE, 0, 0, false);
+            return new CheckOutcome(CheckState.UNAVAILABLE, 0, 0, null);
         }
     }
 

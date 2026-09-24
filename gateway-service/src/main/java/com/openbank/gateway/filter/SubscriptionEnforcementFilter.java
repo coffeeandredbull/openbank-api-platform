@@ -3,6 +3,7 @@ package com.openbank.gateway.filter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openbank.gateway.ratelimit.RateLimitPolicy;
 import io.netty.channel.ChannelOption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,8 +88,10 @@ public class SubscriptionEnforcementFilter implements GlobalFilter, Ordered {
                     MESSAGE_REQUIRED, path, startTime);
         }
         return check(exchange, target)
-                .flatMap(result -> switch (result) {
+                .flatMap(result -> switch (result.state()) {
                     case ALLOWED -> {
+                        exchange.getAttributes().put(
+                                RateLimitingFilter.RATE_LIMIT_POLICY_ATTRIBUTE, result.policy());
                         log.info("gateway subscription check allowed method={} path={} routeId={} durationMs={}",
                                 requestMethod(exchange),
                                 path,
@@ -154,27 +157,34 @@ public class SubscriptionEnforcementFilter implements GlobalFilter, Ordered {
         return request.exchangeToMono(response -> {
             int status = response.statusCode().value();
             if (status >= 500) {
-                return response.bodyToMono(String.class).then(Mono.just(CheckResult.UNAVAILABLE));
+                return response.bodyToMono(String.class).then(Mono.just(CheckResult.unavailable()));
             }
             if (status >= 400) {
-                return response.bodyToMono(String.class).then(Mono.just(CheckResult.DENIED));
+                return response.bodyToMono(String.class).then(Mono.just(CheckResult.denied()));
             }
             return response.bodyToMono(String.class)
-                    .map(body -> isSubscribed(body) ? CheckResult.ALLOWED : CheckResult.DENIED)
-                    .defaultIfEmpty(CheckResult.DENIED);
+                    .map(this::parseBody)
+                    .defaultIfEmpty(CheckResult.denied());
         })
                 .timeout(RESPONSE_TIMEOUT)
                 .onErrorResume(throwable -> Mono.just(isTransportFailure(throwable)
-                        ? CheckResult.UNAVAILABLE
-                        : CheckResult.DENIED));
+                        ? CheckResult.unavailable()
+                        : CheckResult.denied()));
     }
 
-    private boolean isSubscribed(String body) {
+    private CheckResult parseBody(String body) {
         try {
             JsonNode node = objectMapper.readTree(body);
-            return node.isObject() && node.hasNonNull("subscribed") && node.path("subscribed").asBoolean();
+            if (!node.isObject() || !node.path("subscribed").asBoolean(false)) {
+                return CheckResult.denied();
+            }
+            RateLimitPolicy policy = RateLimitPolicyParser.parse(node);
+            if (policy == null) {
+                return CheckResult.unavailable();
+            }
+            return CheckResult.allowed(policy);
         } catch (JsonProcessingException e) {
-            return false;
+            return CheckResult.denied();
         }
     }
 
@@ -241,7 +251,22 @@ public class SubscriptionEnforcementFilter implements GlobalFilter, Ordered {
     private record ContextVersion(String contextPath, String version) {
     }
 
-    private enum CheckResult {
+    private enum CheckState {
         ALLOWED, DENIED, UNAVAILABLE
+    }
+
+    private record CheckResult(CheckState state, RateLimitPolicy policy) {
+
+        static CheckResult allowed(RateLimitPolicy policy) {
+            return new CheckResult(CheckState.ALLOWED, policy);
+        }
+
+        static CheckResult denied() {
+            return new CheckResult(CheckState.DENIED, null);
+        }
+
+        static CheckResult unavailable() {
+            return new CheckResult(CheckState.UNAVAILABLE, null);
+        }
     }
 }
