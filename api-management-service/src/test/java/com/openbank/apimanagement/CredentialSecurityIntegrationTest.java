@@ -27,6 +27,7 @@ import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -169,6 +170,90 @@ class CredentialSecurityIntegrationTest {
                         .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void statusManagementIsAGlobalAdminOperationByCredentialId() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", "DEVELOPER", applicationId);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("REVOKED");
+    }
+
+    @Test
+    void developerCannotChangeCredentialStatus() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", "DEVELOPER", applicationId);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/status")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void developerCannotRotateCredential() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", "DEVELOPER", applicationId);
+
+        mockMvc.perform(post("/credentials/" + credentialId + "/rotate")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+    }
+
+    @Test
+    void adminCanRotateAnotherUsersCredential() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", "DEVELOPER", applicationId);
+        String oldClientId = jdbcTemplate.queryForObject(
+                "select client_id from credentials where id = ?", String.class, credentialId);
+
+        mockMvc.perform(post("/credentials/" + credentialId + "/rotate")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credentialId))
+                .andExpect(jsonPath("$.clientId").value(org.hamcrest.Matchers.not(oldClientId)))
+                .andExpect(jsonPath("$.clientSecret").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+    }
+
+    @Test
+    void unauthenticatedStatusAndRotationRequestsReturn401() throws Exception {
+        mockMvc.perform(patch("/credentials/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+
+        mockMvc.perform(post("/credentials/1/rotate"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }
 
     @Test

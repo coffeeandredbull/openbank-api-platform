@@ -7,6 +7,7 @@ public record CredentialCreatedResponse(
         Long applicationId,
         String clientId,
         String clientSecret,
+        CredentialStatus status,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -17,6 +18,7 @@ public record CredentialCreatedResponse(
                 credential.getApplication().getId(),
                 credential.getClientId(),
                 plaintextClientSecret,
+                credential.getStatus(),
                 credential.getCreatedAt(),
                 credential.getUpdatedAt()
         );

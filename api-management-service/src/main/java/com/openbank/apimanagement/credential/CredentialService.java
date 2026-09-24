@@ -4,6 +4,7 @@ import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.CredentialNotFoundException;
+import com.openbank.apimanagement.exception.InvalidCredentialStatusTransitionException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -71,6 +72,40 @@ public class CredentialService {
         return credentialRepository.findByApplication_OwnerUserIdOrderByIdAsc(ownerUserId).stream()
                 .map(CredentialResponse::from)
                 .toList();
+    }
+
+    @Transactional
+    public CredentialResponse changeStatus(Long credentialId, UpdateCredentialStatusRequest request) {
+        Credential credential = credentialRepository.findById(credentialId)
+                .orElseThrow(() -> new CredentialNotFoundException(credentialId));
+        if (!credential.getStatus().canTransitionTo(request.status())) {
+            throw new InvalidCredentialStatusTransitionException(credential.getStatus(), request.status());
+        }
+        credential.changeStatus(request.status());
+        return CredentialResponse.from(credentialRepository.save(credential));
+    }
+
+    @Transactional
+    public CredentialRotatedResponse rotate(Long credentialId) {
+        Credential credential = credentialRepository.findById(credentialId)
+                .orElseThrow(() -> new CredentialNotFoundException(credentialId));
+        if (credential.getStatus() != CredentialStatus.ACTIVE) {
+            throw new InvalidCredentialStatusTransitionException(credentialId, credential.getStatus());
+        }
+        String plaintextClientSecret = generateClientSecret();
+        for (int attempt = 0; attempt < MAX_CLIENT_ID_ATTEMPTS; attempt++) {
+            String clientId = UUID.randomUUID().toString();
+            if (credentialRepository.existsByClientId(clientId)) {
+                continue;
+            }
+            try {
+                credential.rotate(clientId, passwordEncoder.encode(plaintextClientSecret));
+                return CredentialRotatedResponse.from(credentialRepository.save(credential), plaintextClientSecret);
+            } catch (DataIntegrityViolationException e) {
+                // Concurrent insert won the unique(client_id) race: regenerate and retry.
+            }
+        }
+        throw new IllegalStateException("Unable to generate a unique client id");
     }
 
     private String generateClientSecret() {

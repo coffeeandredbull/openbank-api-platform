@@ -57,6 +57,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "INVALID_SUBSCRIPTION_STATUS_TRANSITION", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(InvalidCredentialStatusTransitionException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidCredentialStatusTransition(InvalidCredentialStatusTransitionException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "INVALID_CREDENTIAL_STATUS_TRANSITION", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(ApplicationNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleApplicationNotFound(ApplicationNotFoundException ex, HttpServletRequest request) {
         return build(HttpStatus.NOT_FOUND, "APPLICATION_NOT_FOUND", ex.getMessage(), request, Map.of());

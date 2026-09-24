@@ -3,6 +3,7 @@ package com.openbank.apimanagement.credential;
 import com.openbank.apimanagement.auth.JwtIdentity;
 import com.openbank.apimanagement.auth.UserRole;
 import com.openbank.apimanagement.exception.CredentialNotFoundException;
+import com.openbank.apimanagement.exception.InvalidCredentialStatusTransitionException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -57,7 +59,8 @@ class CredentialControllerTest {
     @Test
     void createReturns201WithLocationHeaderAndSecretOnlyHere() throws Exception {
         when(credentialService.create(eq(42L), any(CreateCredentialRequest.class)))
-                .thenReturn(new CredentialCreatedResponse(1L, 10L, "client-abc", "plain-secret-xyz", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new CredentialCreatedResponse(1L, 10L, "client-abc", "plain-secret-xyz",
+                        CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -72,6 +75,7 @@ class CredentialControllerTest {
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.clientId").value("client-abc"))
                 .andExpect(jsonPath("$.clientSecret").value("plain-secret-xyz"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
@@ -81,7 +85,8 @@ class CredentialControllerTest {
     @Test
     void createDerivesOwnerFromAuthenticatedPrincipal() throws Exception {
         when(credentialService.create(eq(42L), any(CreateCredentialRequest.class)))
-                .thenReturn(new CredentialCreatedResponse(1L, 10L, "client-abc", "secret", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new CredentialCreatedResponse(1L, 10L, "client-abc", "secret",
+                        CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -98,7 +103,8 @@ class CredentialControllerTest {
     @Test
     void createIgnoresClientProvidedClientIdAndSecret() throws Exception {
         when(credentialService.create(eq(42L), any(CreateCredentialRequest.class)))
-                .thenReturn(new CredentialCreatedResponse(1L, 10L, "server-generated", "server-secret", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new CredentialCreatedResponse(1L, 10L, "server-generated", "server-secret",
+                        CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -152,13 +158,14 @@ class CredentialControllerTest {
     @Test
     void getReturns200WithCredentialDetailsWithoutSecret() throws Exception {
         when(credentialService.get(1L, 42L))
-                .thenReturn(new CredentialResponse(1L, 10L, "client-abc", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new CredentialResponse(1L, 10L, "client-abc", CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(get("/credentials/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.clientId").value("client-abc"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.clientSecret").doesNotExist())
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());
@@ -180,19 +187,150 @@ class CredentialControllerTest {
     void listReturns200WithOwnedCredentialsWithoutSecrets() throws Exception {
         when(credentialService.list(42L))
                 .thenReturn(List.of(
-                        new CredentialResponse(1L, 10L, "client-1", TIMESTAMP, TIMESTAMP),
-                        new CredentialResponse(2L, 10L, "client-2", TIMESTAMP, TIMESTAMP)));
+                        new CredentialResponse(1L, 10L, "client-1", CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP),
+                        new CredentialResponse(2L, 10L, "client-2", CredentialStatus.REVOKED, TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/credentials"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].id").value(1))
                 .andExpect(jsonPath("$[0].clientId").value("client-1"))
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"))
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].clientId").value("client-2"))
+                .andExpect(jsonPath("$[1].status").value("REVOKED"))
                 .andExpect(jsonPath("$[0].clientSecret").doesNotExist())
                 .andExpect(jsonPath("$[0].clientSecretHash").doesNotExist())
                 .andExpect(jsonPath("$[0].ownerUserId").doesNotExist());
+    }
+
+    @Test
+    void patchStatusReturns200WithRevokedCredentialWithoutSecret() throws Exception {
+        when(credentialService.changeStatus(eq(1L), any(UpdateCredentialStatusRequest.class)))
+                .thenReturn(new CredentialResponse(1L, 10L, "client-abc", CredentialStatus.REVOKED, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/credentials/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.applicationId").value(10))
+                .andExpect(jsonPath("$.clientId").value("client-abc"))
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        verify(credentialService).changeStatus(eq(1L),
+                org.mockito.ArgumentMatchers.argThat(request -> request.status() == CredentialStatus.REVOKED));
+    }
+
+    @Test
+    void patchStatusRequiresStatusField() throws Exception {
+        mockMvc.perform(patch("/credentials/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("status is required"));
+    }
+
+    @Test
+    void patchStatusRejectsInvalidStatusValue() throws Exception {
+        mockMvc.perform(patch("/credentials/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "SUSPENDED"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("invalid value"));
+    }
+
+    @Test
+    void patchStatusConflictProducesStructured409() throws Exception {
+        when(credentialService.changeStatus(eq(1L), any(UpdateCredentialStatusRequest.class)))
+                .thenThrow(new InvalidCredentialStatusTransitionException(
+                        CredentialStatus.REVOKED, CredentialStatus.ACTIVE));
+
+        mockMvc.perform(patch("/credentials/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIAL_STATUS_TRANSITION"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.path").value("/credentials/1/status"))
+                .andExpect(jsonPath("$.message").value("Credential status transition from REVOKED to ACTIVE is not allowed"));
+    }
+
+    @Test
+    void patchStatusMissingCredentialProducesStructured404() throws Exception {
+        when(credentialService.changeStatus(eq(999L), any(UpdateCredentialStatusRequest.class)))
+                .thenThrow(new CredentialNotFoundException(999L));
+
+        mockMvc.perform(patch("/credentials/999/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("Credential with id 999 does not exist"));
+    }
+
+    @Test
+    void rotateReturns200WithNewSecretExactlyOnce() throws Exception {
+        when(credentialService.rotate(1L))
+                .thenReturn(new CredentialRotatedResponse(1L, 10L, "new-client-id", "new-secret-once",
+                        CredentialStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(post("/credentials/1/rotate"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.applicationId").value(10))
+                .andExpect(jsonPath("$.clientId").value("new-client-id"))
+                .andExpect(jsonPath("$.clientSecret").value("new-secret-once"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
+                .andExpect(jsonPath("$.ownerUserId").doesNotExist());
+
+        verify(credentialService).rotate(1L);
+    }
+
+    @Test
+    void rotateMissingCredentialProducesStructured404() throws Exception {
+        when(credentialService.rotate(999L)).thenThrow(new CredentialNotFoundException(999L));
+
+        mockMvc.perform(post("/credentials/999/rotate"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/credentials/999/rotate"));
+    }
+
+    @Test
+    void rotateRevokedCredentialProducesStructured409() throws Exception {
+        when(credentialService.rotate(1L))
+                .thenThrow(new InvalidCredentialStatusTransitionException(1L, CredentialStatus.REVOKED));
+
+        mockMvc.perform(post("/credentials/1/rotate"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIAL_STATUS_TRANSITION"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.message").value("Credential with id 1 is REVOKED and cannot be rotated"));
     }
 
     private void authenticate(Long userId, UserRole role) {

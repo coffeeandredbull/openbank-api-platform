@@ -186,6 +186,48 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void invalidCredentialStatusTransitionProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleInvalidCredentialStatusTransition(
+                        new InvalidCredentialStatusTransitionException(
+                                com.openbank.apimanagement.credential.CredentialStatus.REVOKED,
+                                com.openbank.apimanagement.credential.CredentialStatus.ACTIVE),
+                        request("PATCH", "/credentials/7/status"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.path()).isEqualTo("/credentials/7/status");
+        assertThat(body.code()).isEqualTo("INVALID_CREDENTIAL_STATUS_TRANSITION");
+        assertThat(body.message()).contains("REVOKED").contains("ACTIVE");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("EnumMap")
+                .doesNotContain("AllowedTransitions")
+                .doesNotContain("clientSecret")
+                .doesNotContain("at com.openbank");
+    }
+
+    @Test
+    void revokedCredentialRotationProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleInvalidCredentialStatusTransition(
+                        new InvalidCredentialStatusTransitionException(7L,
+                                com.openbank.apimanagement.credential.CredentialStatus.REVOKED),
+                        request("POST", "/credentials/7/rotate"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.code()).isEqualTo("INVALID_CREDENTIAL_STATUS_TRANSITION");
+        assertThat(body.message()).contains("7").contains("REVOKED").contains("cannot be rotated");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("clientSecret")
+                .doesNotContain("at com.openbank");
+    }
+
+    @Test
     void unsupportedMethodProduces405() {
         HttpRequestMethodNotSupportedException ex =
                 new HttpRequestMethodNotSupportedException("PATCH", java.util.List.of("GET", "POST"));

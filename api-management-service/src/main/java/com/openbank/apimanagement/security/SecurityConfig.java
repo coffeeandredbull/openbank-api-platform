@@ -54,6 +54,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials/{credentialId}").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.PATCH, "/credentials/{credentialId}/status").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/credentials/{credentialId}/rotate").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/internal/subscription-check").authenticated()
                         // Intentionally public: the API Gateway calls this with the caller's
                         // Basic credentials and this endpoint authenticates them itself. It is an

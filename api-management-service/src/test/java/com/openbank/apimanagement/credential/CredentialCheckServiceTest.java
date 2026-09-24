@@ -12,6 +12,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -43,6 +46,18 @@ class CredentialCheckServiceTest {
         CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
 
         assertThat(response).isEqualTo(CredentialCheckResponse.authenticated(application.getId(), 42L, true));
+    }
+
+    @Test
+    void revokedCredentialIsUnauthorized() {
+        Credential credential = new Credential(new Application("Payments App", "desc", 42L), "client-abc", "hashed-secret");
+        setStatus(credential, CredentialStatus.REVOKED);
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response).isEqualTo(CredentialCheckResponse.unauthorized());
+        verify(passwordEncoder, never()).matches(anyString(), anyString());
     }
 
     @Test
@@ -94,5 +109,15 @@ class CredentialCheckServiceTest {
         CredentialCheckResponse response = credentialCheckService.check(noColon, "/payments", "v1");
 
         assertThat(response).isEqualTo(CredentialCheckResponse.unauthorized());
+    }
+
+    private void setStatus(Credential credential, CredentialStatus status) {
+        try {
+            java.lang.reflect.Field field = Credential.class.getDeclaredField("status");
+            field.setAccessible(true);
+            field.set(credential, status);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 }

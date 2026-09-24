@@ -39,6 +39,9 @@ public class CredentialCheckService {
         if (credential == null) {
             return CredentialCheckResponse.unauthorized();
         }
+        if (credential.getStatus() != CredentialStatus.ACTIVE) {
+            return CredentialCheckResponse.unauthorized();
+        }
         if (!passwordEncoder.matches(clientCredentials.clientSecret(), credential.getClientSecretHash())) {
             return CredentialCheckResponse.unauthorized();
         }

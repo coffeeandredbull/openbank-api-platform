@@ -234,6 +234,72 @@ class CredentialCheckIntegrationTest {
                 .doesNotContain("credential");
     }
 
+    @Test
+    void revokedCredentialCannotAuthenticate() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        Long applicationId = createApplication("42", "Payments App");
+        activateSubscription(createSubscription(applicationId, versionId));
+        CredentialCreatedResponse credential = createCredential(applicationId);
+
+        mockMvc.perform(patch("/credentials/" + credential.id() + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"));
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.authenticated").value(false))
+                .andExpect(jsonPath("$.applicationId").doesNotExist())
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body).doesNotContain(credential.clientSecret());
+                });
+    }
+
+    @Test
+    void rotatedCredentialOnlyAuthenticatesWithTheNewClientIdAndSecret() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        Long applicationId = createApplication("42", "Payments App");
+        activateSubscription(createSubscription(applicationId, versionId));
+        CredentialCreatedResponse credential = createCredential(applicationId);
+
+        String rotateBody = mockMvc.perform(post("/credentials/" + credential.id() + "/rotate")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        CredentialCreatedResponse rotated = objectMapper.readValue(rotateBody, CredentialCreatedResponse.class);
+        assertThat(rotated.clientId()).isNotEqualTo(credential.clientId());
+        assertThat(rotated.clientSecret()).isNotEqualTo(credential.clientSecret());
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.authenticated").value(false));
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(rotated)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.ownerUserId").value(42))
+                .andExpect(jsonPath("$.subscribed").value(true));
+    }
+
     private Long createApiWithVersion(String contextPath, String version) throws Exception {
         return createVersion(createApi(contextPath), version);
     }

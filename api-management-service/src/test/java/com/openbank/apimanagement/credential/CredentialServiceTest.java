@@ -4,6 +4,7 @@ import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.CredentialNotFoundException;
+import com.openbank.apimanagement.exception.InvalidCredentialStatusTransitionException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,6 +61,7 @@ class CredentialServiceTest {
         assertThat(response.applicationId()).isEqualTo(10L);
         assertThat(response.clientId()).isNotNull();
         assertThat(response.clientSecret()).isNotBlank();
+        assertThat(response.status()).isEqualTo(CredentialStatus.ACTIVE);
         assertThat(response.createdAt()).isNotNull();
         assertThat(response.updatedAt()).isNotNull();
         assertThat(response.updatedAt()).isEqualTo(response.createdAt());
@@ -82,6 +84,7 @@ class CredentialServiceTest {
         assertThat(persisted.getClientId()).isEqualTo(response.clientId());
         assertThat(persisted.getClientId()).isNotBlank();
         assertThat(persisted.getClientId()).isNotEqualTo("10");
+        assertThat(persisted.getStatus()).isEqualTo(CredentialStatus.ACTIVE);
     }
 
     @Test
@@ -178,6 +181,7 @@ class CredentialServiceTest {
         assertThat(response.id()).isEqualTo(1L);
         assertThat(response.applicationId()).isEqualTo(10L);
         assertThat(response.clientId()).isEqualTo("client-123");
+        assertThat(response.status()).isEqualTo(CredentialStatus.ACTIVE);
     }
 
     @Test
@@ -235,11 +239,170 @@ class CredentialServiceTest {
         return application;
     }
 
+    @Test
+    void revokeActiveCredentialSucceeds() {
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialResponse response = credentialService.changeStatus(1L,
+                new UpdateCredentialStatusRequest(CredentialStatus.REVOKED));
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.clientId()).isEqualTo("client-123");
+        assertThat(response.status()).isEqualTo(CredentialStatus.REVOKED);
+        Credential persisted = capturedSaved();
+        assertThat(persisted.getStatus()).isEqualTo(CredentialStatus.REVOKED);
+    }
+
+    @Test
+    void reapplyingActiveStatusConflicts() {
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> credentialService.changeStatus(1L,
+                new UpdateCredentialStatusRequest(CredentialStatus.ACTIVE)))
+                .isInstanceOf(InvalidCredentialStatusTransitionException.class)
+                .hasMessageContaining("ACTIVE").hasMessageContaining("not allowed");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void revokingARevokedCredentialConflicts() {
+        Credential stored = revokedCredential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> credentialService.changeStatus(1L,
+                new UpdateCredentialStatusRequest(CredentialStatus.REVOKED)))
+                .isInstanceOf(InvalidCredentialStatusTransitionException.class)
+                .hasMessageContaining("REVOKED").hasMessageContaining("not allowed");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void reactivatingARevokedCredentialConflicts() {
+        Credential stored = revokedCredential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> credentialService.changeStatus(1L,
+                new UpdateCredentialStatusRequest(CredentialStatus.ACTIVE)))
+                .isInstanceOf(InvalidCredentialStatusTransitionException.class)
+                .hasMessageContaining("REVOKED").hasMessageContaining("ACTIVE");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void changeStatusThrowsNotFoundWhenCredentialMissing() {
+        when(credentialRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> credentialService.changeStatus(999L,
+                new UpdateCredentialStatusRequest(CredentialStatus.REVOKED)))
+                .isInstanceOf(CredentialNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void rotateActiveCredentialReturnsNewClientIdAndSecretKeepingIdAndApplication() {
+        Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialRotatedResponse response = credentialService.rotate(1L);
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.applicationId()).isEqualTo(10L);
+        assertThat(response.clientId()).isNotEqualTo("old-client-id").isNotBlank();
+        assertThat(response.clientSecret()).isNotBlank();
+        assertThat(response.status()).isEqualTo(CredentialStatus.ACTIVE);
+        assertThat(response.createdAt()).isNotNull();
+        assertThat(response.updatedAt()).isNotNull();
+
+        Credential persisted = capturedSaved();
+        assertThat(persisted.getId()).isEqualTo(1L);
+        assertThat(persisted.getApplication().getId()).isEqualTo(10L);
+        assertThat(persisted.getClientId()).isEqualTo(response.clientId());
+        assertThat(persisted.getClientSecretHash())
+                .isNotEqualTo("$2a$10$old-hash-value")
+                .startsWith("$2");
+        assertThat(persisted.getStatus()).isEqualTo(CredentialStatus.ACTIVE);
+        assertThat(passwordEncoder.matches(response.clientSecret(), persisted.getClientSecretHash())).isTrue();
+    }
+
+    @Test
+    void rotateRejectsRevokedCredential() {
+        Credential stored = revokedCredential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> credentialService.rotate(1L))
+                .isInstanceOf(InvalidCredentialStatusTransitionException.class)
+                .hasMessageContaining("is REVOKED").hasMessageContaining("cannot be rotated");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void rotateThrowsNotFoundWhenCredentialMissing() {
+        when(credentialRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> credentialService.rotate(999L))
+                .isInstanceOf(CredentialNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void rotationRetriesOnClientIdCollision() {
+        Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.existsByClientId(anyString()))
+                .thenReturn(true)
+                .thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialRotatedResponse response = credentialService.rotate(1L);
+
+        assertThat(response.clientId()).isNotEqualTo("old-client-id");
+        assertThat(response.clientSecret()).isNotBlank();
+        verify(credentialRepository, times(1)).save(any(Credential.class));
+    }
+
+    @Test
+    void rotationRetriesOnDatabaseRace() {
+        Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class)))
+                .thenThrow(new DataIntegrityViolationException("could not execute statement; unique constraint"))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialRotatedResponse response = credentialService.rotate(1L);
+
+        verify(credentialRepository, times(2)).save(any(Credential.class));
+        ArgumentCaptor<Credential> captor = ArgumentCaptor.forClass(Credential.class);
+        verify(credentialRepository, times(2)).save(captor.capture());
+        Credential persisted = captor.getAllValues().get(1);
+        assertThat(persisted.getClientId()).isEqualTo(response.clientId());
+        assertThat(persisted.getClientId()).isNotEqualTo("old-client-id");
+    }
+
+    private Credential capturedSaved() {
+        ArgumentCaptor<Credential> captor = ArgumentCaptor.forClass(Credential.class);
+        verify(credentialRepository).save(captor.capture());
+        return captor.getValue();
+    }
+
     private Credential credential(Long id, Long applicationId, String clientId, String clientSecretHash) {
         Credential credential = new Credential(application(applicationId, 42L), clientId, clientSecretHash);
         setField(credential, "id", id);
         setField(credential, "createdAt", TIMESTAMP);
         setField(credential, "updatedAt", TIMESTAMP);
+        return credential;
+    }
+
+    private Credential revokedCredential(Long id, Long applicationId, String clientId, String clientSecretHash) {
+        Credential credential = credential(id, applicationId, clientId, clientSecretHash);
+        setField(credential, "status", CredentialStatus.REVOKED);
         return credential;
     }
 

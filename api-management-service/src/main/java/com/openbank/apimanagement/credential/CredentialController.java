@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -42,5 +43,17 @@ public class CredentialController {
     @GetMapping
     public List<CredentialResponse> list(@AuthenticationPrincipal JwtIdentity identity) {
         return credentialService.list(identity.userId());
+    }
+
+    @PatchMapping("/{credentialId}/status")
+    public CredentialResponse updateStatus(
+            @PathVariable Long credentialId,
+            @Valid @RequestBody UpdateCredentialStatusRequest request) {
+        return credentialService.changeStatus(credentialId, request);
+    }
+
+    @PostMapping("/{credentialId}/rotate")
+    public CredentialRotatedResponse rotate(@PathVariable Long credentialId) {
+        return credentialService.rotate(credentialId);
     }
 }
