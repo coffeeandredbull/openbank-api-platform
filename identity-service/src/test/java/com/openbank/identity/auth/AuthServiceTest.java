@@ -13,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +31,9 @@ class AuthServiceTest {
 
     @Mock
     private JwtTokenService jwtTokenService;
+
+    @Mock
+    private TokenRevocationService tokenRevocationService;
 
     @Spy
     private PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
@@ -105,6 +109,19 @@ class AuthServiceTest {
         } catch (AuthenticationFailedException e) {
             return e;
         }
+    }
+
+    @Test
+    void revokeDerivesTheJtiFromTheSignedTokenAndPersistsTheRevocation() {
+        Instant expiresAt = Instant.parse("2026-01-01T01:00:00Z");
+        when(jwtTokenService.validateAndExtractJti("header.payload.signature"))
+                .thenReturn(new JwtTokenService.ValidJwt("jti-abc", expiresAt));
+
+        RevokeResponse response = authService.revoke("header.payload.signature");
+
+        assertThat(response.revoked()).isTrue();
+        verify(jwtTokenService).validateAndExtractJti("header.payload.signature");
+        verify(tokenRevocationService).revoke("jti-abc", expiresAt);
     }
 
     private void setId(User user, Long id) {

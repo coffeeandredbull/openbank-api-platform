@@ -34,6 +34,7 @@ class JwtTokenServiceTest {
         String token = service.generateAccessToken(123L, UserRole.DEVELOPER);
 
         SignedJWT signed = SignedJWT.parse(token);
+        assertThat(signed.getJWTClaimsSet().getJWTID()).isNotBlank();
         assertThat(signed.getJWTClaimsSet().getSubject()).isEqualTo("123");
         assertThat(signed.getJWTClaimsSet().getStringClaim("role")).isEqualTo("DEVELOPER");
         assertThat(signed.getJWTClaimsSet().getExpirationTime()).isEqualTo(Date.from(NOW.plusSeconds(EXPIRATION_SECONDS)));
@@ -51,6 +52,56 @@ class JwtTokenServiceTest {
     @Test
     void expiresInSecondsReflectsConfiguredExpiration() {
         assertThat(service.expiresInSeconds()).isEqualTo(EXPIRATION_SECONDS);
+    }
+
+    @Test
+    void generatedTokensCarryUniqueCryptographicallyRandomJtiClaims() throws Exception {
+        String first = service.generateAccessToken(123L, UserRole.DEVELOPER);
+        String second = service.generateAccessToken(123L, UserRole.DEVELOPER);
+
+        String firstJti = SignedJWT.parse(first).getJWTClaimsSet().getJWTID();
+        String secondJti = SignedJWT.parse(second).getJWTClaimsSet().getJWTID();
+
+        assertThat(firstJti).isNotBlank();
+        assertThat(secondJti).isNotBlank();
+        assertThat(secondJti).isNotEqualTo(firstJti);
+        assertThat(firstJti).matches("[0-9a-fA-F-]{8}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{4}-[0-9a-fA-F-]{12}");
+    }
+
+    @Test
+    void validateAndExtractJtiReturnsTheTokensJtiAndExpiration() throws Exception {
+        String token = service.generateAccessToken(123L, UserRole.DEVELOPER);
+
+        JwtTokenService.ValidJwt validJwt = service.validateAndExtractJti(token);
+
+        String expectedJti = SignedJWT.parse(token).getJWTClaimsSet().getJWTID();
+        assertThat(validJwt.jti()).isEqualTo(expectedJti);
+        assertThat(validJwt.expiresAt()).isEqualTo(NOW.plusSeconds(EXPIRATION_SECONDS));
+    }
+
+    @Test
+    void validateAndExtractJtiRejectsTokenWithoutJti() throws Exception {
+        String noJti = sign(new JWTClaimsSet.Builder()
+                .subject("123")
+                .claim("role", "DEVELOPER")
+                .expirationTime(Date.from(NOW.plusSeconds(EXPIRATION_SECONDS)))
+                .build());
+
+        assertThatThrownBy(() -> service.validateAndExtractJti(noJti))
+                .isInstanceOf(InvalidJwtException.class);
+    }
+
+    @Test
+    void validateAndExtractJtiRejectsInvalidAndExpiredTokens() throws Exception {
+        assertThatThrownBy(() -> service.validateAndExtractJti("not-a-jwt"))
+                .isInstanceOf(InvalidJwtException.class);
+
+        JwtTokenService later = new JwtTokenService(
+                new JwtProperties(SECRET, EXPIRATION_SECONDS),
+                Clock.fixed(NOW.plusSeconds(EXPIRATION_SECONDS * 2), ZoneOffset.UTC));
+        String token = service.generateAccessToken(123L, UserRole.DEVELOPER);
+        assertThatThrownBy(() -> later.validateAndExtractJti(token))
+                .isInstanceOf(InvalidJwtException.class);
     }
 
     @Test

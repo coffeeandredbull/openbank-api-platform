@@ -37,6 +37,10 @@ public class JwtTokenService {
     }
 
     public JwtIdentity validateToken(String token) {
+        return verify(token).identity();
+    }
+
+    public VerifiedJwt verify(String token) {
         try {
             SignedJWT jwt = SignedJWT.parse(token);
             if (!jwt.verify(verifier)) {
@@ -55,9 +59,14 @@ public class JwtTokenService {
             if (roleClaim == null) {
                 throw new InvalidJwtException();
             }
-            return new JwtIdentity(Long.parseLong(subject), UserRole.valueOf(roleClaim));
+            return new VerifiedJwt(
+                    new JwtIdentity(Long.parseLong(subject), UserRole.valueOf(roleClaim)),
+                    claims.getJWTID());
         } catch (ParseException | JOSEException | IllegalArgumentException e) {
             throw new InvalidJwtException();
         }
+    }
+
+    public record VerifiedJwt(JwtIdentity identity, String jti) {
     }
 }

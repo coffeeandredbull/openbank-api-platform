@@ -43,6 +43,17 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_FAILED", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(InvalidJwtException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidJwt(InvalidJwtException ex, HttpServletRequest request) {
+        return build(HttpStatus.UNAUTHORIZED, "UNAUTHENTICATED", "Authentication is required", request, Map.of());
+    }
+
+    @ExceptionHandler(RevocationStorageUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleRevocationStorageUnavailable(
+            RevocationStorageUnavailableException ex, HttpServletRequest request) {
+        return build(HttpStatus.SERVICE_UNAVAILABLE, "REVOCATION_STORAGE_UNAVAILABLE", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fieldErrors = new LinkedHashMap<>();

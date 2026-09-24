@@ -7,6 +7,7 @@ import com.openbank.gateway.auth.JwtIdentity;
 import com.openbank.gateway.auth.JwtTokenService;
 import com.openbank.gateway.auth.TrustedIdentityHeaders;
 import com.openbank.gateway.ratelimit.RuntimeApiPath;
+import com.openbank.gateway.revocation.TokenRevocationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -24,6 +25,7 @@ import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -36,6 +38,13 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     private static final String BEARER_PREFIX = "Bearer ";
+
+    private static final String CODE_UNAUTHENTICATED = "UNAUTHENTICATED";
+    private static final String MESSAGE_UNAUTHENTICATED = "Authentication is required";
+    private static final String CODE_REVOKED = "TOKEN_REVOKED";
+    private static final String MESSAGE_REVOKED = "Token has been revoked";
+    private static final String CODE_REVOCATION_UNAVAILABLE = "TOKEN_REVOCATION_SERVICE_UNAVAILABLE";
+    private static final String MESSAGE_REVOCATION_UNAVAILABLE = "Token revocation service unavailable";
 
     public static final String IDENTITY_ATTRIBUTE = JwtAuthenticationFilter.class.getName() + ".identity";
 
@@ -53,14 +62,17 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     private final JwtTokenService jwtTokenService;
     private final ObjectMapper objectMapper;
     private final TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer;
+    private final TokenRevocationService tokenRevocationService;
 
     public JwtAuthenticationFilter(
             JwtTokenService jwtTokenService,
             ObjectMapper objectMapper,
-            TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer) {
+            TrustedIdentityHeaderSanitizer trustedIdentityHeaderSanitizer,
+            TokenRevocationService tokenRevocationService) {
         this.jwtTokenService = jwtTokenService;
         this.objectMapper = objectMapper;
         this.trustedIdentityHeaderSanitizer = trustedIdentityHeaderSanitizer;
+        this.tokenRevocationService = tokenRevocationService;
     }
 
     @Override
@@ -80,11 +92,36 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         if (isPublic(method, path) || !isProtected(path)) {
             return chain.filter(exchange);
         }
-        JwtIdentity identity = identityFrom(exchange);
-        if (identity == null) {
-            return reject(exchange, method, path, startTime);
+        String token = bearerToken(exchange);
+        if (token == null) {
+            return reject(exchange, method, path, startTime,
+                    HttpStatus.UNAUTHORIZED, CODE_UNAUTHENTICATED, MESSAGE_UNAUTHENTICATED);
         }
+        JwtTokenService.VerifiedJwt verified;
+        try {
+            verified = jwtTokenService.verify(token);
+        } catch (InvalidJwtException e) {
+            return reject(exchange, method, path, startTime,
+                    HttpStatus.UNAUTHORIZED, CODE_UNAUTHENTICATED, MESSAGE_UNAUTHENTICATED);
+        }
+        JwtIdentity identity = verified.identity();
         exchange.getAttributes().put(IDENTITY_ATTRIBUTE, identity);
+        if (verified.jti() != null) {
+            return Mono.fromCallable(() -> tokenRevocationService.check(verified.jti()))
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .flatMap(status -> switch (status) {
+                        case REVOKED -> reject(exchange, method, path, startTime,
+                                HttpStatus.UNAUTHORIZED, CODE_REVOKED, MESSAGE_REVOKED);
+                        case UNAVAILABLE -> reject(exchange, method, path, startTime,
+                                HttpStatus.SERVICE_UNAVAILABLE, CODE_REVOCATION_UNAVAILABLE,
+                                MESSAGE_REVOCATION_UNAVAILABLE);
+                        case ACTIVE -> forward(exchange, chain, identity, path);
+                    });
+        }
+        return forward(exchange, chain, identity, path);
+    }
+
+    private Mono<Void> forward(ServerWebExchange exchange, GatewayFilterChain chain, JwtIdentity identity, String path) {
         if (!RuntimeApiPath.isRuntimePath(path)) {
             return chain.filter(exchange);
         }
@@ -132,7 +169,7 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         return path.equals(expected);
     }
 
-    private JwtIdentity identityFrom(ServerWebExchange exchange) {
+    private String bearerToken(ServerWebExchange exchange) {
         String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (authorization == null
                 || !authorization.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
@@ -142,25 +179,22 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         if (token.isEmpty()) {
             return null;
         }
-        try {
-            return jwtTokenService.validateToken(token);
-        } catch (InvalidJwtException e) {
-            return null;
-        }
+        return token;
     }
 
-    private Mono<Void> reject(ServerWebExchange exchange, HttpMethod method, String path, long startTime) {
+    private Mono<Void> reject(ServerWebExchange exchange, HttpMethod method, String path, long startTime,
+            HttpStatus status, String code, String message) {
         ServerHttpResponse response = exchange.getResponse();
-        response.setStatusCode(HttpStatus.UNAUTHORIZED);
+        response.setStatusCode(status);
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
 
         Map<String, Object> errorBody = new LinkedHashMap<>();
         errorBody.put("timestamp", Instant.now().toString());
-        errorBody.put("status", HttpStatus.UNAUTHORIZED.value());
-        errorBody.put("error", HttpStatus.UNAUTHORIZED.getReasonPhrase());
+        errorBody.put("status", status.value());
+        errorBody.put("error", status.getReasonPhrase());
         errorBody.put("path", path);
-        errorBody.put("code", "UNAUTHENTICATED");
-        errorBody.put("message", "Authentication is required");
+        errorBody.put("code", code);
+        errorBody.put("message", message);
         errorBody.put("fieldErrors", Map.of());
 
         byte[] bytes;
@@ -177,7 +211,7 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
                 method != null ? method.name() : "unknown",
                 path,
                 routeId(exchange),
-                HttpStatus.UNAUTHORIZED.value(),
+                status.value(),
                 System.currentTimeMillis() - startTime);
 
         return response.writeWith(Mono.just(buffer));

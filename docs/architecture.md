@@ -79,7 +79,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 | Service | Responsibility |
 | --- | --- |
-| **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
+| **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), password hashing, and — since Phase 24 Slice 6 — **token revocation**: an authenticated `POST /auth/revoke` derives the token's `jti` server-side from the signed JWT and persists it in Shared Redis (`token_revocation:jti:{jti}`, TTL bounded by the token's remaining lifetime). The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
 | **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Credentials carry their own **status lifecycle** (Phase 24, Slice 3): `ACTIVE`/`REVOKED` (varchar, `ACTIVE` on creation), with ADMIN-only `PATCH /credentials/{id}/status` (revocation, terminal) and `POST /credentials/{id}/rotate` (rotates `clientId` + hash **in place**, new plaintext secret shown once) — and the internal `GET /internal/credential-check` authenticates **only `ACTIVE`** credentials. Since Phase 24 Slice 4, subscription tiers carry their rate-limit policy (`requestsPerWindow` default `100` / `windowSeconds` default `60`, both validated) and the internal subscription/credential checks surface it to the gateway, which enforces it per request. Tier admin CRUD/lifecycle, auto-approval policy, deletion, credential expiry/scopes, and Redis caching of the checks remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Owns the **runtime analytics events** (Phase 23): a PostgreSQL-backed service (port `8083`) that persists one record per managed API invocation — timestamp, API context/version, HTTP method, status code, latency, authentication type, and the caller's `userId` / `applicationId` (plain identifiers, nullable for JWT callers). Enum values are stored as strings, and no request/response bodies, tokens, or secrets are ever stored. Events are ingested only on the internal `POST /internal/analytics/events` endpoint (since Phase 23 Slice 4), authenticated with a shared internal token (`X-Internal-Service-Token`, compared in constant time) and answered `202 Accepted` without a body. Since Phase 23 Slice 5 there is one public endpoint: `GET /analytics/events`, protected by an `ADMIN`/`DEVELOPER` JWT, returning paged events newest-first (`event_timestamp DESC, id DESC`) with exact-match filters, inclusive time bounds, and a 100-row page cap; filtering, sorting, and pagination run in PostgreSQL. Since Phase 23 Slice 6 there is also `GET /analytics/usage` — an `ADMIN`/`DEVELOPER`-protected single-row usage summary (`totalRequests`, 2xx/4xx/5xx counts, `averageLatencyMs`) computed entirely in PostgreSQL, honoring the same `from`/`to` (inclusive) + `apiContext`/`apiVersion` filters and returning zeros for empty windows. Grouped/bucketed aggregations for the Developer Portal remain planned. |
@@ -166,6 +166,16 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   Valid requests keep their `Authorization` header unchanged. The gateway
   issues no tokens. Each backend service still validates the JWT itself
   (defense in depth).
+- **Token revocation (Phase 24 Slice 6)**: the same JWT filter checks the
+  token's `jti` in Shared Redis (`token_revocation:jti:{jti}`) immediately
+  after signature/expiry validation and before any subscription/rate-limit
+  enforcement, on both management and `/runtime/apis/**` routes. A revoked jti
+  → `401` + code `TOKEN_REVOKED`; an unreachable/failing revocation store →
+  `503` + code `TOKEN_REVOCATION_SERVICE_UNAVAILABLE` (**fail closed** — the
+  request is never forwarded). Tokens without a `jti` claim skip the lookup
+  (legacy contract). The deny-list is short-lived (TTL bounded by the token's
+  remaining lifetime) and lives in the gateway's shared Redis, kept logically
+  distinct from the API Management Service's read-through cache.
 - **Subscription enforcement (Phase 17)**: after authentication, requests to
   `/runtime/apis/**` are additionally gated on an **active subscription**. The
   gateway derives the caller's user id **only** from the JWT `sub` claim (no
@@ -315,18 +325,25 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 
 **Implemented (Phase 18 — infrastructure, plumbed and health-monitored; Phase
 21 — first business use: gateway rate-limit counters; Phase 24 Slice 5 —
-second business use: api-management read-through cache).** All four services
+second business use: api-management read-through cache; Phase 24 Slice 6 —
+third business use: gateway JWT revocation deny-list).** All four services
 (gateway, identity, api-management, payment) depend on Redis as *plumbed
 infrastructure*: a Lettuce connection is configured and health-monitored (Phase
 18), since Phase 21 the **gateway stores fixed-window rate-limit counters in
-Redis** for managed API invocations, and since Phase 24 Slice 5 the **API
+Redis** for managed API invocations, since Phase 24 Slice 5 the **API
 Management Service keeps a filtered read-through cache in Redis** for three
-non-sensitive read models (API catalog, API version, subscription tier).
+non-sensitive read models (API catalog, API version, subscription tier), and
+since Phase 24 Slice 6 the **gateway enforces short-lived JWT revocation
+entries** (`token_revocation:jti:{jti}`, TTL bounded by the token's remaining
+lifetime) that the Identity Service writes on `POST /auth/revoke`.
 PostgreSQL remains the **only** system of record; the cache is a pure
 optimization, the write/mutation path is unchanged and every cache failure is
 swallowed (reads fall back to PostgreSQL, evictions degrade to TTL expiry).
-Sessions, token storage, and subscription/**authorization** caching remain
-unused — authorization decisions are never cached.
+Sessions and subscription/**authorization** caching remain unused —
+authorization decisions are never cached. The revocation deny-list is by design
+ephemeral (it only needs to outlive the tokens it marks), and the management-
+service cache Redis and the gateway's rate-limit/revocation Redis are logically
+separate (the management service does not read the gateway's shared Redis).
 
 - **Configuration**: each service binds `spring.data.redis.host` / `port` /
   `password` from the `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
@@ -386,8 +403,9 @@ unused — authorization decisions are never cached.
   - **Cache (extension)**: further read models beyond the three cached in
     Phase 24 Slice 5 if profiling warrants (session/token material and the
     authorization checks remain uncached by design).
-  - **Token storage**: server-side storage for issued refresh tokens /
-    blacklisted JWTs (revocation support).
+  - **Refresh-token storage**: server-side storage for issued refresh tokens
+    when a refresh flow is added (JWT **revocation** — the Redis deny-list — is
+    already implemented, Phase 24 Slice 6).
   - **Not a system of record.** Redis must always be reconstructible and is
     never the source of truth for durable data.
 

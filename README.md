@@ -441,14 +441,32 @@ a subscribed request with a missing/malformed policy fails closed with `503`
    Redis. Never cached: users/credentials (hashes), secrets/JWTs, authorization
    decisions (subscription/credential checks), analytics, payments, or any
    per-user data — cache keys contain only database identifiers. Verified by
-   dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
-   TTL expiry re-reading PostgreSQL, and the no-Redis fallback path).
+dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
+    TTL expiry re-reading PostgreSQL, and the no-Redis fallback path).
+- **Phase 24, Slice 6 — JWT revocation (jti + Redis):** access tokens now carry a
+   `jti` claim (cryptographically random). **Identity Service** exposes an
+   authenticated `POST /auth/revoke` (Bearer token in the `Authorization`
+   header; the jti is derived server-side from the signed token — never taken
+   from the request body) that persists the token's jti in Shared Redis as
+   `token_revocation:jti:{jti}` with a TTL bounded by the token's own remaining
+   lifetime, so a revoked entry can never outlive the JWT. The **API Gateway**
+   enforces revocation inside `JwtAuthenticationFilter` (before subscription and
+   rate-limit checks): after signature/expiry validation it looks up the jti in
+   Redis — a revoked jti → `401` `TOKEN_REVOKED`, an unavailable revocation
+   store → **fail closed** with `503` `TOKEN_REVOCATION_SERVICE_UNAVAILABLE`
+   (the request never reaches the upstream or a managed API), and tokens without
+   a jti keep the existing contract (no lookup, no new dependency). PostgreSQL
+   remains the system of record for users/credentials; Redis here is a
+   short-lived revocation blacklist, and the gateway queries its own shared-Redis
+   key while the management-service cache (Slice 5) uses a different logical
+   Redis. Verified by unit tests (TTL-bounded writes, fail-closed 503) and
+   Testcontainers integration tests on both sides — including that a revoked JWT
+   returns `401` before it is ever forwarded upstream.
 - **Planned phases (subject to change):** tier admin CRUD/lifecycle,
-    Redis-backed token revocation, credential expiry and
-    scopes, the remaining services, the Developer Portal, shared
-   infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
-   and Kubernetes manifests will be built in small, explicitly requested phases
-   and verified (compile + tests) at each step.
+     credential expiry and scopes, the remaining services, the Developer Portal,
+    shared infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
+    and Kubernetes manifests will be built in small, explicitly requested phases
+    and verified (compile + tests) at each step.
 
 ## Planned Features
 

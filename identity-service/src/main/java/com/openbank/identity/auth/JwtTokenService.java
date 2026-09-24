@@ -18,6 +18,7 @@ import java.text.ParseException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Date;
+import java.util.UUID;
 
 @Service
 public class JwtTokenService {
@@ -56,6 +57,7 @@ public class JwtTokenService {
         Instant issuedAt = clock.instant();
         Instant expiresAt = issuedAt.plusSeconds(jwtProperties.expirationSeconds());
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .jwtID(UUID.randomUUID().toString())
                 .subject(String.valueOf(userId))
                 .claim("role", role.name())
                 .issueTime(Date.from(issuedAt))
@@ -77,6 +79,26 @@ public class JwtTokenService {
     }
 
     public JwtIdentity validateToken(String token) {
+        JWTClaimsSet claims = verify(token);
+        try {
+            return new JwtIdentity(
+                    Long.parseLong(claims.getSubject()),
+                    UserRole.valueOf(claims.getStringClaim("role")));
+        } catch (IllegalArgumentException | ParseException e) {
+            throw new InvalidJwtException();
+        }
+    }
+
+    public ValidJwt validateAndExtractJti(String token) {
+        JWTClaimsSet claims = verify(token);
+        String jti = claims.getJWTID();
+        if (jti == null || jti.isBlank()) {
+            throw new InvalidJwtException();
+        }
+        return new ValidJwt(jti, claims.getExpirationTime().toInstant());
+    }
+
+    private JWTClaimsSet verify(String token) {
         try {
             SignedJWT jwt = SignedJWT.parse(token);
             if (!jwt.verify(verifier)) {
@@ -95,9 +117,12 @@ public class JwtTokenService {
             if (roleClaim == null) {
                 throw new InvalidJwtException();
             }
-            return new JwtIdentity(Long.parseLong(subject), UserRole.valueOf(roleClaim));
-        } catch (ParseException | JOSEException | IllegalArgumentException e) {
+            return claims;
+        } catch (ParseException | JOSEException e) {
             throw new InvalidJwtException();
         }
+    }
+
+    public record ValidJwt(String jti, Instant expiresAt) {
     }
 }

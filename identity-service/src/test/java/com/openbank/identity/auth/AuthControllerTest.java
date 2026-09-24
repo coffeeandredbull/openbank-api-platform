@@ -153,4 +153,46 @@ class AuthControllerTest {
 
         verify(authService, never()).login(any(LoginRequest.class));
     }
+
+    @Test
+    void revokeWithBearerTokenRevokesTheAuthenticatedJwt() throws Exception {
+        when(authService.revoke("header.payload.signature")).thenReturn(new RevokeResponse(true));
+
+        mockMvc.perform(post("/auth/revoke")
+                        .header("Authorization", "Bearer header.payload.signature"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revoked").value(true))
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(r -> {
+                    String body = r.getResponse().getContentAsString();
+                    assertThat(body)
+                            .doesNotContain("header.payload.signature")
+                            .doesNotContain("Correct-Horse-42");
+                });
+
+        verify(authService).revoke("header.payload.signature");
+    }
+
+    @Test
+    void revokeWithoutAuthorizationHeaderReturns401() throws Exception {
+        mockMvc.perform(post("/auth/revoke"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
+                .andExpect(jsonPath("$.message").value("Authentication is required"));
+
+        verify(authService, never()).revoke(any());
+    }
+
+    @Test
+    void revokeWithMalformedAuthorizationHeaderReturns401() throws Exception {
+        mockMvc.perform(post("/auth/revoke").header("Authorization", "Basic Zm9vOmJhcg=="))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+        mockMvc.perform(post("/auth/revoke").header("Authorization", "Bearer "))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+
+        verify(authService, never()).revoke(any());
+    }
 }

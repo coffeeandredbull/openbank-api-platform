@@ -31,8 +31,8 @@
 - JWTs carry roles and scopes for authorization decisions without extra
   round-trips.
 - **Revocation**: because stateless JWTs cannot be recalled, revocation is
-  supported via a Redis-backed deny-list of token IDs (or short-lived access
-  tokens with refresh flow). Design intent — implementation in Identity phase.
+  supported via a Redis-backed deny-list of token IDs. Implemented in Phase 24
+  Slice 6 — see "JWT Revocation — Implemented (Phase 24 Slice 6)" below.
 
 ## Access Token — Implemented (Phase 6)
 
@@ -52,7 +52,9 @@ Implemented behavior:
   response.
 - **Claims:** `sub` (user ID, decimal string), `role` (e.g. `DEVELOPER`,
   `ADMIN`), `iat`, `exp`. No password, password hash, or secret is ever placed
-  in a token.
+  in a token. Since Phase 24 Slice 6 a cryptographically random `jti` (JWT ID)
+  claim is also included, so the Identity Service and gateway can target
+  individual tokens for revocation.
 - **Validation:** a token is accepted only if it parses, has a valid signature
   under the configured secret, is not expired, and carries the required `sub`
   and `role` claims. Failures raise a generic application-level error without
@@ -62,9 +64,8 @@ Implemented behavior:
   `role`. Failed logins (unknown email or wrong password) continue to return
   `401 AUTHENTICATION_FAILED` and no token.
 
-Not implemented yet (future phases): a Spring Security filter chain or gateway
-filter that consumes these tokens, RBAC/scopes enforcement, refresh tokens, and
-revocation.
+Not implemented yet (future phases): refresh tokens and scopes/OAuth2 flows.
+Revocation is implemented — see below.
 
 ## Request Authentication & RBAC — Implemented (Phase 7)
 
@@ -507,8 +508,9 @@ Implemented behavior:
   Over-limit requests get `429` + code `RATE_LIMIT_EXCEEDED`
   with a `Retry-After` header; if Redis is unreachable or the counter cannot be
   read, the request is rejected with `503` + code `RATE_LIMIT_SERVICE_UNAVAILABLE`
-  (**fail closed**). This is the **first business use of Redis** (Phase 18
-  plumbed it; nothing consumed it until now).
+  (**fail closed**). This was the **first business use of Redis** (Phase 18
+  plumbed it; nothing consumed it until then); JWT revocation (Phase 24 Slice 6)
+  reuses the same gateway Redis for its short-lived deny-list.
 - **Defense in depth is unchanged:** the gateway forwards the `Authorization`
   header **unchanged** for *Bearer* requests (every backend service still
   validates the JWT locally as in Phases 6–14). Removing or bypassing the
@@ -554,6 +556,45 @@ scopes. Credential **status/revocation/rotation** are implemented (Phase 24,
 Slice 3) — see the Credential Security section below. Gateway-issued runtime
 analytics telemetry is implemented (Phase 23) — see the Analytics Service
 section below.
+
+## JWT Revocation — Implemented (Phase 24 Slice 6)
+
+Because access tokens are stateless JWTs, "revocation" cannot un-issue a token
+already in the wild — instead each token carries a `jti` (JWT ID) claim, and a
+revoked token's `jti` is short-lived in Redis so the gateway can reject it.
+
+Implemented behavior:
+
+- **`jti` claim:** the Identity Service now includes a cryptographically random
+  `jti` (`UUID.randomUUID()`, 122 bits of entropy) in every issued access token.
+- **Revocation write (Identity Service):** an authenticated `POST /auth/revoke`
+  revokes the caller's *own* access token. The jti is derived **server-side**
+  from the verified signed token (`validateAndExtractJti`) and is never accepted
+  from the request body. The token's jti is written to Shared Redis as the key
+  `token_revocation:jti:{jti}` (value `"1"` marker) with a **TTL bounded by the
+  token's own remaining lifetime** (`exp` − now, floored), so a revoked entry can
+  never outlive the JWT it marks and Redis never grows unboundedly. The raw JWT
+  itself is never stored or logged. A Redis failure at revocation time returns
+  `503 REVOCATION_STORAGE_UNAVAILABLE` — the caller can retry; this does **not**
+  nudge the token into the deny-list.
+- **Revocation enforcement (API Gateway):** the per-request
+  `JwtAuthenticationFilter` (order −200) checks the token's `jti` against
+  Shared Redis **immediately after signature/expiry validation and before any
+  subscription or rate-limit enforcement**, on both platform-management and
+  `/runtime/apis/**` routes:
+  - revoked jti → `401 TOKEN_REVOKED`, never forwarded to the upstream;
+  - revocation store unreachable/failing → **fail closed**: `503
+    TOKEN_REVOCATION_SERVICE_UNAVAILABLE`, never forwarded;
+  - tokens **without a `jti`** skip the lookup entirely, preserving the existing
+    contract for legacy/unsigned-by-identity tokens.
+- **PostgreSQL remains the system of record** for users, applications, and
+  credentials; Redis here is only a short-lived revocation blacklist, and the
+  gateway uses its own shared Redis connection (distinct from the
+  management-service read-through cache of Phase 24 Slice 5).
+- **Guarantees verified by tests:** per-token revocation (revoking one token
+  never marks another), idempotent re-revocation, `401` for unauthenticated or
+  malformed/expired tokens, no `jti`/token leakage in any error body, and the
+  gateway's fail-closed `503` path when Redis is down.
 
 ## Analytics Service — Implemented (Phase 23)
 
@@ -759,7 +800,7 @@ section below.
 | Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent. Redis coordinates (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`) are env-bound since Phase 18 and an empty password maps to *no password* (never a literal AUTH); the gateway config declares no password key |
 | Redis infrastructure health (Phase 18) | **Implemented** — all four services connect to Redis (infrastructure only, no caching/rate-limit/token business yet) and monitor it via a dedicated `GET /actuator/health/redisHealth` group (native Redis indicator, `show-components: always`, `show-details: never`); the default `/actuator/health` deliberately excludes Redis so a Redis-less deployment stays `UP`, implemented with a small `HealthEndpointGroups` bean (public Actuator API) because Boot 3.5.16 cannot exclude a contributor from the default group by properties. Health responses never expose the Redis password |
-| Token revocation (Redis) | **Planned** — not implemented |
+| Token revocation (Redis) | **Implemented (Phase 24 Slice 6)** — access tokens carry a cryptographically random `jti` claim; an authenticated `POST /auth/revoke` on the Identity Service revokes the caller's own token by persisting its `jti` in Shared Redis as `token_revocation:jti:{jti}` (value `"1"` marker, TTL bounded by the token's remaining `exp` − now lifetime, raw JWT never stored); the gateway's `JwtAuthenticationFilter` (order −200, before subscription/rate-limit enforcement) checks the `jti` right after signature/expiry validation and fails closed — `401 TOKEN_REVOKED` for a revoked jti, `503 TOKEN_REVOCATION_SERVICE_UNAVAILABLE` when the revocation store is unreachable, and tokens without a `jti` skip the check (legacy contract preserved). PostgreSQL remains the system of record; the deny-list never outlives the token it marks |
 
 > As of Phase 22 the Identity Service supports stateless bearer request
 > authentication and role checks on the temporary `/test/*` endpoints, the
@@ -793,6 +834,9 @@ section below.
 > are uncached. Each backend service still validates
 > the JWT locally, so the gateway is not a single point of trust for
 > authentication. Redis is connected across all four services (Phase 18) with
-> health monitoring via the dedicated `redisHealth` health group and is now
-> used for real gateway rate-limit counters (Phase 21) — the only business
-> function it currently serves.
+> health monitoring via the dedicated `redisHealth` health group, is used for
+> real gateway rate-limit counters (Phase 21; tier-policy-driven since Phase 24
+> Slice 4), and since Phase 24 Slice 6 holds the short-lived **JWT revocation
+> deny-list** (`token_revocation:jti:*`) that the gateway enforces at order −200
+> while the API Management Service's read-through cache (Slice 5) talks to its
+> own logical Redis.

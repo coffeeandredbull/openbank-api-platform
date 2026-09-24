@@ -18,11 +18,14 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
+    private final TokenRevocationService tokenRevocationService;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenService jwtTokenService,
+            TokenRevocationService tokenRevocationService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
+        this.tokenRevocationService = tokenRevocationService;
     }
 
     @Transactional(readOnly = true)
@@ -38,5 +41,11 @@ public class AuthService {
         }
         String accessToken = jwtTokenService.generateAccessToken(existing.getId(), existing.getRole());
         return LoginResponse.from(existing, accessToken, jwtTokenService.expiresInSeconds());
+    }
+
+    public RevokeResponse revoke(String token) {
+        JwtTokenService.ValidJwt validJwt = jwtTokenService.validateAndExtractJti(token);
+        tokenRevocationService.revoke(validJwt.jti(), validJwt.expiresAt());
+        return new RevokeResponse(true);
     }
 }

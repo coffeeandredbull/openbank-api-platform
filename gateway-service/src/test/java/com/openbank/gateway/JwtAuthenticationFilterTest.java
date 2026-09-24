@@ -7,8 +7,11 @@ import com.openbank.gateway.auth.TrustedIdentityHeaders;
 import com.openbank.gateway.filter.ClientCredentialAuthenticationFilter;
 import com.openbank.gateway.filter.JwtAuthenticationFilter;
 import com.openbank.gateway.filter.TrustedIdentityHeaderSanitizer;
+import com.openbank.gateway.revocation.TokenRevocationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -22,16 +25,27 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import reactor.core.publisher.Mono;
 
 class JwtAuthenticationFilterTest {
 
+    private static final String REVOCATION_KEY_PREFIX = "token_revocation:jti:";
+
+    private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+    private final TokenRevocationService revocationService = new TokenRevocationService(redisTemplate);
+
     private final JwtAuthenticationFilter filter =
             new JwtAuthenticationFilter(
                     new JwtTokenService(GatewayTestJwt.SECRET, Clock.systemUTC()),
                     new ObjectMapper(),
-                    new TrustedIdentityHeaderSanitizer());
+                    new TrustedIdentityHeaderSanitizer(),
+                    revocationService);
 
     private record Result(boolean forwarded, HttpStatusCode status, String body) {
     }
@@ -50,7 +64,7 @@ class JwtAuthenticationFilterTest {
         filter.filter(exchange, chain).block();
         HttpStatusCode status = exchange.getResponse().getStatusCode();
         String body = "";
-        if (status != null && status.value() == 401) {
+        if (status != null && (status.value() == 401 || status.value() == 503)) {
             body = exchange.getResponse().getBodyAsString().block();
         }
         return new Result(forwarded.get(), status, body);
@@ -68,7 +82,7 @@ class JwtAuthenticationFilterTest {
         filter.filter(exchange, chain).block();
         HttpStatusCode status = exchange.getResponse().getStatusCode();
         String body = "";
-        if (status != null && status.value() == 401) {
+        if (status != null && (status.value() == 401 || status.value() == 503)) {
             body = exchange.getResponse().getBodyAsString().block();
         }
         return new Forward(forwarded.get(), status, body, downstream.get());
@@ -362,5 +376,103 @@ class JwtAuthenticationFilterTest {
         assertThat(forward.forwarded()).isTrue();
         assertThat(forward.downstream().getRequest().getHeaders().getFirst("X-Custom"))
                 .isEqualTo("custom-value");
+    }
+
+    @Test
+    void revokedJtiIsRejectedAs401BeforeForwarding() {
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "revoked-jti")).thenReturn(true);
+
+        Result result = call(MockServerHttpRequest.get("/accounts/1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.adminWithJti("revoked-jti")));
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(result.body()).contains("\"code\":\"TOKEN_REVOKED\"");
+        assertThat(result.body()).contains("\"message\":\"Token has been revoked\"");
+        assertThat(result.body())
+                .doesNotContain("revoked-jti")
+                .doesNotContain("com.openbank")
+                .doesNotContain("redis")
+                .doesNotContain("java.");
+    }
+
+    @Test
+    void revokedJtiIsRejectedOnRuntimeRoutesBeforeForwarding() {
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "revoked-runtime-jti")).thenReturn(true);
+
+        Result result = call(MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.adminWithJti("revoked-runtime-jti")));
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(result.body()).contains("\"code\":\"TOKEN_REVOKED\"");
+    }
+
+    @Test
+    void activeJtiTokenIsForwardedOnManagementRoutes() {
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "active-jti")).thenReturn(false);
+
+        Result result = call(MockServerHttpRequest.get("/accounts/1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.adminWithJti("active-jti")));
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.status()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+        verify(redisTemplate).hasKey(REVOCATION_KEY_PREFIX + "active-jti");
+    }
+
+    @Test
+    void activeJtiTokenIsForwardedOnRuntimeRoutesWithTrustedHeaders() {
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "runtime-active-jti")).thenReturn(false);
+
+        Forward forward = forward(MockServerHttpRequest.get("/runtime/apis/payments/v1/accounts")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.adminWithJti("runtime-active-jti")));
+
+        assertThat(forward.forwarded()).isTrue();
+        assertThat(forward.downstream().getRequest().getHeaders())
+                .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("1"))
+                .containsEntry(TrustedIdentityHeaders.ROLES, List.of("ADMIN"));
+    }
+
+    @Test
+    void revocationCheckFailureFailsClosedWith503() {
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "unavailable-jti"))
+                .thenThrow(new RedisConnectionFailureException("connection refused"));
+
+        Result result = call(MockServerHttpRequest.get("/accounts/1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.adminWithJti("unavailable-jti")));
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"TOKEN_REVOCATION_SERVICE_UNAVAILABLE\"");
+        assertThat(result.body()).contains("\"message\":\"Token revocation service unavailable\"");
+        assertThat(result.body())
+                .doesNotContain("unavailable-jti")
+                .doesNotContain("com.openbank")
+                .doesNotContain("redis")
+                .doesNotContain("lettuce")
+                .doesNotContain("stack");
+    }
+
+    @Test
+    void tokenWithoutJtiSkipsTheRevocationCheckEntirely() {
+        Result result = call(MockServerHttpRequest.get("/accounts/1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GatewayTestJwt.admin()));
+
+        assertThat(result.forwarded()).isTrue();
+        verify(redisTemplate, never()).hasKey(anyString());
+    }
+
+    @Test
+    void revokedBodyNeverExposesTheJwtOrJti() {
+        String token = GatewayTestJwt.adminWithJti("secret-jti");
+        when(redisTemplate.hasKey(REVOCATION_KEY_PREFIX + "secret-jti")).thenReturn(true);
+
+        Result result = call(MockServerHttpRequest.get("/accounts/1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
+
+        assertThat(result.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(result.body())
+                .doesNotContain(token)
+                .doesNotContain("secret-jti");
     }
 }

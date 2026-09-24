@@ -179,8 +179,11 @@
   Service after a login/credential exchange.
 - Token must carry user identity, roles, and scopes and must be validated
   (signature, expiry, issuer, audience) by the API Gateway.
-- Server-side token revocation support via Redis-backed blacklist/refresh
-  tokens (planned).
+- Server-side token revocation **implemented (Phase 24 Slice 6)** via a
+  Redis-backed blacklist of JWTs keyed by `jti`, with entries short-lived
+  (TTL bounded by the token's remaining lifetime); the gateway rejects revoked
+  tokens (`401 TOKEN_REVOKED`) and fails closed (`503`) if the revocation store
+  is unavailable. Refresh tokens remain planned.
 - Passwords are stored only as salted hashes (see [security.md](docs/security.md)).
 
 ## Authorization Requirements

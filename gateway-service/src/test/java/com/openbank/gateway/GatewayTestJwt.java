@@ -27,6 +27,14 @@ public final class GatewayTestJwt {
         return token("DEVELOPER", "2", 3600);
     }
 
+    public static String adminWithJti(String jti) {
+        return tokenWithJti("ADMIN", "1", 3600, Instant.now(), jti);
+    }
+
+    public static String developerWithJti(String jti) {
+        return tokenWithJti("DEVELOPER", "2", 3600, Instant.now(), jti);
+    }
+
     public static String expiredAdmin() {
         return token("ADMIN", "1", -3600);
     }
@@ -48,8 +56,15 @@ public final class GatewayTestJwt {
     }
 
     public static String token(String role, String sub, long ttlSeconds, Instant issuedAt) {
+        return tokenWithJti(role, sub, ttlSeconds, issuedAt, null);
+    }
+
+    public static String tokenWithJti(String role, String sub, long ttlSeconds, Instant issuedAt, String jti) {
         try {
             JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder();
+            if (jti != null) {
+                claims.jwtID(jti);
+            }
             if (sub != null) {
                 claims.subject(sub);
             }

@@ -35,6 +35,32 @@ class JwtTokenServiceTest {
     }
 
     @Test
+    void verifySurfacesTheJtiWhenTheTokenCarriesOne() {
+        JwtTokenService.VerifiedJwt verified = service.verify(GatewayTestJwt.adminWithJti("jti-abcd-1234"));
+
+        assertThat(verified.identity().userId()).isEqualTo(1L);
+        assertThat(verified.identity().role()).isEqualTo(UserRole.ADMIN);
+        assertThat(verified.jti()).isEqualTo("jti-abcd-1234");
+    }
+
+    @Test
+    void verifyReturnsNullJtiForTokensSignedWithoutOne() {
+        JwtTokenService.VerifiedJwt verified = service.verify(GatewayTestJwt.admin());
+
+        assertThat(verified.identity()).isNotNull();
+        assertThat(verified.jti()).isNull();
+    }
+
+    @Test
+    void verifyRejectsTheSameSetOfInvalidTokensAsValidate() {
+        assertThatThrownBy(() -> service.verify("not.a.jwt")).isInstanceOf(InvalidJwtException.class);
+        assertThatThrownBy(() -> service.verify(GatewayTestJwt.tampered(GatewayTestJwt.admin())))
+                .isInstanceOf(InvalidJwtException.class);
+        assertThatThrownBy(() -> service.verify(GatewayTestJwt.token("ADMIN", "1", -3600, NOW)))
+                .isInstanceOf(InvalidJwtException.class);
+    }
+
+    @Test
     void expiredTokenIsRejected() {
         JwtTokenService laterService = new JwtTokenService(SECRET, CLOCK_ONE_HOUR_LATER);
         assertThatThrownBy(() -> laterService.validateToken(GatewayTestJwt.token("ADMIN", "1", -3600, NOW)))
