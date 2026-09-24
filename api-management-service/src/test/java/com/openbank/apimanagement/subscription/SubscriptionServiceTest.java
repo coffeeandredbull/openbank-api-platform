@@ -8,13 +8,16 @@ import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
+import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -24,6 +27,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -78,6 +82,8 @@ class SubscriptionServiceTest {
         assertThat(persisted.getApplication().getId()).isEqualTo(10L);
         assertThat(persisted.getApiVersion().getId()).isEqualTo(20L);
         assertThat(persisted.getTier().getId()).isEqualTo(15L);
+        assertThat(persisted.getStatus()).isEqualTo(SubscriptionStatus.PENDING);
+        assertThat(persisted.getRevokedAt()).isNull();
         assertThat(persisted.getCreatedAt()).isEqualTo(persisted.getUpdatedAt());
 
         assertThat(response.id()).isEqualTo(30L);
@@ -85,6 +91,8 @@ class SubscriptionServiceTest {
         assertThat(response.apiVersionId()).isEqualTo(20L);
         assertThat(response.tierId()).isEqualTo(15L);
         assertThat(response.tierName()).isEqualTo("Developer");
+        assertThat(response.status()).isEqualTo(SubscriptionStatus.PENDING);
+        assertThat(response.revokedAt()).isNull();
         assertThat(response.createdAt()).isNotNull();
         assertThat(response.updatedAt()).isNotNull();
     }
@@ -178,6 +186,8 @@ class SubscriptionServiceTest {
         assertThat(response.apiVersionId()).isEqualTo(20L);
         assertThat(response.tierId()).isEqualTo(15L);
         assertThat(response.tierName()).isEqualTo("Developer");
+        assertThat(response.status()).isEqualTo(SubscriptionStatus.PENDING);
+        assertThat(response.revokedAt()).isNull();
         assertThat(response.createdAt()).isEqualTo(TIMESTAMP);
         assertThat(response.updatedAt()).isEqualTo(TIMESTAMP);
     }
@@ -227,10 +237,47 @@ class SubscriptionServiceTest {
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L, lifecycle)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(20L, 42L))
+        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                20L, 42L, SubscriptionStatus.ACTIVE))
                 .thenReturn(true);
 
         assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isTrue();
+    }
+
+    @Test
+    void isSubscribedReturnsFalseWhenTheOnlySubscriptionIsPending() {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                20L, 42L, SubscriptionStatus.ACTIVE))
+                .thenReturn(false);
+
+        assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isFalse();
+    }
+
+    @Test
+    void isSubscribedByApplicationRequiresAnActiveSubscription() {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
+                20L, 55L, SubscriptionStatus.ACTIVE))
+                .thenReturn(true);
+
+        assertThat(subscriptionService.isSubscribedByApplication(55L, "/payments", "v1")).isTrue();
+    }
+
+    @Test
+    void isSubscribedByApplicationReturnsFalseWhenTheOnlySubscriptionIsNotActive() {
+        when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
+        when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
+                .thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
+                20L, 55L, SubscriptionStatus.ACTIVE))
+                .thenReturn(false);
+
+        assertThat(subscriptionService.isSubscribedByApplication(55L, "/payments", "v1")).isFalse();
     }
 
     @Test
@@ -239,7 +286,7 @@ class SubscriptionServiceTest {
 
         assertThat(subscriptionService.isSubscribed(42L, "/no-such-api", "v1")).isFalse();
         verify(subscriptionRepository, never())
-                .existsByApiVersionIdAndApplication_OwnerUserId(any(), any());
+                .existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
     }
 
     @Test
@@ -249,7 +296,7 @@ class SubscriptionServiceTest {
 
         assertThat(subscriptionService.isSubscribed(42L, "/payments", "v9")).isFalse();
         verify(subscriptionRepository, never())
-                .existsByApiVersionIdAndApplication_OwnerUserId(any(), any());
+                .existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(any(), any(), any());
     }
 
     @Test
@@ -257,10 +304,99 @@ class SubscriptionServiceTest {
         when(apiRepository.findByContextPath("/payments")).thenReturn(Optional.of(api(1L)));
         when(apiVersionRepository.findByApiIdAndVersion(1L, "v1"))
                 .thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(20L, 42L))
+        when(subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                20L, 42L, SubscriptionStatus.ACTIVE))
                 .thenReturn(false);
 
         assertThat(subscriptionService.isSubscribed(42L, "/payments", "v1")).isFalse();
+    }
+
+    @ParameterizedTest
+    @MethodSource("allowedStatusTransitions")
+    void changeStatusPerformsAllowedTransitions(SubscriptionStatus from, SubscriptionStatus to) {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", from);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionRepository.save(any(Subscription.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        SubscriptionResponse response = subscriptionService.changeStatus(
+                30L, new UpdateSubscriptionStatusRequest(to));
+
+        assertThat(response.id()).isEqualTo(30L);
+        assertThat(response.status()).isEqualTo(to);
+        if (to == SubscriptionStatus.REVOKED) {
+            assertThat(response.revokedAt()).isNotNull();
+        } else {
+            assertThat(response.revokedAt()).isNull();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidStatusTransitions")
+    void changeStatusRejectsInvalidTransitions(SubscriptionStatus from, SubscriptionStatus to) {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", from);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> subscriptionService.changeStatus(
+                30L, new UpdateSubscriptionStatusRequest(to)))
+                .isInstanceOf(InvalidSubscriptionStatusTransitionException.class)
+                .hasMessageContaining(from.name())
+                .hasMessageContaining(to.name());
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeStatusPersistsTheUpdatedFields() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.PENDING);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionRepository.save(any(Subscription.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        subscriptionService.changeStatus(30L, new UpdateSubscriptionStatusRequest(SubscriptionStatus.REVOKED));
+
+        ArgumentCaptor<Subscription> captor = ArgumentCaptor.forClass(Subscription.class);
+        verify(subscriptionRepository).save(captor.capture());
+        assertThat(captor.getValue().getStatus()).isEqualTo(SubscriptionStatus.REVOKED);
+        assertThat(captor.getValue().getRevokedAt()).isNotNull();
+        assertThat(captor.getValue().getUpdatedAt()).isAfter(TIMESTAMP);
+    }
+
+    @Test
+    void changeStatusThrowsNotFoundWhenSubscriptionDoesNotExist() {
+        when(subscriptionRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionService.changeStatus(
+                999L, new UpdateSubscriptionStatusRequest(SubscriptionStatus.ACTIVE)))
+                .isInstanceOf(SubscriptionNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    private static Stream<Arguments> allowedStatusTransitions() {
+        return Stream.of(
+                Arguments.of(SubscriptionStatus.PENDING, SubscriptionStatus.ACTIVE),
+                Arguments.of(SubscriptionStatus.PENDING, SubscriptionStatus.DENIED),
+                Arguments.of(SubscriptionStatus.PENDING, SubscriptionStatus.REVOKED),
+                Arguments.of(SubscriptionStatus.ACTIVE, SubscriptionStatus.REVOKED),
+                Arguments.of(SubscriptionStatus.DENIED, SubscriptionStatus.ACTIVE),
+                Arguments.of(SubscriptionStatus.DENIED, SubscriptionStatus.REVOKED));
+    }
+
+    private static Stream<Arguments> invalidStatusTransitions() {
+        return Stream.of(
+                Arguments.of(SubscriptionStatus.PENDING, SubscriptionStatus.PENDING),
+                Arguments.of(SubscriptionStatus.ACTIVE, SubscriptionStatus.ACTIVE),
+                Arguments.of(SubscriptionStatus.DENIED, SubscriptionStatus.DENIED),
+                Arguments.of(SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING),
+                Arguments.of(SubscriptionStatus.ACTIVE, SubscriptionStatus.DENIED),
+                Arguments.of(SubscriptionStatus.DENIED, SubscriptionStatus.PENDING),
+                Arguments.of(SubscriptionStatus.REVOKED, SubscriptionStatus.PENDING),
+                Arguments.of(SubscriptionStatus.REVOKED, SubscriptionStatus.ACTIVE),
+                Arguments.of(SubscriptionStatus.REVOKED, SubscriptionStatus.DENIED),
+                Arguments.of(SubscriptionStatus.REVOKED, SubscriptionStatus.REVOKED));
     }
 
     private Api api(Long id) {

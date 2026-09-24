@@ -35,8 +35,9 @@
   subscriptions are **implemented** (Phase 12, in the API Management Service);
   application credentials are **implemented** (Phase 13, in the API Management
   Service); the subscription **tier foundation** is **implemented** (Phase 24, in
-  the API Management Service); credential lifecycle, tier rate limits/status,
-  and gateway tier enforcement remain planned.
+  the API Management Service); the subscription **status lifecycle** is
+  **implemented** (Phase 24, Slice 2, in the API Management Service); credential
+  lifecycle, tier rate limits, and gateway tier enforcement remain planned.
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
   link (`applicationId` + `apiVersionId` + `tierId`), `GET /subscriptions/{subscriptionId}`
@@ -44,7 +45,18 @@
   claim (never from the request body); a subscription is unique per
   (application, API version) — duplicates are rejected with `409`. Each
   subscription references a **tier** (`tierId`/`tierName` in responses, Phase
-  24) but still carries no lifecycle, status, credentials, or rate limit.
+  24) and carries a **status** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24
+  Slice 2) but still carries no credentials or rate limit.
+- **Subscription lifecycle (implemented, Phase 24, Slice 2):** a subscription is
+  created `PENDING`; an **ADMIN-only** `PATCH /subscriptions/{subscriptionId}/status`
+  moves it through a strict state machine (`PENDING → ACTIVE | DENIED | REVOKED`,
+  `ACTIVE → REVOKED`, `DENIED → ACTIVE | REVOKED`; `REVOKED` is terminal).
+  Invalid transitions → `409 INVALID_SUBSCRIPTION_STATUS_TRANSITION`; a revoked
+  subscription records its `revokedAt`. Only `ACTIVE` subscriptions satisfy the
+  internal subscription-check / credential-check used by the gateway, so a
+  `PENDING`, `DENIED`, or `REVOKED` subscription does not grant access. The
+  gateway itself is unchanged — the state is enforced by the API Management
+  Service.
 - Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
   issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
   hash is stored; the plaintext secret is returned exactly once at creation.
@@ -53,7 +65,9 @@
 - An application can be **subscribed** to an API version under a rate-limit
   **tier** (planned; the tier registry itself — `subscription_tiers`,
   Phase 24 — is implemented, but tier-backed rate limits are not yet applied).
-- Subscriptions can be approved/denied (per tier policy) and revoked (planned).
+- Subscriptions can be approved/denied (per tier policy) and revoked (planned —
+  the status engine that will support them is in place, but automatic tier-based
+  approval and deletion are not).
 - Credential rotation, revocation, and status are **planned** (Phase 13 has no
   credential lifecycle).
 - The Subscription Service decides whether a given application may call a given

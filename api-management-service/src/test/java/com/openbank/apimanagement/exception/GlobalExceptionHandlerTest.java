@@ -163,6 +163,29 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void invalidSubscriptionStatusTransitionProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleInvalidSubscriptionStatusTransition(
+                        new InvalidSubscriptionStatusTransitionException(
+                                com.openbank.apimanagement.subscription.SubscriptionStatus.ACTIVE,
+                                com.openbank.apimanagement.subscription.SubscriptionStatus.PENDING),
+                        request("PATCH", "/subscriptions/7/status"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.path()).isEqualTo("/subscriptions/7/status");
+        assertThat(body.code()).isEqualTo("INVALID_SUBSCRIPTION_STATUS_TRANSITION");
+        assertThat(body.message()).contains("ACTIVE").contains("PENDING");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("EnumMap")
+                .doesNotContain("AllowedTransitions")
+                .doesNotContain("at com.openbank");
+    }
+
+    @Test
     void unsupportedMethodProduces405() {
         HttpRequestMethodNotSupportedException ex =
                 new HttpRequestMethodNotSupportedException("PATCH", java.util.List.of("GET", "POST"));

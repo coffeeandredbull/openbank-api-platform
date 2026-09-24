@@ -382,8 +382,9 @@ the request body.
   binding it to a subscription tier. Body: `{ "applicationId": long,
   "apiVersionId": long, "tierId": long }` (all required). Returns `201 Created`
   with a `Location: /subscriptions/{id}` header and the subscription body (`id`,
-  `applicationId`, `apiVersionId`, `tierId`, `tierName`, `createdAt`,
-  `updatedAt`).
+  `applicationId`, `apiVersionId`, `tierId`, `tierName`, `status`, `revokedAt`,
+  `createdAt`, `updatedAt`). New subscriptions are created with `status =
+  "PENDING"` and a null `revokedAt`.
 - `GET /subscriptions/{subscriptionId}` — the caller's **own** subscription.
 - `GET /subscriptions` — list the caller's **own** subscriptions in ascending
   `id` order (owner-scoped; other users' subscriptions never appear).
@@ -408,9 +409,30 @@ the request body.
   returns `400 MALFORMED_REQUEST`.
 - A subscription carries a **tier reference** (Phase 24): tier id + name are
   returned and the `tier_id` column is a `NOT NULL` foreign key to the
-  `subscription_tiers` table. It still carries **no** lifecycle state, status,
-  credentials (API key / client id+secret), or rate limit; tier-based rate
-  limiting, tier lifecycle, and subscription status remain planned.
+  `subscription_tiers` table. It carries **no** credentials (API key / client
+  id+secret) or rate limit; tier-based rate limiting and tier lifecycle remain
+  planned.
+- **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
+  a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
+  and a nullable `revokedAt` timestamp (set when a subscription is revoked).
+  Status is managed through an **ADMIN-only** endpoint:
+  - `PATCH /subscriptions/{subscriptionId}/status` with body
+    `{ "status": "ACTIVE" }`. Allowed transitions: `PENDING → ACTIVE | DENIED |
+    REVOKED`, `ACTIVE → REVOKED`, `DENIED → ACTIVE | REVOKED`; `REVOKED` is
+    terminal. A disallowed transition → `409
+    INVALID_SUBSCRIPTION_STATUS_TRANSITION`; a missing subscription → `404
+    APPLICATION_SUBSCRIPTION_NOT_FOUND`; a non-`ADMIN` caller → `403`; an
+    absent `status` field or an invalid enum value → `400 VALIDATION_FAILED`.
+    The `ADMIN` lifecycle operation is a global management action (it may
+    approve/deny/revoke **any** existing subscription), unlike the read/create
+    paths which remain owner-scoped. The response is the normal subscription
+    body including the updated `status` and `revokedAt`.
+  - **Runtime effect:** only `ACTIVE` subscriptions satisfy the internal
+    `GET /internal/subscription-check` (Phase 17) and
+    `GET /internal/credential-check` (Phase 21) checks — `PENDING`, `DENIED`,
+    and `REVOKED` subscriptions no longer count for gateway enforcement. The
+    gateway itself is unchanged; the API Management Service remains the source
+    of truth.
 
 **Implemented so far (Phase 13) — credentials:** an **application** can hold
 **credentials** (`clientId` + hashed `clientSecret`) in the API Management
@@ -459,10 +481,12 @@ the request body.
 > link (`POST /subscriptions`, `GET /subscriptions/{id}`, `GET /subscriptions`)
 > in Phase 12, and application **credentials** (`POST /credentials`,
 > `GET /credentials/{id}`, `GET /credentials`) in Phase 13 — see the sections
-> above. The subscription schema now carries a **tier reference**
-> (`subscription_tiers`, Phase 24) but no status/lifecycle/revocation yet; those
-> remain planned. They are repeated here as the planned contract for the
-> gateway/portal view.
+> above. The subscription schema carries a **tier reference**
+> (`subscription_tiers`, Phase 24) and a **status/lifecycle state machine**
+> (`PATCH /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions
+> section above). Credential rotation/revocation/status and subscription
+> deletion remain planned. They are repeated here as the planned contract for
+> the gateway/portal view.
 - `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
 - `GET    /subscriptions/{id}` — subscription status.

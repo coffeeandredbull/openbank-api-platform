@@ -26,6 +26,7 @@ import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -69,7 +70,7 @@ class SubscriptionCheckIntegrationTest {
     @Test
     void checkReturnsTrueWhenAuthenticatedUserIsSubscribedToTheApiVersion() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
-        createSubscription("42", "DEVELOPER", versionId);
+        activateSubscription(createSubscription("42", "DEVELOPER", versionId));
 
         mockMvc.perform(get("/internal/subscription-check")
                         .param("contextPath", "/payments")
@@ -77,6 +78,45 @@ class SubscriptionCheckIntegrationTest {
                         .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.subscribed").value(true));
+    }
+
+    @Test
+    void checkReturnsFalseWhenTheOnlySubscriptionIsPending() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        createSubscription("42", "DEVELOPER", versionId);
+
+        mockMvc.perform(get("/internal/subscription-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(false));
+    }
+
+    @Test
+    void checkReturnsFalseWhenTheOnlySubscriptionIsDenied() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        setStatus(createSubscription("42", "DEVELOPER", versionId), "DENIED");
+
+        mockMvc.perform(get("/internal/subscription-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(false));
+    }
+
+    @Test
+    void checkReturnsFalseWhenTheOnlySubscriptionIsRevoked() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        setStatus(createSubscription("42", "DEVELOPER", versionId), "REVOKED");
+
+        mockMvc.perform(get("/internal/subscription-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(false));
     }
 
     @Test
@@ -94,7 +134,7 @@ class SubscriptionCheckIntegrationTest {
     @Test
     void checkIgnoresTheApiVersionLifecycleStateIncludingRetired() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
-        createSubscription("42", "DEVELOPER", versionId);
+        activateSubscription(createSubscription("42", "DEVELOPER", versionId));
         jdbcTemplate.update("UPDATE api_versions SET lifecycle = ? WHERE id = ?", "RETIRED", versionId);
 
         mockMvc.perform(get("/internal/subscription-check")
@@ -170,7 +210,7 @@ class SubscriptionCheckIntegrationTest {
     @Test
     void checkIgnoresClientSuppliedUserIdQueryParameter() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
-        createSubscription("42", "DEVELOPER", versionId);
+        activateSubscription(createSubscription("42", "DEVELOPER", versionId));
 
         mockMvc.perform(get("/internal/subscription-check")
                         .param("contextPath", "/payments")
@@ -295,7 +335,7 @@ class SubscriptionCheckIntegrationTest {
         return objectMapper.readTree(body).get("id").asLong();
     }
 
-    private void createSubscription(String userId, String role, Long apiVersionId) throws Exception {
+    private Long createSubscription(String userId, String role, Long apiVersionId) throws Exception {
         String appBody = mockMvc.perform(post("/applications")
                         .header("Authorization", "Bearer " + token(userId, role, 3600))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -311,19 +351,40 @@ class SubscriptionCheckIntegrationTest {
                 .getContentAsString();
         long applicationId = objectMapper.readTree(appBody).get("id").asLong();
 
-        if (apiVersionId != null) {
-            mockMvc.perform(post("/subscriptions")
-                            .header("Authorization", "Bearer " + token(userId, role, 3600))
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("""
-                                    {
-                                      "applicationId": %d,
-                                      "apiVersionId": %d,
-                                      "tierId": %d
-                                    }
-                                    """.formatted(applicationId, apiVersionId, createTier())))
-                    .andExpect(status().isCreated());
+        if (apiVersionId == null) {
+            return null;
         }
+        String subBody = mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token(userId, role, 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": %d
+                                }
+                                """.formatted(applicationId, apiVersionId, createTier())))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        return objectMapper.readTree(subBody).get("id").asLong();
+    }
+
+    private void activateSubscription(Long subscriptionId) throws Exception {
+        setStatus(subscriptionId, "ACTIVE");
+    }
+
+    private void setStatus(Long subscriptionId, String status) throws Exception {
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "%s"
+                                }
+                                """.formatted(status)))
+                .andExpect(status().isOk());
     }
 
     private Long createTier() {

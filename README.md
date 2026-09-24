@@ -68,7 +68,9 @@ to them, and manage credentials.
 > analytics: gateway event capture on `/runtime/apis/**`, bounded-queue
 > delivery, internal-token ingestion, event query, and global usage
 > summary)**, the **subscription tier foundation (Phase 24 — `subscription_tiers`
-> registry + required `tier_id` binding on every subscription)**, and
+> registry + required `tier_id` binding on every subscription, plus the
+> **subscription lifecycle/status** state machine: `PENDING` → `ACTIVE` /
+> `DENIED` / `REVOKED`, ADMIN-only status management, since Phase 24)**, and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -139,9 +141,10 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   creates and has no global access (cross-owner access → `404`, no existence
   leak). A subscription is unique per (application, API version): duplicates
   return `409 SUBSCRIPTION_ALREADY_EXISTS`, enforced both in the service and by
-  a database unique constraint. Each subscription has no lifecycle, credentials,
-  rate limit, or gateway state (planned later) — it is the Application →
-  Subscription → API Version link only.
+  a database unique constraint. Each new subscription starts in `PENDING`
+  status (created Phase 24); credentials, rate limits, and gateway state are
+  planned later — it is the Application → Subscription → API Version link
+  first, with the tier binding (`tier_id`) added in Phase 24.
 - **Phase 13 — API Management Service (credentials):** applications now get
   credentials. `POST /credentials` generates a `clientId` (random UUID) and a
   cryptographically strong `clientSecret` server-side, hashes the secret with
@@ -365,9 +368,21 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    conflict handling, and every subscription now references a **required tier**
    (`tier_id` FK): `POST /subscriptions` accepts `tierId` (missing tier → `404
    SUBSCRIPTION_TIER_NOT_FOUND`), and `GET /subscriptions[/{id}]` responses
-   expose `tierId` + `tierName`. No tier admin CRUD, no tier-based rate
-   limiting, and no subscription status/lifecycle yet; the internal
-   subscription/credential checks and gateway behavior are unchanged.
+   expose `tierId` + `tierName`. No tier admin CRUD and no tier-based rate
+   limiting yet; the internal subscription/credential checks and gateway
+   behavior are unchanged.
+- **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
+   subscriptions now carry a **status state machine** — `PENDING → ACTIVE →
+   REVOKED`, `PENDING → DENIED → ACTIVE/REVOKED` (REVOKED is terminal) — and a
+   nullable `revoked_at` timestamp, persisted as `ENUM STRING` (`PENDING` on
+   creation). An **ADMIN-only** `PATCH /subscriptions/{subscriptionId}/status`
+   manages the lifecycle; invalid transitions → `409
+   INVALID_SUBSCRIPTION_STATUS_TRANSITION`, a missing subscription → `404`, a
+   malformed/absent status → `400 VALIDATION_FAILED`. Only **`ACTIVE`**
+   subscriptions now satisfy the internal `GET /internal/subscription-check`
+   and `GET /internal/credential-check` checks, so `PENDING`/`DENIED`/`REVOKED`
+   subscriptions stop counting for gateway enforcement (the gateway itself is
+   unchanged — the API Management Service remains the source of truth).
 - **Planned phases (subject to change):** tier-based rate limiting and tier
    lifecycle, credential rotation/revocation and status, Redis-backed token
    revocation and caches, the remaining services, the Developer Portal, shared

@@ -80,28 +80,34 @@ may be reused by the same or different developers). Ownership is enforced by the
 service layer (`owner_user_id` from the JWT `sub` claim), never taken from the
 request body. `created_at` is write-once; `updated_at` changes on update.
 Credentials (client id/secret hashes) are **implemented** (Phase 13 — see below);
-the subscription **tier** table is **implemented** (Phase 24 — see below);
-subscription status and any further Subscription-Service-owned material
-remain planned and will reference applications by ID.
+the subscription **tier** table is **implemented** (Phase 24 — see below); the
+subscription **status lifecycle** is **implemented** (Phase 24, Slice 2 — see
+below). Fully automatic approval, revocation flows, and any further
+Subscription-Service-owned material remain planned and will reference
+applications by ID.
 
 **Implemented so far (Phase 12) — `subscriptions`:** the Application →
 Subscription → API Version link is now implemented in the **API Management
 Service** (it previously appeared only in the planned Subscription Service
 section below). Actual implemented columns: `id`, `application_id`,
-`api_version_id`, `tier_id`, `created_at`, `updated_at`. `application_id`,
-`api_version_id`, and `tier_id` are all `NOT NULL` **foreign keys** to
-`applications`, `api_versions`, and `subscription_tiers` respectively — this is
-allowed because all these tables live in the same service. A **unique
-constraint** on `(application_id, api_version_id)` (DB-level
-`uc_subscription_application_api_version`) prevents duplicate
-subscriptions; the service performs the same check up front and maps any race
-condition to `409 SUBSCRIPTION_ALREADY_EXISTS`. A subscription has **no**
-lifecycle state, status, credential, or rate-limit fields — it is the
-link plus its tier binding; credentials, status/lifecycle, and tier rate
-limits remain planned. Two
-subscriptions may target the same API version (different applications) and the
-same application may subscribe to multiple API versions. `created_at` is
-write-once; `updated_at` is set on creation (both equal at creation time).
+`api_version_id`, `tier_id`, `status`, `revoked_at`, `created_at`,
+`updated_at`. `application_id`, `api_version_id`, and `tier_id` are all `NOT
+NULL` **foreign keys** to `applications`, `api_versions`, and
+`subscription_tiers` respectively — this is allowed because all these tables
+live in the same service. A **unique constraint** on `(application_id,
+api_version_id)` (DB-level `uc_subscription_application_api_version`) prevents
+duplicate subscriptions; the service performs the same check up front and maps
+any race condition to `409 SUBSCRIPTION_ALREADY_EXISTS`. **Status lifecycle
+(Phase 24, Slice 2):** `status` is a `NOT NULL` `varchar(32)` storing the
+`SubscriptionStatus` enum via `EnumType.STRING` (`PENDING`, `ACTIVE`, `DENIED`,
+`REVOKED`); new subscriptions are created `PENDING`. `revoked_at` is the only
+nullable column and is set when a subscription is transitioned to `REVOKED`
+(the terminal state). Only `ACTIVE` subscriptions satisfy the internal
+subscription/credential checks used for gateway enforcement. Credentials and
+tier rate-limit fields remain planned. Two subscriptions may target the same
+API version (different applications) and the same application may subscribe to
+multiple API versions. `created_at` is write-once; `updated_at` is set on
+creation (both equal at creation time) and on every status change.
 
 **Implemented so far (Phase 24) — `subscription_tiers`:** tier definitions are
 now a real table in the **API Management Service**. Actual implemented columns:
@@ -141,12 +147,13 @@ equal at creation time). Ownership is logical: Credential → Application →
 | --- | --- | --- |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13) — see above; scopes, rotation/status (`revoked`) remain planned |
 | `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description only; rate-limit/pricing fields remain planned |
-| `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps) and the `tier_id` binding are already **implemented** in the API Management Service (Phases 12 and 24) — see above; status, subscribed_at, and lifecycle remain planned |
+| `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service
-> (Phase 11), the Application → Subscription → API Version link in Phase 12, and
-> application **credentials** in Phase 13 — see above. The Subscription Service
-> will reference applications and subscriptions by ID when tiers/status are
+> (Phase 11), the Application → Subscription → API Version link in Phase 12, the
+> subscription **status lifecycle** in Phase 24 (Slice 2), and application
+> **credentials** in Phase 13 — see above. The Subscription Service will
+> reference applications and subscriptions by ID when tiers/status are
 > built, and will verify the Phase 13 credentials when the gateway authenticates
 > an application.
 

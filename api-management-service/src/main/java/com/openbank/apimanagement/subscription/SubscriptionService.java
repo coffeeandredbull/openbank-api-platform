@@ -8,6 +8,7 @@ import com.openbank.apimanagement.application.Application;
 import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
+import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
@@ -75,6 +76,17 @@ public class SubscriptionService {
                 .toList();
     }
 
+    @Transactional
+    public SubscriptionResponse changeStatus(Long subscriptionId, UpdateSubscriptionStatusRequest request) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+        if (!subscription.getStatus().canTransitionTo(request.status())) {
+            throw new InvalidSubscriptionStatusTransitionException(subscription.getStatus(), request.status());
+        }
+        subscription.changeStatus(request.status());
+        return SubscriptionResponse.from(subscriptionRepository.save(subscription));
+    }
+
     @Transactional(readOnly = true)
     public boolean isSubscribed(Long ownerUserId, String contextPath, String version) {
         Api api = apiRepository.findByContextPath(contextPath).orElse(null);
@@ -85,7 +97,8 @@ public class SubscriptionService {
         if (apiVersion == null) {
             return false;
         }
-        return subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserId(apiVersion.getId(), ownerUserId);
+        return subscriptionRepository.existsByApiVersionIdAndApplication_OwnerUserIdAndStatus(
+                apiVersion.getId(), ownerUserId, SubscriptionStatus.ACTIVE);
     }
 
     @Transactional(readOnly = true)
@@ -98,6 +111,7 @@ public class SubscriptionService {
         if (apiVersion == null) {
             return false;
         }
-        return subscriptionRepository.existsByApiVersionIdAndApplicationId(apiVersion.getId(), applicationId);
+        return subscriptionRepository.existsByApiVersionIdAndApplicationIdAndStatus(
+                apiVersion.getId(), applicationId, SubscriptionStatus.ACTIVE);
     }
 }

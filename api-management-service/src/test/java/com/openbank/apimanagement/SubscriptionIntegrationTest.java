@@ -28,7 +28,9 @@ import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -93,6 +95,8 @@ class SubscriptionIntegrationTest {
                     assertThat(body.get("apiVersionId").asLong()).isEqualTo(versionId);
                     assertThat(body.get("tierId").asLong()).isEqualTo(tierId);
                     assertThat(body.get("tierName").asText()).isNotBlank();
+                    assertThat(body.get("status").asText()).isEqualTo("PENDING");
+                    assertThat(body.get("revokedAt").isNull()).isTrue();
                     assertThat(body.get("createdAt").asText()).isEqualTo(body.get("updatedAt").asText());
                 });
 
@@ -105,6 +109,12 @@ class SubscriptionIntegrationTest {
         Long tierIdStored = jdbcTemplate.queryForObject(
                 "select tier_id from subscriptions order by id asc limit 1", Long.class);
         assertThat(tierIdStored).isEqualTo(tierId);
+        String statusStored = jdbcTemplate.queryForObject(
+                "select status from subscriptions order by id asc limit 1", String.class);
+        assertThat(statusStored).isEqualTo("PENDING");
+        String revokedAtStored = jdbcTemplate.queryForObject(
+                "select revoked_at::text from subscriptions order by id asc limit 1", String.class);
+        assertThat(revokedAtStored).isNull();
         String createdAt = jdbcTemplate.queryForObject(
                 "select created_at::text from subscriptions order by id asc limit 1", String.class);
         String updatedAt = jdbcTemplate.queryForObject(
@@ -372,14 +382,21 @@ class SubscriptionIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "application_id", "api_version_id", "tier_id", "created_at", "updated_at");
+                "id", "application_id", "api_version_id", "tier_id", "status", "revoked_at", "created_at", "updated_at");
 
         Integer nullableCount = jdbcTemplate.queryForObject(
                 "select count(*) from information_schema.columns "
                         + "where table_schema = current_schema() and table_name = 'subscriptions' "
                         + "and is_nullable = 'YES'",
                 Integer.class);
-        assertThat(nullableCount).isZero();
+        assertThat(nullableCount).isEqualTo(1);
+
+        String statusType = jdbcTemplate.queryForObject(
+                "select data_type from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscriptions' "
+                        + "and column_name = 'status'",
+                String.class);
+        assertThat(statusType).isEqualTo("character varying");
 
         List<String> uniqueColumns = jdbcTemplate.queryForList(
                 "select a.attname from pg_constraint con "
@@ -397,6 +414,172 @@ class SubscriptionIntegrationTest {
                         + "order by 1",
                 String.class);
         assertThat(foreignKeyTargets).containsExactlyInAnyOrder("applications", "api_versions", "subscription_tiers");
+    }
+
+    @Test
+    void adminWalksASubscriptionThroughTheFullLifecycleAndRevocationPersists() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+
+        setStatus(subscriptionId, "ACTIVE", "1", "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(subscriptionId))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.revokedAt").value(nullValue()));
+
+        setStatus(subscriptionId, "REVOKED", "1", "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(r -> {
+                    JsonNode body = objectMapper.readTree(r.getResponse().getContentAsString());
+                    assertThat(body.get("revokedAt").isNull()).isFalse();
+                });
+
+        String statusStored = jdbcTemplate.queryForObject(
+                "select status from subscriptions where id = ?", String.class, subscriptionId);
+        assertThat(statusStored).isEqualTo("REVOKED");
+        String revokedAtStored = jdbcTemplate.queryForObject(
+                "select revoked_at::text from subscriptions where id = ?", String.class, subscriptionId);
+        assertThat(revokedAtStored).isNotNull();
+    }
+
+    @Test
+    void adminCanDenyThenActivateASubscription() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+
+        setStatus(subscriptionId, "DENIED", "1", "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DENIED"));
+
+        setStatus(subscriptionId, "ACTIVE", "1", "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    void adminCanChangeTheStatusOfAnotherDevelopersSubscription() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("77", "DEVELOPER", "Bob's App");
+        Long subscriptionId = subscribeAndReadId("77", "DEVELOPER", applicationId, versionId);
+
+        setStatus(subscriptionId, "ACTIVE", "1", "ADMIN")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+
+        String statusStored = jdbcTemplate.queryForObject(
+                "select status from subscriptions where id = ?", String.class, subscriptionId);
+        assertThat(statusStored).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void invalidStatusTransitionsReturn409() throws Exception {
+        Long versionId = createVersionedApi();
+
+        Long pendingSub = createApplication("42", "DEVELOPER", "A");
+        Long pending = subscribeAndReadId("42", "DEVELOPER", pendingSub, versionId);
+        setStatus(pending, "PENDING", "1", "ADMIN")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_SUBSCRIPTION_STATUS_TRANSITION"))
+                .andExpect(jsonPath("$.message")
+                        .value("Subscription status transition from PENDING to PENDING is not allowed"));
+
+        Long activeSub = createApplication("42", "DEVELOPER", "B");
+        Long active = subscribeAndReadId("42", "DEVELOPER", activeSub, versionId);
+        setStatus(active, "ACTIVE", "1", "ADMIN").andExpect(status().isOk());
+        setStatus(active, "PENDING", "1", "ADMIN")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_SUBSCRIPTION_STATUS_TRANSITION"));
+
+        Long revokedSub = createApplication("42", "DEVELOPER", "C");
+        Long revoked = subscribeAndReadId("42", "DEVELOPER", revokedSub, versionId);
+        setStatus(revoked, "REVOKED", "1", "ADMIN").andExpect(status().isOk());
+        setStatus(revoked, "ACTIVE", "1", "ADMIN")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_SUBSCRIPTION_STATUS_TRANSITION"));
+
+        String statusStored = jdbcTemplate.queryForObject(
+                "select status from subscriptions where id = ?", String.class, revoked);
+        assertThat(statusStored).isEqualTo("REVOKED");
+    }
+
+    @Test
+    void developersCannotChangeSubscriptionStatus() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+
+        setStatus(subscriptionId, "ACTIVE", "42", "DEVELOPER")
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        String statusStored = jdbcTemplate.queryForObject(
+                "select status from subscriptions where id = ?", String.class, subscriptionId);
+        assertThat(statusStored).isEqualTo("PENDING");
+    }
+
+    @Test
+    void unauthenticatedStatusChangeRequestsReturn401() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void updateStatusRejectsMissingStatusFieldWith400() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("status is required"));
+    }
+
+    @Test
+    void updateStatusRejectsInvalidStatusValueWith400() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ARCHIVED"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("invalid value"));
+    }
+
+    @Test
+    void updateStatusReturns404WhenSubscriptionDoesNotExist() throws Exception {
+        mockMvc.perform(patch("/subscriptions/98765/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("APPLICATION_SUBSCRIPTION_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("Subscription with id 98765 does not exist"));
     }
 
     private Long createVersionedApi() throws Exception {
@@ -497,6 +680,18 @@ class SubscriptionIntegrationTest {
                 .getResponse()
                 .getContentAsString();
         return objectMapper.readTree(body).get("id").asLong();
+    }
+
+    private org.springframework.test.web.servlet.ResultActions setStatus(
+            Long subscriptionId, String status, String userId, String role) throws Exception {
+        return mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/status")
+                .header("Authorization", "Bearer " + token(userId, role, 3600))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "status": "%s"
+                        }
+                        """.formatted(status)));
     }
 
     private String token(String subject, String role, long expiresInSeconds) throws Exception {

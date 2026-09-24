@@ -2,6 +2,7 @@ package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.auth.JwtIdentity;
 import com.openbank.apimanagement.auth.UserRole;
+import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,11 +21,13 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -57,7 +60,8 @@ class SubscriptionControllerTest {
     @Test
     void createReturns201WithBodyAndLocationHeader() throws Exception {
         when(subscriptionService.create(eq(42L), any(CreateSubscriptionRequest.class)))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 15L, "Developer", SubscriptionStatus.PENDING, null, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscriptions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -75,6 +79,7 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.apiVersionId").value(20))
                 .andExpect(jsonPath("$.tierId").value(15))
                 .andExpect(jsonPath("$.tierName").value("Developer"))
+                .andExpect(jsonPath("$.status").value("PENDING"))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist())
@@ -84,7 +89,8 @@ class SubscriptionControllerTest {
     @Test
     void createDerivesOwnerFromAuthenticatedPrincipal() throws Exception {
         when(subscriptionService.create(eq(42L), any(CreateSubscriptionRequest.class)))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 15L, "Developer", SubscriptionStatus.PENDING, null, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscriptions")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -179,7 +185,8 @@ class SubscriptionControllerTest {
     @Test
     void getReturns200WithSubscriptionDetails() throws Exception {
         when(subscriptionService.get(1L, 42L))
-                .thenReturn(new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 15L, "Developer", SubscriptionStatus.ACTIVE, null, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(get("/subscriptions/1"))
                 .andExpect(status().isOk())
@@ -188,6 +195,7 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.apiVersionId").value(20))
                 .andExpect(jsonPath("$.tierId").value(15))
                 .andExpect(jsonPath("$.tierName").value("Developer"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());
     }
 
@@ -207,8 +215,10 @@ class SubscriptionControllerTest {
     void listReturns200WithOwnedSubscriptions() throws Exception {
         when(subscriptionService.list(42L))
                 .thenReturn(List.of(
-                        new SubscriptionResponse(1L, 10L, 20L, 15L, "Developer", TIMESTAMP, TIMESTAMP),
-                        new SubscriptionResponse(2L, 10L, 21L, 15L, "Developer", TIMESTAMP, TIMESTAMP)));
+                        new SubscriptionResponse(
+                                1L, 10L, 20L, 15L, "Developer", SubscriptionStatus.ACTIVE, null, TIMESTAMP, TIMESTAMP),
+                        new SubscriptionResponse(
+                                2L, 10L, 21L, 15L, "Developer", SubscriptionStatus.DENIED, null, TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/subscriptions"))
                 .andExpect(status().isOk())
@@ -220,6 +230,89 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].apiVersionId").value(21))
                 .andExpect(jsonPath("$[0].ownerUserId").doesNotExist());
+    }
+
+    @Test
+    void updateStatusReturns200WithUpdatedSubscription() throws Exception {
+        when(subscriptionService.changeStatus(eq(1L), any(UpdateSubscriptionStatusRequest.class)))
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 15L, "Developer", SubscriptionStatus.ACTIVE, null, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscriptions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.revokedAt").value(nullValue()));
+    }
+
+    @Test
+    void updateStatusRejectsMissingStatusWith400() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("status is required"));
+    }
+
+    @Test
+    void updateStatusRejectsInvalidStatusValueWith400() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ARCHIVED"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("invalid value"));
+    }
+
+    @Test
+    void updateStatusReturnsStructured409ForInvalidTransition() throws Exception {
+        when(subscriptionService.changeStatus(eq(1L), any(UpdateSubscriptionStatusRequest.class)))
+                .thenThrow(new InvalidSubscriptionStatusTransitionException(
+                        SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING));
+
+        mockMvc.perform(patch("/subscriptions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "PENDING"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_SUBSCRIPTION_STATUS_TRANSITION"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.path").value("/subscriptions/1/status"))
+                .andExpect(jsonPath("$.message")
+                        .value("Subscription status transition from ACTIVE to PENDING is not allowed"));
+    }
+
+    @Test
+    void updateStatusReturnsStructured404WhenSubscriptionDoesNotExist() throws Exception {
+        when(subscriptionService.changeStatus(eq(999L), any(UpdateSubscriptionStatusRequest.class)))
+                .thenThrow(new SubscriptionNotFoundException(999L));
+
+        mockMvc.perform(patch("/subscriptions/999/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("APPLICATION_SUBSCRIPTION_NOT_FOUND"))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.path").value("/subscriptions/999/status"))
+                .andExpect(jsonPath("$.message").value("Subscription with id 999 does not exist"));
     }
 
     private void authenticate(Long userId, UserRole role) {

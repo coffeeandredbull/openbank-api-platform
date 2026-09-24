@@ -80,7 +80,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), and password hashing. The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription now references a **subscription tier** (Phase 24 — the tier registry and the subscription's `tier_id` binding); tier-based rate limiting and policy enforcement remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Tier-based rate limiting, auto-approval policy, and deletion remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Owns the **runtime analytics events** (Phase 23): a PostgreSQL-backed service (port `8083`) that persists one record per managed API invocation — timestamp, API context/version, HTTP method, status code, latency, authentication type, and the caller's `userId` / `applicationId` (plain identifiers, nullable for JWT callers). Enum values are stored as strings, and no request/response bodies, tokens, or secrets are ever stored. Events are ingested only on the internal `POST /internal/analytics/events` endpoint (since Phase 23 Slice 4), authenticated with a shared internal token (`X-Internal-Service-Token`, compared in constant time) and answered `202 Accepted` without a body. Since Phase 23 Slice 5 there is one public endpoint: `GET /analytics/events`, protected by an `ADMIN`/`DEVELOPER` JWT, returning paged events newest-first (`event_timestamp DESC, id DESC`) with exact-match filters, inclusive time bounds, and a 100-row page cap; filtering, sorting, and pagination run in PostgreSQL. Since Phase 23 Slice 6 there is also `GET /analytics/usage` — an `ADMIN`/`DEVELOPER`-protected single-row usage summary (`totalRequests`, 2xx/4xx/5xx counts, `averageLatencyMs`) computed entirely in PostgreSQL, honoring the same `from`/`to` (inclusive) + `apiContext`/`apiVersion` filters and returning zeros for empty windows. Grouped/bucketed aggregations for the Developer Portal remain planned. |
 
@@ -182,9 +182,13 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   - the check itself fails (unreachable, timeout, 5xx, malformed) → `503` +
     code `SUBSCRIPTION_SERVICE_UNAVAILABLE`. The gateway **fails closed**: an
     unverified or unsubscribed request is never forwarded.
-  The check is **intentionally lifecycle-agnostic**: a subscription to the target
-  API version satisfies the gate in any lifecycle state (`CREATED`, `PUBLISHED`,
-  `DEPRECATED`, `RETIRED`). Lifecycle-based runtime blocking (e.g. only
+  The check is **intentionally lifecycle-agnostic with respect to the API
+  version lifecycle**: a subscription to the target API version satisfies the
+  gate in any API-version lifecycle state (`CREATED`, `PUBLISHED`,
+  `DEPRECATED`, `RETIRED`). Since Phase 24 (Slice 2) the check does honor the
+  **subscription status**: only `ACTIVE` subscriptions count, so `PENDING`,
+  `DENIED`, and `REVOKED` subscriptions do not grant access. Lifecycle-based
+  runtime blocking (e.g. only
   `PUBLISHED` versions invocable, deprecation/retirement sunset handling) is out
   of scope for Phase 17 and remains a later phase. There is no `ADMIN` bypass,
   and identity is never taken from query parameters or headers.
@@ -355,9 +359,11 @@ record.
 > `X-User-Id`/`X-Application-Id`/`X-Client-Id` (application flow) headers — 6,
 > and 7 (telemetry: since Phase 23 Slice 4 the gateway captures a runtime
 > analytics event per managed invocation and delivers it to the Analytics
-> Service asynchronously and best-effort, isolated from the request). Tiering
-> and caching for the subscription/credential checks and tier-based rate
-> limiting remain planned.
+> Service asynchronously and best-effort, isolated from the request). Since
+> Phase 24 (Slice 2) step 3 additionally honors the **subscription status**:
+> the API Management Service's internal checks count only `ACTIVE`
+> subscriptions. Caching for the subscription/credential checks and tier-based
+> rate limiting remain planned.
 
 1. A consumer (browser or API caller) sends a request to the Developer Portal
    or directly to the API Gateway with an authorization credential.
@@ -365,8 +371,9 @@ record.
    issuer/audience).
 3. The gateway looks up the requested API version and checks the caller's
    **subscription** (Phase 17 — implemented via the API Management Service's
-   internal check against PostgreSQL) and tier (planned) with the Subscription
-   Service (or a cached copy — caching planned).
+   internal check against PostgreSQL) and **subscription status** (Phase 24,
+   Slice 2 — only `ACTIVE` counts) with the Subscription Service
+   (or a cached copy — caching planned).
 4. The gateway applies **rate limiting** for the application, incrementing a
    Redis counter; on exceed it responds `429`.
 5. The gateway **routes** the request to the owning backend service

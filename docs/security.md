@@ -129,10 +129,11 @@ Implemented behavior:
 - **No new authentication architecture:** stateless bearer JWT, CSRF disabled,
   no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
 
-Not implemented yet (future phases): RS256, subscription tiers/status, and
-credential lifecycle. (Gateway-level user authentication and subscription
-checks are implemented later — Phases 16 and 17 — and gateway-level application
-client-credential checks in Phase 21; see below.)
+Not implemented yet (future phases): RS256, subscription tier-based access
+control/rate limits, and credential lifecycle. (Gateway-level subscription
+checks are implemented later — Phases 17 and 21 — and the subscription
+**status lifecycle** is implemented in the API Management Service in Phase 24,
+Slice 2; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -199,8 +200,12 @@ Implemented behavior:
   keys, not in the route matcher; the security filter only authenticates.
 
 Not implemented yet (future phases): subscription-specific credentials (the
-OAuth2-style client registry in the Identity Service), tiers, status/lifecycle,
-revocation, and gateway-level subscription enforcement.
+OAuth2-style client registry in the Identity Service), tiers, auto-approval,
+revocation flows, and gateway-level subscription enforcement. (The un-tiered
+Application → Subscription → API Version link is implemented in Phase 12; the
+subscription **status lifecycle** — `PENDING`/`ACTIVE`/`DENIED`/`REVOKED`,
+ADMIN-only management, ACTIVE-only enforcement — is implemented in Phase 24,
+Slice 2; see the API Subscription Enforcement section below.)
 
 ## Credential Ownership & Disclosure — Implemented (Phase 13)
 
@@ -565,8 +570,9 @@ implemented (Phase 23) — see the Analytics Service section below.
   the caller's user; for **application callers** (Phase 21) the same internal
   check returns the *authenticated application's* subscription in the same
   response as the credential verification. Both checks query PostgreSQL
-  directly (fail closed, no cache). Redis caching of the check, subscription
-  tiers/status, and credential revocation remain planned.
+  directly (fail closed, no cache) and **count only `ACTIVE` subscriptions**
+  (Phase 24, Slice 2). Redis caching of the check, subscription
+  tiers/status-based access control, and credential revocation remain planned.
 
 ## API Subscription Enforcement
 
@@ -580,13 +586,23 @@ implemented (Phase 23) — see the Analytics Service section below.
   PostgreSQL (fail closed; no cache) — the Phase 21 application flow makes one
   single call that returns both the credential verdict and the subscription
   verdict.
-- Subscription state machine, tiers, and status (`PENDING → ACTIVE`, `DENIED`,
-  `REVOKED`) are **planned**; today the registry has no status and the gateway
-  check is lifecycle-agnostic (any subscription for the API version counts).
-- Once a subscription status/state machine exists, revoking it will
-  immediately de-authorize subsequent calls; today the gateway queries
-  PostgreSQL on every managed-API request, so registry changes take effect
-  immediately (with no cache to invalidate).
+- **Subscription status lifecycle (implemented, Phase 24, Slice 2):** every
+  subscription carries a status (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) and
+  only **`ACTIVE`** subscriptions de-authorize-in reverse: `PENDING`, `DENIED`,
+  and `REVOKED` subscriptions no longer satisfy the internal subscription-check
+  (Phase 17) or credential-check (Phase 21), so gateway enforcement stops
+  counting them immediately (fail closed, no cache). Status is managed
+  through an **ADMIN-only** `PATCH /subscriptions/{subscriptionId}/status`;
+  invalid transitions → `409 INVALID_SUBSCRIPTION_STATUS_TRANSITION`. Because
+  the gateway queries PostgreSQL on every managed-API request, a status change
+  takes effect immediately (no cache to invalidate).
+- Subscription state machine and status are **implemented**; tier-based
+  access control and automatic tier-policy approval remain **planned** (the
+  `PENDING → ACTIVE` / `PENDING → DENIED` transitions now provide the
+  approval/denial primitive that tier policy will later drive).
+- Once the API-version or subscription lifecycle changes extend to gateway
+  routing, revoking a subscription will also immediately affect routing; today
+  the check already reflects the subscription status on every request.
 
 ## Credential Security
 
@@ -682,7 +698,7 @@ implemented (Phase 23) — see the Analytics Service section below.
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
-| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Tier/status-based enforcement and Redis caching remain planned |
+| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Since Phase 24 (Slice 2) only **active** subscriptions satisfy the checks (an ADMIN-only status lifecycle manages `PENDING/ACTIVE/DENIED/REVOKED`); tier-based enforcement and Redis caching remain planned |
 | Client-credential gateway authentication | **Implemented (Phase 21)** — `/runtime/apis/**` accepts `Authorization: Basic base64(clientId:clientSecret)`; the gateway verifies the credential (and the application's subscription) via the internal `GET /internal/credential-check` endpoint (BCrypt against the stored hash, direct PostgreSQL query, no cache) and **strips the Basic header before forwarding**; unknown/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`, check failure → `503 CREDENTIAL_SERVICE_UNAVAILABLE` (fail closed), no subscription → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic on `/apis/**` → `401`); secrets/hashes are never stored, returned, forwarded, or logged by the gateway |
 | Trusted identity headers (gateway → managed APIs) | **Implemented (Phase 22)** — after authenticating a `/runtime/apis/**` request the gateway adds verified identity headers (`X-User-Id` + `X-Roles` for the JWT/user flow; `X-User-Id` + `X-Application-Id` + `X-Client-Id` for the client-credential/application flow) before forwarding, keeps Bearer forwarding / Basic stripping unchanged, applies them only on runtime routes, and always strips client-supplied values of these four headers (never trusted from the client); platform-management routes receive none. `X-Scopes` remains planned |
 | Rate limiting | **Implemented (Phase 21)** — the gateway rate-limits `/runtime/apis/**` before routing with Redis fixed-window counters per API version (`rate_limit:user:{userId}:{context}:{version}` for JWT callers, `rate_limit:app:{applicationId}:{context}:{version}` for application callers; `RATE_LIMIT_REQUESTS` default `100` per `RATE_LIMIT_WINDOW_SECONDS` default `60` s); exceed → `429 RATE_LIMIT_EXCEEDED` with `Retry-After`, Redis failure → `503 RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). Tiers and per-subscription limits remain planned |
@@ -713,8 +729,10 @@ implemented (Phase 23) — see the Analytics Service section below.
 > caller's verified identity to the consumed API as gateway-generated
 > `X-User-Id`/`X-Roles` (user flow) and `X-User-Id`/`X-Application-Id`/
 > `X-Client-Id` (application flow) headers (Phase 22), always stripping any
-> client-supplied values of those headers. Scope enforcement, subscription
-> tiers, and credential lifecycle remain planned. Each backend service still validates
+> client-supplied values of those headers. Scope enforcement, tier-based access
+> control, and credential lifecycle remain planned; subscription **status**
+> (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`) is enforced by the API Management
+> Service's internal checks (Phase 24, Slice 2). Each backend service still validates
 > the JWT locally, so the gateway is not a single point of trust for
 > authentication. Redis is connected across all four services (Phase 18) with
 > health monitoring via the dedicated `redisHealth` health group and is now

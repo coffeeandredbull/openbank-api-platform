@@ -28,6 +28,7 @@ import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -73,7 +74,7 @@ class CredentialCheckIntegrationTest {
     void validCredentialReturnsAuthenticatedWithTheApplicationsOwnSubscription() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
         Long applicationId = createApplication("42", "Payments App");
-        createSubscription(applicationId, versionId);
+        activateSubscription(createSubscription(applicationId, versionId));
         CredentialCreatedResponse credential = createCredential(applicationId);
 
         mockMvc.perform(get("/internal/credential-check")
@@ -85,6 +86,24 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
                 .andExpect(jsonPath("$.ownerUserId").value(42))
                 .andExpect(jsonPath("$.subscribed").value(true));
+    }
+
+    @Test
+    void validCredentialWithAnInactiveSubscriptionReportsSubscribedFalse() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        Long applicationId = createApplication("42", "Payments App");
+        createSubscription(applicationId, versionId);
+        CredentialCreatedResponse credential = createCredential(applicationId);
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.ownerUserId").value(42))
+                .andExpect(jsonPath("$.subscribed").value(false));
     }
 
     @Test
@@ -196,7 +215,7 @@ class CredentialCheckIntegrationTest {
     void responseNeverExposesTheClientSecretOrItsHash() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
         Long applicationId = createApplication("42", "Payments App");
-        createSubscription(applicationId, versionId);
+        activateSubscription(createSubscription(applicationId, versionId));
         CredentialCreatedResponse credential = createCredential(applicationId);
 
         String body = mockMvc.perform(get("/internal/credential-check")
@@ -270,10 +289,10 @@ class CredentialCheckIntegrationTest {
         return objectMapper.readTree(body).get("id").asLong();
     }
 
-    private void createSubscription(Long applicationId, Long apiVersionId) throws Exception {
+    private Long createSubscription(Long applicationId, Long apiVersionId) throws Exception {
         String ownerUserId = jdbcTemplate.queryForObject(
                 "SELECT owner_user_id FROM applications WHERE id = ?", Long.class, applicationId).toString();
-        mockMvc.perform(post("/subscriptions")
+        String body = mockMvc.perform(post("/subscriptions")
                         .header("Authorization", "Bearer " + token(ownerUserId, "DEVELOPER", 3600))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -283,7 +302,23 @@ class CredentialCheckIntegrationTest {
                                   "tierId": %d
                                 }
                                 """.formatted(applicationId, apiVersionId, createTier())))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        return objectMapper.readTree(body).get("id").asLong();
+    }
+
+    private void activateSubscription(Long subscriptionId) throws Exception {
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk());
     }
 
     private Long createTier() {
