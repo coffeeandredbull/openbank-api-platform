@@ -420,11 +420,32 @@ now authenticates **only `ACTIVE`** credentials (a `REVOKED` credential →
    removed. Redis behaviour is unchanged (fixed-window counters, EXPIRE-once,
    key shapes `rate_limit:user:{userId}:{context}:{version}` /
    `rate_limit:app:{applicationId}:{context}:{version}`, TTL = policy window);
-   a subscribed request with a missing/malformed policy fails closed with `503`
-   `RATE_LIMIT_SERVICE_UNAVAILABLE` before the limiter is contacted.
+a subscribed request with a missing/malformed policy fails closed with `503`
+    `RATE_LIMIT_SERVICE_UNAVAILABLE` before the limiter is contacted.
+- **Phase 24, Slice 5 — Redis-backed read-through cache (foundation):** the API
+   Management Service caches **only** non-sensitive read models in Redis via the
+   Spring Cache abstraction (`@EnableCaching`): the API catalog (`apiCatalog`,
+   key `apiCatalog::<apiId>`), API versions (`apiVersion`, key
+   `apiVersion::<apiId>::<versionId>`), and subscription tiers
+   (`subscriptionTier`, key `subscriptionTier::<tierId>`). PostgreSQL remains
+   the system of record; the cache is a read-through optimization with a
+   configurable TTL (`spring.cache.redis.time-to-live`, default `60s`, values
+   JSON-serialized with an explicit type hint so records/entities round-trip).
+   Read path: cache lookup → PostgreSQL on miss → populate; mutations evict
+   after success (`create` clears all entries, version lifecycle changes evict
+   only that version). A Redis outage is **fail-open on reads**: a
+   `CacheErrorHandler` treats cache failures as misses (PostgreSQL fallback, no
+   `503`) while health groups stay accurate (`redis`/`cache` contributors
+   excluded from the primary aggregate, `redisHealth` group still reports
+   `DOWN`), and this Redis is deliberately **not** the gateway's rate-limit
+   Redis. Never cached: users/credentials (hashes), secrets/JWTs, authorization
+   decisions (subscription/credential checks), analytics, payments, or any
+   per-user data — cache keys contain only database identifiers. Verified by
+   dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
+   TTL expiry re-reading PostgreSQL, and the no-Redis fallback path).
 - **Planned phases (subject to change):** tier admin CRUD/lifecycle,
-   Redis-backed token revocation and caches, credential expiry and
-   scopes, the remaining services, the Developer Portal, shared
+    Redis-backed token revocation, credential expiry and
+    scopes, the remaining services, the Developer Portal, shared
    infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
    and Kubernetes manifests will be built in small, explicitly requested phases
    and verified (compile + tests) at each step.

@@ -1,6 +1,9 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,9 +17,13 @@ public class SubscriptionTierService {
     private static final String NO_LEADING_OR_TRAILING_WHITESPACE = "\\S(?:.*\\S)?";
 
     private final SubscriptionTierRepository subscriptionTierRepository;
+    private final CacheInvalidationService cacheInvalidationService;
 
-    public SubscriptionTierService(SubscriptionTierRepository subscriptionTierRepository) {
+    public SubscriptionTierService(
+            SubscriptionTierRepository subscriptionTierRepository,
+            CacheInvalidationService cacheInvalidationService) {
         this.subscriptionTierRepository = subscriptionTierRepository;
+        this.cacheInvalidationService = cacheInvalidationService;
     }
 
     @Transactional
@@ -26,11 +33,20 @@ public class SubscriptionTierService {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
         try {
-            return subscriptionTierRepository.save(
+            SubscriptionTier tier = subscriptionTierRepository.save(
                     new SubscriptionTier(name, description, requestsPerWindow, windowSeconds));
+            cacheInvalidationService.evictAll("subscriptionTier");
+            return tier;
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
+    }
+
+    @Transactional(readOnly = true)
+    @Cacheable(cacheNames = "subscriptionTier", key = "#id")
+    public SubscriptionTier get(Long id) {
+        return subscriptionTierRepository.findById(id)
+                .orElseThrow(() -> new SubscriptionTierNotFoundException(id));
     }
 
     private void validate(String name, String description, int requestsPerWindow, int windowSeconds) {

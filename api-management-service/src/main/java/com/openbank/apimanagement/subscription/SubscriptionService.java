@@ -25,19 +25,19 @@ public class SubscriptionService {
     private final ApplicationRepository applicationRepository;
     private final ApiVersionRepository apiVersionRepository;
     private final ApiRepository apiRepository;
-    private final SubscriptionTierRepository subscriptionTierRepository;
+    private final SubscriptionTierService subscriptionTierService;
 
     public SubscriptionService(
             SubscriptionRepository subscriptionRepository,
             ApplicationRepository applicationRepository,
             ApiVersionRepository apiVersionRepository,
             ApiRepository apiRepository,
-            SubscriptionTierRepository subscriptionTierRepository) {
+            SubscriptionTierService subscriptionTierService) {
         this.subscriptionRepository = subscriptionRepository;
         this.applicationRepository = applicationRepository;
         this.apiVersionRepository = apiVersionRepository;
         this.apiRepository = apiRepository;
-        this.subscriptionTierRepository = subscriptionTierRepository;
+        this.subscriptionTierService = subscriptionTierService;
     }
 
     @Transactional
@@ -47,8 +47,7 @@ public class SubscriptionService {
                 .orElseThrow(() -> new ApplicationNotFoundException(request.applicationId()));
         ApiVersion apiVersion = apiVersionRepository.findById(request.apiVersionId())
                 .orElseThrow(() -> new ApiVersionNotFoundException(request.apiVersionId()));
-        SubscriptionTier tier = subscriptionTierRepository.findById(request.tierId())
-                .orElseThrow(() -> new SubscriptionTierNotFoundException(request.tierId()));
+        SubscriptionTier tier = subscriptionTierService.get(request.tierId());
         if (subscriptionRepository.existsByApplicationIdAndApiVersionId(
                 request.applicationId(), request.apiVersionId())) {
             throw new SubscriptionAlreadyExistsException(request.applicationId(), request.apiVersionId());

@@ -1,6 +1,8 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -23,6 +25,9 @@ class SubscriptionTierServiceTest {
 
     @Mock
     private SubscriptionTierRepository subscriptionTierRepository;
+
+    @Mock
+    private CacheInvalidationService cacheInvalidationService;
 
     @InjectMocks
     private SubscriptionTierService subscriptionTierService;
@@ -51,6 +56,8 @@ class SubscriptionTierServiceTest {
         assertThat(created.getDescription()).isEqualTo("Standard access");
         assertThat(created.getRequestsPerWindow()).isEqualTo(500);
         assertThat(created.getWindowSeconds()).isEqualTo(30);
+
+        verify(cacheInvalidationService).evictAll("subscriptionTier");
     }
 
     @Test
@@ -154,6 +161,26 @@ class SubscriptionTierServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("windowSeconds");
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
+    }
+
+    @Test
+    void getReturnsTheStoredTierById() {
+        SubscriptionTier expected = new SubscriptionTier("Gold", "Premium access", 1000, 60);
+        setField(expected, "id", 7L);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(expected));
+
+        SubscriptionTier found = subscriptionTierService.get(7L);
+
+        assertThat(found).isSameAs(expected);
+    }
+
+    @Test
+    void getThrowsNotFoundForUnknownTier() {
+        when(subscriptionTierRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionTierService.get(999L))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
     }
 
     private void setField(Object target, String name, Object value) {

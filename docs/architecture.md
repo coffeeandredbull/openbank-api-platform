@@ -314,13 +314,19 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 ## Redis Role
 
 **Implemented (Phase 18 — infrastructure, plumbed and health-monitored; Phase
-21 — first business use: gateway rate-limit counters).** All four services
+21 — first business use: gateway rate-limit counters; Phase 24 Slice 5 —
+second business use: api-management read-through cache).** All four services
 (gateway, identity, api-management, payment) depend on Redis as *plumbed
 infrastructure*: a Lettuce connection is configured and health-monitored (Phase
-18), and since Phase 21 the **gateway stores fixed-window rate-limit counters in
-Redis** for managed API invocations. Caching, sessions, token storage, and
-subscription caching remain unused. PostgreSQL remains the **only** system of
-record.
+18), since Phase 21 the **gateway stores fixed-window rate-limit counters in
+Redis** for managed API invocations, and since Phase 24 Slice 5 the **API
+Management Service keeps a filtered read-through cache in Redis** for three
+non-sensitive read models (API catalog, API version, subscription tier).
+PostgreSQL remains the **only** system of record; the cache is a pure
+optimization, the write/mutation path is unchanged and every cache failure is
+swallowed (reads fall back to PostgreSQL, evictions degrade to TTL expiry).
+Sessions, token storage, and subscription/**authorization** caching remain
+unused — authorization decisions are never cached.
 
 - **Configuration**: each service binds `spring.data.redis.host` / `port` /
   `password` from the `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD`
@@ -351,13 +357,35 @@ record.
     (`management.endpoint.health.group.default.*` is never consulted by the
     default endpoint). Each service therefore registers a `HealthEndpointGroups`
     bean built on public Actuator APIs (`HealthEndpointGroups.of(primary,
-    namedGroups)`) whose primary group filters out the `redis` contributor and
-    a named `redisHealth` group re-includes it. This keeps the Redis health
+    namedGroups)`) whose primary group filters out the `redis` contributor (and,
+    since Phase 24 Slice 5, the `cache` contributor that appears once a
+    `CacheManager` exists — the read-through cache must not take liveness down)
+    and a named `redisHealth` group re-includes them. This keeps the Redis health
     indicator fully native and the URLs stable.
+- **Read-through cache (Phase 24 Slice 5, api-management only):** the API
+  Management Service uses the Spring Cache abstraction (`@EnableCaching`, auto
+  configured `RedisCacheManager`) for **three exact read models** only — the API
+  catalog entry (`apiCatalog`, key `apiCatalog::<apiId>`), an API version
+  (`apiVersion`, key `apiVersion::<apiId>::<versionId>`), and a subscription
+  tier (`subscriptionTier`, key `subscriptionTier::<tierId>`). Keys hold only
+  database ids (no user identity, no secrets); values are JSON documents with an
+  explicit type hint (`GenericJackson2JsonRedisSerializer` + default typing,
+  60s default TTL via `spring.cache.redis.time-to-live`). Read path is
+  cache-lookup → PostgreSQL on miss → populate; mutations (`ApiService.create`,
+  `ApiVersionService.create`, `SubscriptionTierService.create`) clear the whole
+  cache only after a successful transaction, and a version lifecycle change
+  evicts just that version's entry. Behaviors worth noting: a Redis failure never breaks a request (each cache
+  interaction goes through a `CacheErrorHandler` that logs and treats a failed
+  read as a miss and a failed write/evict as a no-op), authorization decisions
+  are **never cached** (the internal subscription/credential checks are
+  untouched), and this cache is completely separate from the gateway's
+  rate-limit Redis use. Verified end-to-end with Testcontainers (Redis + Postgres)
+  for populating, hitting, evicting, key/TTL shape, expiry re-reading Postgres,
+  and the no-Redis fallback.
 - **Planned (later phases, currently unused):**
-  - **Cache**: short-lived caching to reduce load on services (e.g. cached API
-    catalog lookups, session/token material, the Phase 17 subscription check or
-    the Phase 21 credential check).
+  - **Cache (extension)**: further read models beyond the three cached in
+    Phase 24 Slice 5 if profiling warrants (session/token material and the
+    authorization checks remain uncached by design).
   - **Token storage**: server-side storage for issued refresh tokens /
     blacklisted JWTs (revocation support).
   - **Not a system of record.** Redis must always be reconstructible and is

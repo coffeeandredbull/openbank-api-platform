@@ -18,14 +18,16 @@ import java.util.function.Predicate;
 @Configuration(proxyBeanMethods = false)
 public class HealthEndpointGroupsConfiguration {
 
-    private static final String REDIS_CONTRIBUTOR = "redis";
+private static final String REDIS_CONTRIBUTOR = "redis";
+    private static final String CACHE_CONTRIBUTOR = "cache";
     private static final String REDIS_HEALTH_GROUP = "redisHealth";
 
     @Bean
     HealthEndpointGroups healthEndpointGroups(HealthEndpointProperties properties,
             StatusAggregator statusAggregator,
             HttpCodeStatusMapper httpCodeStatusMapper) {
-        HealthEndpointGroup primary = new ConfiguredGroup(name -> !REDIS_CONTRIBUTOR.equals(name),
+        HealthEndpointGroup primary = new ConfiguredGroup(
+                name -> !REDIS_CONTRIBUTOR.equals(name) && !CACHE_CONTRIBUTOR.equals(name),
                 properties.getShowComponents(), properties.getShowDetails(), properties.getRoles(),
                 statusAggregator, httpCodeStatusMapper);
         HealthEndpointGroup redisHealth = new ConfiguredGroup(REDIS_CONTRIBUTOR::equals,

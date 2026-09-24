@@ -1,5 +1,6 @@
 package com.openbank.apimanagement.api;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ApiVersionAlreadyExistsException;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
@@ -36,6 +37,9 @@ class ApiVersionServiceTest {
     @Mock
     private ApiRepository apiRepository;
 
+    @Mock
+    private CacheInvalidationService cacheInvalidationService;
+
     @InjectMocks
     private ApiVersionService apiVersionService;
 
@@ -68,6 +72,8 @@ class ApiVersionServiceTest {
         assertThat(response.lifecycle()).isEqualTo(ApiVersionLifecycle.CREATED);
         assertThat(response.createdAt()).isNotNull();
         assertThat(response.updatedAt()).isNotNull();
+
+        verify(cacheInvalidationService).evictAll("apiVersion");
     }
 
     @Test
@@ -223,6 +229,8 @@ class ApiVersionServiceTest {
         assertThat(response.version()).isEqualTo("v1");
         assertThat(response.lifecycle()).isEqualTo(to);
         assertThat(stored.getLifecycle()).isEqualTo(to);
+
+        verify(cacheInvalidationService).evict("apiVersion", "1::5");
     }
 
     @ParameterizedTest

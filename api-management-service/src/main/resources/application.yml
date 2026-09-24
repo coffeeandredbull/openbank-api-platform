@@ -6,6 +6,9 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
+  cache:
+    redis:
+      time-to-live: 60s
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/openbank}
     username: ${DB_USERNAME:postgres}

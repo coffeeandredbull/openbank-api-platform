@@ -1,9 +1,11 @@
 package com.openbank.apimanagement.api;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ApiVersionAlreadyExistsException;
 import com.openbank.apimanagement.exception.ApiVersionNotFoundException;
 import com.openbank.apimanagement.exception.InvalidLifecycleTransitionException;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,10 +17,15 @@ public class ApiVersionService {
 
     private final ApiVersionRepository apiVersionRepository;
     private final ApiRepository apiRepository;
+    private final CacheInvalidationService cacheInvalidationService;
 
-    public ApiVersionService(ApiVersionRepository apiVersionRepository, ApiRepository apiRepository) {
+    public ApiVersionService(
+            ApiVersionRepository apiVersionRepository,
+            ApiRepository apiRepository,
+            CacheInvalidationService cacheInvalidationService) {
         this.apiVersionRepository = apiVersionRepository;
         this.apiRepository = apiRepository;
+        this.cacheInvalidationService = cacheInvalidationService;
     }
 
     @Transactional
@@ -30,6 +37,7 @@ public class ApiVersionService {
         }
         try {
             ApiVersion saved = apiVersionRepository.save(new ApiVersion(api, request.version()));
+            cacheInvalidationService.evictAll("apiVersion");
             return ApiVersionResponse.from(saved);
         } catch (DataIntegrityViolationException e) {
             throw new ApiVersionAlreadyExistsException(apiId, request.version());
@@ -37,6 +45,7 @@ public class ApiVersionService {
     }
 
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = "apiVersion", key = "#apiId + '::' + #versionId")
     public ApiVersionResponse get(Long apiId, Long versionId) {
         requireApiExists(apiId);
         ApiVersion apiVersion = apiVersionRepository.findByApiIdAndId(apiId, versionId)
@@ -61,7 +70,9 @@ public class ApiVersionService {
             throw new InvalidLifecycleTransitionException(apiVersion.getLifecycle(), request.lifecycle());
         }
         apiVersion.changeLifecycle(request.lifecycle());
-        return ApiVersionResponse.from(apiVersionRepository.save(apiVersion));
+        ApiVersionResponse response = ApiVersionResponse.from(apiVersionRepository.save(apiVersion));
+        cacheInvalidationService.evict("apiVersion", apiId + "::" + versionId);
+        return response;
     }
 
     private void requireApiExists(Long apiId) {

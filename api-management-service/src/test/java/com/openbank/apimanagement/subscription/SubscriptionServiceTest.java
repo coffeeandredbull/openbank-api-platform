@@ -52,7 +52,7 @@ class SubscriptionServiceTest {
     private com.openbank.apimanagement.api.ApiRepository apiRepository;
 
     @Mock
-    private SubscriptionTierRepository subscriptionTierRepository;
+    private SubscriptionTierService subscriptionTierService;
 
     @InjectMocks
     private SubscriptionService subscriptionService;
@@ -65,7 +65,7 @@ class SubscriptionServiceTest {
         ApiVersion apiVersion = apiVersion(20L);
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion));
-        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
+        when(subscriptionTierService.get(15L)).thenReturn(tier(15L, "Developer"));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(false);
         when(subscriptionRepository.save(any(Subscription.class))).thenAnswer(invocation -> {
             Subscription saved = invocation.getArgument(0);
@@ -102,7 +102,7 @@ class SubscriptionServiceTest {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionTierRepository.findById(999L)).thenReturn(Optional.empty());
+        when(subscriptionTierService.get(999L)).thenThrow(new SubscriptionTierNotFoundException(999L));
 
         assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 999L)))
                 .isInstanceOf(SubscriptionTierNotFoundException.class)
@@ -115,7 +115,7 @@ class SubscriptionServiceTest {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
+        when(subscriptionTierService.get(15L)).thenReturn(tier(15L, "Developer"));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(true);
 
         assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 15L)))
@@ -162,7 +162,7 @@ class SubscriptionServiceTest {
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
                 .thenReturn(Optional.of(application(10L, 42L)));
         when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
-        when(subscriptionTierRepository.findById(15L)).thenReturn(Optional.of(tier(15L, "Developer")));
+        when(subscriptionTierService.get(15L)).thenReturn(tier(15L, "Developer"));
         when(subscriptionRepository.existsByApplicationIdAndApiVersionId(10L, 20L)).thenReturn(false);
         when(subscriptionRepository.save(any(Subscription.class)))
                 .thenThrow(new DataIntegrityViolationException("could not execute statement; constraint"));

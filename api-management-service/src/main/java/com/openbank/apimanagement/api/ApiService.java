@@ -1,7 +1,9 @@
 package com.openbank.apimanagement.api;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.ApiNotFoundException;
 import com.openbank.apimanagement.exception.ContextPathAlreadyExistsException;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -12,9 +14,11 @@ import java.util.List;
 public class ApiService {
 
     private final ApiRepository apiRepository;
+    private final CacheInvalidationService cacheInvalidationService;
 
-    public ApiService(ApiRepository apiRepository) {
+    public ApiService(ApiRepository apiRepository, CacheInvalidationService cacheInvalidationService) {
         this.apiRepository = apiRepository;
+        this.cacheInvalidationService = cacheInvalidationService;
     }
 
     @Transactional
@@ -24,6 +28,7 @@ public class ApiService {
         }
         try {
             Api saved = apiRepository.save(new Api(request.name(), request.description(), request.contextPath()));
+            cacheInvalidationService.evictAll("apiCatalog");
             return ApiResponse.from(saved);
         } catch (DataIntegrityViolationException e) {
             throw new ContextPathAlreadyExistsException(request.contextPath());
@@ -31,6 +36,7 @@ public class ApiService {
     }
 
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = "apiCatalog", key = "#id")
     public ApiResponse get(Long id) {
         Api api = apiRepository.findById(id)
                 .orElseThrow(() -> new ApiNotFoundException(id));
