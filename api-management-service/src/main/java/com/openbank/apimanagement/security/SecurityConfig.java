@@ -50,6 +50,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/subscriptions").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/subscriptions").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/subscriptions/{subscriptionId}").hasAnyRole("ADMIN", "DEVELOPER")
+                        .requestMatchers(HttpMethod.PATCH, "/subscriptions/{subscriptionId}/tier").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/subscriptions/{subscriptionId}/status").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")
                         .requestMatchers(HttpMethod.GET, "/credentials").hasAnyRole("ADMIN", "DEVELOPER")

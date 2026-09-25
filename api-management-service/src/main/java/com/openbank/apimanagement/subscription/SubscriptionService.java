@@ -76,6 +76,18 @@ public class SubscriptionService {
     }
 
     @Transactional
+    public SubscriptionResponse changeTier(Long subscriptionId, ChangeSubscriptionTierRequest request) {
+        Subscription subscription = subscriptionRepository.findById(subscriptionId)
+                .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
+        SubscriptionTier tier = subscriptionTierService.get(request.tierId());
+        if (subscription.getTier().getId().equals(tier.getId())) {
+            return SubscriptionResponse.from(subscription);
+        }
+        subscription.changeTier(tier);
+        return SubscriptionResponse.from(subscriptionRepository.save(subscription));
+    }
+
+    @Transactional
     public SubscriptionResponse changeStatus(Long subscriptionId, UpdateSubscriptionStatusRequest request) {
         Subscription subscription = subscriptionRepository.findById(subscriptionId)
                 .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));

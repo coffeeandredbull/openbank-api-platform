@@ -72,6 +72,8 @@ to them, and manage credentials.
 > **subscription lifecycle/status** state machine: `PENDING` → `ACTIVE` /
 > `DENIED` / `REVOKED`, ADMIN-only status management, since Phase 24)**, the
 > **ADMIN-only safe tier deletion** added in Phase 24 Slice 9, the
+> **ADMIN-only subscription tier reassignment** added in Phase 24 Slice 10
+> (`PATCH /subscriptions/{subscriptionId}/tier`), the
 > **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
 > status, ADMIN-only revocation and rotation, ACTIVE-only runtime
 > authentication), and
@@ -489,10 +491,22 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    A missing tier returns `404 SUBSCRIPTION_TIER_NOT_FOUND`; a tier referenced
    by any subscription returns `409 SUBSCRIPTION_TIER_IN_USE`. The service
    checks references and relies on the PostgreSQL `tier_id` foreign key as the
-   race-condition backstop, with no cascade or subscription reassignment. A
-   successful transaction evicts only the deleted tier's exact
+   race-condition backstop, with no cascade or implicit subscription
+   reassignment. A successful transaction evicts only the deleted tier's exact
    `subscriptionTier::<tierId>` key after commit; failed or rolled-back deletes
    do not evict it.
+ - **Phase 24, Slice 10 — ADMIN-only subscription tier reassignment:** an
+   authenticated `ADMIN` can change a subscription's tier with
+   `PATCH /subscriptions/{subscriptionId}/tier` and body `{ "tierId": long }`.
+   The target tier must exist, and the operation preserves the subscription's
+   status, `revokedAt`, application, and API-version relationships. A
+   `DEVELOPER` receives `403 ACCESS_DENIED`, an unauthenticated caller receives
+   `401 UNAUTHENTICATED`, a missing subscription returns
+   `404 APPLICATION_SUBSCRIPTION_NOT_FOUND`, a missing tier returns
+   `404 SUBSCRIPTION_TIER_NOT_FOUND`, and invalid input returns
+   `400 VALIDATION_FAILED`. Same-tier reassignment is idempotent and does not
+   update the subscription timestamp. The PostgreSQL transaction remains the
+   source of truth; no tier cache entry is evicted.
  - **Planned phases (subject to change):** tier creation/listing and
    lifecycle/pricing, credential expiry and scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),

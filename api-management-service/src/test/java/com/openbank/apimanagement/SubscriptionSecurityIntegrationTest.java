@@ -210,6 +210,58 @@ class SubscriptionSecurityIntegrationTest {
     }
 
     @Test
+    void adminCanChangeAnotherDevelopersSubscriptionTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("77", "DEVELOPER", "Bob's App");
+        Long targetTierId = createTier();
+        Long subscriptionId = subscribeAndReadId("77", "DEVELOPER", applicationId, versionId);
+        Long originalTierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tierId").value(targetTierId));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(targetTierId);
+        assertThat(originalTierId).isNotEqualTo(targetTierId);
+    }
+
+    @Test
+    void developerCannotChangeASubscriptionTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long targetTierId = createTier();
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        Long originalTierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(originalTierId);
+    }
+
+    @Test
+    void unauthenticatedSubscriptionTierChangeReturns401() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":1}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
     void adminCanUpdateSubscriptionTier() throws Exception {
         Long tierId = createTier();
 

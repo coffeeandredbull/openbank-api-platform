@@ -13,6 +13,8 @@ import com.openbank.apimanagement.api.CreateApiRequest;
 import com.openbank.apimanagement.api.UpdateApiVersionLifecycleRequest;
 import com.openbank.apimanagement.subscription.SubscriptionTier;
 import com.openbank.apimanagement.subscription.SubscriptionTierResponse;
+import com.openbank.apimanagement.subscription.ChangeSubscriptionTierRequest;
+import com.openbank.apimanagement.subscription.SubscriptionService;
 import com.openbank.apimanagement.subscription.SubscriptionTierService;
 import com.openbank.apimanagement.subscription.UpdateSubscriptionTierRequest;
 import org.junit.jupiter.api.BeforeEach;
@@ -103,6 +105,9 @@ class RedisCacheIntegrationTest {
 
     @Autowired
     private SubscriptionTierService subscriptionTierService;
+
+    @Autowired
+    private SubscriptionService subscriptionService;
 
     @Autowired
     private TransactionTemplate transactionTemplate;
@@ -501,6 +506,61 @@ class RedisCacheIntegrationTest {
                     .doesNotContain("password", "clientsecret", "authorization header", "bearer ")
                     .doesNotContain("sub\":\"42");
         }
+    }
+
+    @Test
+    void subscriptionTierAssignmentDoesNotEvictCachedTierEntries() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "Cache App");
+        Long originalTierId = createTier("cache-tier-original-" + SEQUENCE.incrementAndGet());
+        Long targetTierId = createTier("cache-tier-target-" + SEQUENCE.incrementAndGet());
+        Long subscriptionId = subscribeAndReadId(versionId, applicationId, originalTierId);
+        subscriptionTierService.get(targetTierId);
+
+        String originalKey = "subscriptionTier::" + originalTierId;
+        String targetKey = "subscriptionTier::" + targetTierId;
+        assertThat(stringRedisTemplate.hasKey(originalKey)).isTrue();
+        assertThat(stringRedisTemplate.hasKey(targetKey)).isTrue();
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tierId").value(targetTierId));
+
+        assertThat(stringRedisTemplate.hasKey(originalKey))
+                .as("changing a subscription assignment must not evict the unchanged original tier")
+                .isTrue();
+        assertThat(stringRedisTemplate.hasKey(targetKey))
+                .as("changing a subscription assignment must not evict the unchanged target tier")
+                .isTrue();
+    }
+
+    @Test
+    void rolledBackSubscriptionTierAssignmentPreservesTheOriginalTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "Cache App");
+        Long originalTierId = createTier("cache-tier-rollback-original-" + SEQUENCE.incrementAndGet());
+        Long targetTierId = createTier("cache-tier-rollback-target-" + SEQUENCE.incrementAndGet());
+        Long subscriptionId = subscribeAndReadId(versionId, applicationId, originalTierId);
+        subscriptionTierService.get(targetTierId);
+
+        assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
+            subscriptionService.changeTier(
+                    subscriptionId, new ChangeSubscriptionTierRequest(targetTierId));
+            throw new IllegalStateException("force rollback after a successful subscription tier assignment");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(originalTierId);
+        assertThat(stringRedisTemplate.hasKey("subscriptionTier::" + originalTierId))
+                .as("a rolled-back assignment must not evict the original tier cache entry")
+                .isTrue();
+        assertThat(stringRedisTemplate.hasKey("subscriptionTier::" + targetTierId))
+                .as("a rolled-back assignment must not evict the target tier cache entry")
+                .isTrue();
     }
 
     private String getApi(Long id) throws Exception {

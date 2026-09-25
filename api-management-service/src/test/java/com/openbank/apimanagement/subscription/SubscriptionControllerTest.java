@@ -4,6 +4,7 @@ import com.openbank.apimanagement.auth.JwtIdentity;
 import com.openbank.apimanagement.auth.UserRole;
 import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -313,6 +315,106 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.path").value("/subscriptions/999/status"))
                 .andExpect(jsonPath("$.message").value("Subscription with id 999 does not exist"));
+    }
+
+    @Test
+    void changeTierReturns200WithUpdatedSubscription() throws Exception {
+        when(subscriptionService.changeTier(eq(1L), any(ChangeSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 16L, "Gold", SubscriptionStatus.PENDING, null, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "tierId": 16
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.applicationId").value(10))
+                .andExpect(jsonPath("$.apiVersionId").value(20))
+                .andExpect(jsonPath("$.tierId").value(16))
+                .andExpect(jsonPath("$.tierName").value("Gold"))
+                .andExpect(jsonPath("$.status").value("PENDING"));
+    }
+
+    @Test
+    void changeTierForwardsTheSubscriptionIdAndTierId() throws Exception {
+        when(subscriptionService.changeTier(eq(1L), any(ChangeSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionResponse(
+                        1L, 10L, 20L, 16L, "Gold", SubscriptionStatus.PENDING, null, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":16}"))
+                .andExpect(status().isOk());
+
+        verify(subscriptionService).changeTier(1L, new ChangeSubscriptionTierRequest(16L));
+    }
+
+    @Test
+    void changeTierRejectsMissingTierIdWith400() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.tierId").value("tierId is required"));
+
+        verify(subscriptionService, never()).changeTier(any(), any());
+    }
+
+    @Test
+    void changeTierRejectsNullTierIdWith400() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.tierId").value("tierId is required"));
+
+        verify(subscriptionService, never()).changeTier(any(), any());
+    }
+
+    @Test
+    void changeTierRejectsInvalidTierIdWith400() throws Exception {
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":\"gold\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.tierId").value("invalid value"));
+
+        verify(subscriptionService, never()).changeTier(any(), any());
+    }
+
+    @Test
+    void changeTierReturnsStructured404WhenSubscriptionDoesNotExist() throws Exception {
+        when(subscriptionService.changeTier(eq(999L), any(ChangeSubscriptionTierRequest.class)))
+                .thenThrow(new SubscriptionNotFoundException(999L));
+
+        mockMvc.perform(patch("/subscriptions/999/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":16}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("APPLICATION_SUBSCRIPTION_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/subscriptions/999/tier"))
+                .andExpect(jsonPath("$.message").value("Subscription with id 999 does not exist"));
+    }
+
+    @Test
+    void changeTierReturnsStructured404WhenTargetTierDoesNotExist() throws Exception {
+        when(subscriptionService.changeTier(eq(1L), any(ChangeSubscriptionTierRequest.class)))
+                .thenThrow(new SubscriptionTierNotFoundException(999L));
+
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":999}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/subscriptions/1/tier"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id 999 does not exist"));
     }
 
     private void authenticate(Long userId, UserRole role) {

@@ -104,6 +104,32 @@ class SubscriptionCheckIntegrationTest {
     }
 
     @Test
+    void checkUsesTheNewTierPolicyAfterAnAdminReassignment() throws Exception {
+        Long versionId = createApiWithVersion("/payments", "v1");
+        Long originalTierId = createTier(100, 60);
+        Long targetTierId = createTier(2500, 15);
+        Long subscriptionId = createSubscription("42", "DEVELOPER", versionId, originalTierId);
+        activateSubscription(subscriptionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tierId").value(targetTierId));
+
+        mockMvc.perform(get("/internal/subscription-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.tierId").value(targetTierId))
+                .andExpect(jsonPath("$.requestsPerWindow").value(2500))
+                .andExpect(jsonPath("$.windowSeconds").value(15));
+    }
+
+    @Test
     void checkReturnsFalseWhenTheOnlySubscriptionIsPending() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
         createSubscription("42", "DEVELOPER", versionId);

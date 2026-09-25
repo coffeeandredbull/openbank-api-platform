@@ -42,7 +42,9 @@
   tier creation/listing, lifecycle, and pricing remain planned; an ADMIN-only
   partial update `PATCH /subscription-tiers/{tierId}` and safe deletion of
   unreferenced tiers with `DELETE /subscription-tiers/{tierId}` are implemented
-  (Phase 24, Slices 8 and 9).
+  (Phase 24, Slices 8 and 9); an ADMIN-only subscription tier reassignment via
+  `PATCH /subscriptions/{subscriptionId}/tier` is implemented (Phase 24, Slice
+  10).
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
   link (`applicationId` + `apiVersionId` + `tierId`), `GET /subscriptions/{subscriptionId}`
@@ -63,6 +65,14 @@
   `PENDING`, `DENIED`, or `REVOKED` subscription does not grant access. The
   gateway itself is unchanged — the state is enforced by the API Management
   Service.
+- **Subscription tier reassignment (implemented, Phase 24, Slice 10):** an
+  **ADMIN-only** `PATCH /subscriptions/{subscriptionId}/tier` accepts a required
+  `tierId` and changes the existing subscription's tier reference. The target
+  tier must exist; the operation preserves the subscription's application, API
+  version, status, and `revokedAt`, and same-tier reassignment is idempotent.
+  Missing subscription/tier, invalid input, and caller authorization map to the
+  existing `404`, `400`, and `403`/`401` responses. PostgreSQL remains the
+  source of truth and no tier cache entry is evicted.
 - Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
   issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
   hash is stored; the plaintext secret is returned exactly once at creation.
@@ -80,8 +90,9 @@
   subscription/credential check that confirms access but supplies a
   missing/malformed policy **fails closed** (`503`) before the limiter is
   contacted. Tier creation/listing, lifecycle, and per-tier pricing remain
-  planned; the ADMIN-only partial tier update and safe deletion of unreferenced
-  tiers are implemented (Phase 24, Slices 8 and 9).
+  planned; the ADMIN-only partial tier update, safe deletion of unreferenced
+  tiers, and explicit ADMIN subscription tier reassignment are implemented
+  (Phase 24, Slices 8–10).
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
@@ -225,9 +236,10 @@
 - Tier defines allowed rates (requests per window, burst) — implemented for the
   rate-limit policy (Phase 24, Slice 4): tiers carry `requests_per_window`/
   `window_seconds` and the gateway enforces the active subscription's tier policy
-  per request; ADMIN-only partial tier updates and safe deletion of unreferenced
-  tiers are implemented (Phase 24, Slices 8 and 9). Tier creation/listing,
-  lifecycle, per-hour/burst variants, and pricing remain planned.
+  per request; ADMIN-only partial tier updates, safe deletion of unreferenced
+  tiers, and explicit subscription tier reassignment are implemented (Phase 24,
+  Slices 8–10). Tier creation/listing, lifecycle, per-hour/burst variants, and
+  pricing remain planned.
 - Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
   (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
   subscriptions satisfy the internal checks).

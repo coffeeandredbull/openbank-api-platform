@@ -45,6 +45,13 @@ public class SubscriptionController {
         return subscriptionService.list(identity.userId());
     }
 
+    @PatchMapping("/{subscriptionId}/tier")
+    public SubscriptionResponse changeTier(
+            @PathVariable Long subscriptionId,
+            @Valid @RequestBody ChangeSubscriptionTierRequest request) {
+        return subscriptionService.changeTier(subscriptionId, request);
+    }
+
     @PatchMapping("/{subscriptionId}/status")
     public SubscriptionResponse updateStatus(
             @PathVariable Long subscriptionId,

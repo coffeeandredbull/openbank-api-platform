@@ -408,10 +408,27 @@ unauthenticated caller receives `401 UNAUTHENTICATED`. The service checks for
 subscriptions before deleting and maps both the application-level reference
 check and the PostgreSQL foreign-key race backstop to `409
 SUBSCRIPTION_TIER_IN_USE`. The `subscriptions.tier_id` foreign key is `NOT
-NULL` and has no cascade, so subscriptions are never reassigned or deleted.
+NULL` and has no cascade, so subscriptions are never implicitly reassigned or
+ deleted. Explicit ADMIN tier reassignment is implemented in Phase 24 Slice 10.
 PostgreSQL remains the source of truth. A successful transaction evicts only
 `subscriptionTier::<tierId>` after commit; rejected or rolled-back deletes do
 not evict.
+
+**Implemented so far (Phase 24, Slice 10) — subscription tier reassignment:** an
+authenticated `ADMIN` can change a subscription's tier with
+`PATCH /subscriptions/{subscriptionId}/tier` and body
+`{ "tierId": long }` (`tierId` is required). A successful change returns `200 OK`
+with the normal subscription response and changes only the tier reference; the
+subscription's application, API version, lifecycle status, and `revokedAt` are
+preserved. A missing subscription returns `404
+APPLICATION_SUBSCRIPTION_NOT_FOUND`; a missing target tier returns `404
+SUBSCRIPTION_TIER_NOT_FOUND`; invalid input returns `400 VALIDATION_FAILED`; a
+`DEVELOPER` receives `403 ACCESS_DENIED`; and an unauthenticated caller receives
+`401 UNAUTHENTICATED`. Reassigning to the current tier is idempotent: the
+subscription is not saved and its `updatedAt` timestamp is unchanged. The
+operation is transactional and does not evict Redis cache entries; PostgreSQL
+remains the source of truth, and the target tier's cached policy is unaffected.
+No subscription is created, deleted, or implicitly cascaded by this operation.
 
 **Implemented so far (Phase 12) — subscriptions:** an application can be
 **subscribed** to an **API version** in the API Management Service. This
@@ -426,6 +443,11 @@ the request body.
   `applicationId`, `apiVersionId`, `tierId`, `tierName`, `status`, `revokedAt`,
   `createdAt`, `updatedAt`). New subscriptions are created with `status =
   "PENDING"` and a null `revokedAt`.
+- `PATCH /subscriptions/{subscriptionId}/tier` — an `ADMIN` can reassign the
+  subscription to another existing tier. Body: `{ "tierId": long }`; the
+  response is the normal subscription body. The operation preserves status,
+  `revokedAt`, application, and API-version relationships; see the Slice 10
+  details above.
 - `GET /subscriptions/{subscriptionId}` — the caller's **own** subscription.
 - `GET /subscriptions` — list the caller's **own** subscriptions in ascending
   `id` order (owner-scoped; other users' subscriptions never appear).
@@ -454,7 +476,8 @@ the request body.
   id+secret). Each tier now carries its rate-limit policy
   (`requestsPerWindow`/`windowSeconds`, Phase 24 Slice 4) that the gateway
   enforces per active subscription; Slice 8 adds ADMIN-only partial tier
-  updates and Slice 9 adds safe deletion of unreferenced tiers, while tier
+  updates, Slice 9 adds safe deletion of unreferenced tiers, and Slice 10 adds
+  explicit ADMIN tier reassignment for existing subscriptions, while tier
   creation/listing, lifecycle, and pricing remain planned.
 - **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
   a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
@@ -558,13 +581,17 @@ the request body.
 > above. The subscription schema carries a **tier reference**
 > (`subscription_tiers`, Phase 24) and a **status/lifecycle state machine**
 > (`PATCH /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions
-> section above), and application credentials carry a **status lifecycle with
-> revocation and rotation** (`PATCH /credentials/{id}/status`,
-> `POST /credentials/{id}/rotate`, Phase 24 Slice 3; see the Credentials section
-> above). Subscription deletion and credential expiry/scopes remain planned.
+> section above). An `ADMIN` can also explicitly reassign an existing
+> subscription's tier with `PATCH /subscriptions/{id}/tier` (Phase 24 Slice
+> 10). Application credentials carry a **status lifecycle with revocation and
+> rotation** (`PATCH /credentials/{id}/status`, `POST /credentials/{id}/rotate`,
+> Phase 24 Slice 3; see the Credentials section above). Subscription deletion
+> and credential expiry/scopes remain planned.
 > They are repeated here as the planned contract for the gateway/portal view.
 - `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
-- `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API version + tier; the un-tiered link already exists via Phase 12 `POST /subscriptions`.
+- `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API
+  version + tier; the tiered link already exists via Phase 12 `POST
+  /subscriptions` and the Phase 24 tier binding.
 - `GET    /subscriptions/{id}` — subscription status.
 - `DELETE /applications/{id}/subscriptions/{subId}` — revoke.
 - `GET    /subscriptions?apiVersionId=...` — admin: who holds this version.

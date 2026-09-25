@@ -582,6 +582,113 @@ class SubscriptionIntegrationTest {
                 .andExpect(jsonPath("$.message").value("Subscription with id 98765 does not exist"));
     }
 
+    @Test
+    void adminReassignsSubscriptionTierWithoutChangingApplicationOrApiVersion() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        Long originalTierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+        Long targetTierId = createTier();
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(subscriptionId))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.apiVersionId").value(versionId))
+                .andExpect(jsonPath("$.tierId").value(targetTierId))
+                .andExpect(jsonPath("$.status").value("PENDING"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(targetTierId);
+        assertThat(jdbcTemplate.queryForObject(
+                "select application_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(applicationId);
+        assertThat(jdbcTemplate.queryForObject(
+                "select api_version_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(versionId);
+        assertThat(originalTierId).isNotEqualTo(targetTierId);
+    }
+
+    @Test
+    void tierReassignmentPreservesRevokedStatusAndRevocationTimestamp() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        setStatus(subscriptionId, "REVOKED", "1", "ADMIN").andExpect(status().isOk());
+        String revokedAt = jdbcTemplate.queryForObject(
+                "select revoked_at::text from subscriptions where id = ?", String.class, subscriptionId);
+        Long targetTierId = createTier();
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tierId").value(targetTierId))
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.revokedAt").isNotEmpty());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscriptions where id = ?", String.class, subscriptionId))
+                .isEqualTo("REVOKED");
+        assertThat(jdbcTemplate.queryForObject(
+                "select revoked_at::text from subscriptions where id = ?", String.class, subscriptionId))
+                .isEqualTo(revokedAt);
+    }
+
+    @Test
+    void sameTierReassignmentIsIdempotentAndPreservesTheUpdatedAtTimestamp() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        Long tierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+        String updatedAt = jdbcTemplate.queryForObject(
+                "select updated_at::text from subscriptions where id = ?", String.class, subscriptionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + tierId + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tierId").value(tierId))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.updatedAt").isNotEmpty());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(tierId);
+        assertThat(jdbcTemplate.queryForObject(
+                "select updated_at::text from subscriptions where id = ?", String.class, subscriptionId))
+                .isEqualTo(updatedAt);
+    }
+
+    @Test
+    void unknownTierReassignmentReturns404AndPreservesTheStoredTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        Long originalTierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":999999}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/subscriptions/" + subscriptionId + "/tier"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(originalTierId);
+    }
+
     private Long createVersionedApi() throws Exception {
         Long apiId = createApi("/payments");
         return createVersion(apiId, "v1");

@@ -414,6 +414,94 @@ class SubscriptionServiceTest {
         verify(subscriptionRepository, never()).save(any(Subscription.class));
     }
 
+    @Test
+    void changeTierUpdatesTierAndPreservesOtherSubscriptionFields() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.ACTIVE);
+        SubscriptionTier target = tier(16L, "Gold");
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(16L)).thenReturn(target);
+        when(subscriptionRepository.save(any(Subscription.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        SubscriptionResponse response = subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(16L));
+
+        assertThat(response.id()).isEqualTo(30L);
+        assertThat(response.applicationId()).isEqualTo(10L);
+        assertThat(response.apiVersionId()).isEqualTo(20L);
+        assertThat(response.tierId()).isEqualTo(16L);
+        assertThat(response.tierName()).isEqualTo("Gold");
+        assertThat(response.status()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(response.revokedAt()).isNull();
+        assertThat(response.updatedAt()).isAfter(TIMESTAMP);
+        assertThat(stored.getApplication().getId()).isEqualTo(10L);
+        assertThat(stored.getApiVersion().getId()).isEqualTo(20L);
+        assertThat(stored.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        verify(subscriptionRepository).save(stored);
+    }
+
+    @Test
+    void changeTierIsIdempotentWhenTheSubscriptionAlreadyUsesTheTier() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(15L)).thenReturn(stored.getTier());
+
+        SubscriptionResponse response = subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(15L));
+
+        assertThat(response.tierId()).isEqualTo(15L);
+        assertThat(response.updatedAt()).isEqualTo(TIMESTAMP);
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeTierRejectsUnknownSubscriptionBeforeLookingUpTheTargetTier() {
+        when(subscriptionRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionService.changeTier(
+                999L, new ChangeSubscriptionTierRequest(16L)))
+                .isInstanceOf(SubscriptionNotFoundException.class)
+                .hasMessageContaining("999");
+
+        verify(subscriptionTierService, never()).get(any());
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeTierRejectsUnknownTargetTierWithoutChangingTheSubscription() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(999L))
+                .thenThrow(new SubscriptionTierNotFoundException(999L));
+
+        assertThatThrownBy(() -> subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(999L)))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+
+        assertThat(stored.getTier().getId()).isEqualTo(15L);
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeTierPreservesRevokedStatusAndRevocationTimestamp() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        setField(stored, "status", SubscriptionStatus.REVOKED);
+        setField(stored, "revokedAt", TIMESTAMP);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(16L)).thenReturn(tier(16L, "Gold"));
+        when(subscriptionRepository.save(any(Subscription.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        SubscriptionResponse response = subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(16L));
+
+        assertThat(response.tierId()).isEqualTo(16L);
+        assertThat(response.status()).isEqualTo(SubscriptionStatus.REVOKED);
+        assertThat(response.revokedAt()).isEqualTo(TIMESTAMP);
+    }
+
     private static Stream<Arguments> allowedStatusTransitions() {
         return Stream.of(
                 Arguments.of(SubscriptionStatus.PENDING, SubscriptionStatus.ACTIVE),

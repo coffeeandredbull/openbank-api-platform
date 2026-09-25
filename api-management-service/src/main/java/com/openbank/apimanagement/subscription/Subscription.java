@@ -40,7 +40,7 @@ public class Subscription {
     private ApiVersion apiVersion;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "tier_id", nullable = false, updatable = false)
+    @JoinColumn(name = "tier_id", nullable = false)
     private SubscriptionTier tier;
 
     @Enumerated(EnumType.STRING)
@@ -100,6 +100,11 @@ public class Subscription {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public void changeTier(SubscriptionTier newTier) {
+        this.tier = newTier;
+        this.updatedAt = Instant.now();
     }
 
     public void changeStatus(SubscriptionStatus newStatus) {
