@@ -25,6 +25,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
@@ -122,6 +123,48 @@ class CredentialIntegrationTest {
                 "select count(*) from credentials where client_id = ?",
                 Integer.class, clientId);
         assertThat(rowsStoringClientId).isEqualTo(1);
+    }
+
+    @Test
+    void applicationScopedCreatePersistsAndReturnsOptionalExpiration() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        String expiresAt = "2030-01-01T00:00:00Z";
+
+        String body = mockMvc.perform(post("/applications/" + applicationId + "/credentials")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "%s"
+                                }
+                                """.formatted(expiresAt)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.expiresAt").value(expiresAt))
+                .andExpect(jsonPath("$.clientSecret").isNotEmpty())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode created = objectMapper.readTree(body);
+        String clientId = created.get("clientId").asText();
+        Timestamp storedExpiration = jdbcTemplate.queryForObject(
+                "select expires_at from credentials where client_id = ?", Timestamp.class, clientId);
+        assertThat(storedExpiration.toInstant()).isEqualTo(Instant.parse(expiresAt));
+
+        mockMvc.perform(get("/credentials/" + created.get("id").asLong())
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expiresAt").value(expiresAt))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        mockMvc.perform(get("/credentials")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].expiresAt").value(expiresAt))
+                .andExpect(jsonPath("$[0].clientSecret").doesNotExist());
     }
 
     @Test
@@ -278,14 +321,14 @@ class CredentialIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "application_id", "client_id", "client_secret_hash", "status", "created_at", "updated_at");
+                "id", "application_id", "client_id", "client_secret_hash", "status", "expires_at", "created_at", "updated_at");
 
         Integer nullableCount = jdbcTemplate.queryForObject(
                 "select count(*) from information_schema.columns "
                         + "where table_schema = current_schema() and table_name = 'credentials' "
                         + "and is_nullable = 'YES'",
                 Integer.class);
-        assertThat(nullableCount).isZero();
+        assertThat(nullableCount).isEqualTo(1);
 
         List<String> nonNullableColumns = jdbcTemplate.queryForList(
                 "select column_name from information_schema.columns "
@@ -618,6 +661,45 @@ class CredentialIntegrationTest {
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.clientSecret").doesNotExist())
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+    }
+
+    @Test
+    void rotationPreservesExpirationAndStatus() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        String expiresAt = "2030-01-01T00:00:00Z";
+        String createdBody = mockMvc.perform(post("/credentials")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "expiresAt": "%s"
+                                }
+                                """.formatted(applicationId, expiresAt)))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        long credentialId = objectMapper.readTree(createdBody).get("id").asLong();
+
+        mockMvc.perform(post("/credentials/" + credentialId + "/rotate")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credentialId))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value(expiresAt))
+                .andExpect(jsonPath("$.clientSecret").isNotEmpty())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        Timestamp storedExpiration = jdbcTemplate.queryForObject(
+                "select expires_at from credentials where id = ?", Timestamp.class, credentialId);
+        assertThat(storedExpiration.toInstant()).isEqualTo(Instant.parse(expiresAt));
+
+        mockMvc.perform(get("/credentials/" + credentialId)
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value(expiresAt));
     }
 
     @Test

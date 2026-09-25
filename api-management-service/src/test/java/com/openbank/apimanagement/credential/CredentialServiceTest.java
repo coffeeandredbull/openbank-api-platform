@@ -68,6 +68,25 @@ class CredentialServiceTest {
     }
 
     @Test
+    void createPersistsOptionalExpiration() {
+        Application application = application(10L, 42L);
+        Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> {
+            Credential saved = invocation.getArgument(0);
+            setField(saved, "id", 1L);
+            return saved;
+        });
+
+        CredentialCreatedResponse response = credentialService.create(
+                42L, new CreateCredentialRequest(10L, expiresAt));
+
+        assertThat(response.expiresAt()).isEqualTo(expiresAt);
+        assertThat(capturedCredential().getExpiresAt()).isEqualTo(expiresAt);
+    }
+
+    @Test
     void generatedClientIdIsUsedForPersistenceAndIsServerSide() {
         Application application = application(10L, 42L);
         when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
@@ -210,6 +229,18 @@ class CredentialServiceTest {
     }
 
     @Test
+    void entityRotationNeverReactivatesRevokedCredential() {
+        Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value", expiresAt);
+        stored.changeStatus(CredentialStatus.REVOKED);
+
+        stored.rotate("new-client-id", "$2a$10$new-hash-value");
+
+        assertThat(stored.getStatus()).isEqualTo(CredentialStatus.REVOKED);
+        assertThat(stored.getExpiresAt()).isEqualTo(expiresAt);
+    }
+
+    @Test
     void normalResponseDtoNeverExposesSecretOrHash() throws Exception {
         Credential stored = credential(1L, 10L, "client-123", "$2a$10$the-stored-hash-value");
 
@@ -331,6 +362,20 @@ class CredentialServiceTest {
     }
 
     @Test
+    void rotationPreservesExpiration() {
+        Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value", expiresAt);
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialRotatedResponse response = credentialService.rotate(1L);
+
+        assertThat(response.expiresAt()).isEqualTo(expiresAt);
+        assertThat(capturedSaved().getExpiresAt()).isEqualTo(expiresAt);
+    }
+
+    @Test
     void rotateRejectsRevokedCredential() {
         Credential stored = revokedCredential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
         when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
@@ -393,7 +438,12 @@ class CredentialServiceTest {
     }
 
     private Credential credential(Long id, Long applicationId, String clientId, String clientSecretHash) {
-        Credential credential = new Credential(application(applicationId, 42L), clientId, clientSecretHash);
+        return credential(id, applicationId, clientId, clientSecretHash, null);
+    }
+
+    private Credential credential(
+            Long id, Long applicationId, String clientId, String clientSecretHash, Instant expiresAt) {
+        Credential credential = new Credential(application(applicationId, 42L), clientId, clientSecretHash, expiresAt);
         setField(credential, "id", id);
         setField(credential, "createdAt", TIMESTAMP);
         setField(credential, "updatedAt", TIMESTAMP);

@@ -131,13 +131,13 @@ Implemented behavior:
   no sessions, no form login, no HTTP Basic, no refresh tokens, no API keys.
 
 Not implemented yet (future phases): RS256, subscription tier-based access
-control beyond the enforced rate-limit policy, and credential expiry/scopes.
+control beyond the enforced rate-limit policy, and credential scopes.
 (Gateway-level subscription
-checks are implemented later — Phases 17 and 21 — the subscription
-**status lifecycle** is implemented in the API Management Service in Phase 24,
-Slice 2, the **credential lifecycle** — `ACTIVE`/`REVOKED` status,
-ADMIN-only revocation and rotation — in Phase 24, Slice 3, and **tier-based
-rate limiting** in Phase 24, Slice 4; see below.)
+checks are implemented in Phases 17 and 21. The subscription **status
+lifecycle** is implemented in the API Management Service in Phase 24, Slice 2;
+the **credential lifecycle** — `ACTIVE`/`REVOKED` status, ADMIN-only revocation
+and rotation — in Phase 24, Slice 3; optional credential expiry in Phase 24,
+Slice 11; and **tier-based rate limiting** in Phase 24, Slice 4; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -281,13 +281,26 @@ Implemented behavior:
     credential cannot be rotated (`409`). The new plaintext secret is returned
     exactly once; the old pair stops authenticating immediately.
   - **Runtime enforcement:** the internal `GET /internal/credential-check`
-    authenticates **only `ACTIVE`** credentials (checked before BCrypt
-    `matches`), so a revoked or rotated-away credential yields
-    `{"authenticated":false}` even with a correct secret value. All read/lifecycle
-    responses expose `status` but never `clientSecret` or `clientSecretHash`,
-    and rotation keeps a single `credentials` row (no second credential).
+    authenticates **only `ACTIVE` and unexpired** credentials (status and expiry
+    are checked before BCrypt `matches`), so a revoked, expired, or rotated-away
+    credential yields `{"authenticated":false}` even with a correct secret value.
+    All read/lifecycle responses expose `status` but never `clientSecret` or
+    `clientSecretHash`, and rotation keeps a single `credentials` row (no second
+    credential).
+- **Optional expiry (implemented, Phase 24, Slice 11):** `expiresAt` is a nullable
+  `Instant` persisted as `credentials.expires_at`. Creation accepts it as an
+  optional ISO-8601 value through `POST /credentials` or
+  `POST /applications/{applicationId}/credentials`; omitted/`null` means no
+  expiry, while a supplied value must be strictly in the future. Creation,
+  rotation, GET, and list responses expose `expiresAt`; the plaintext secret
+  remains creation/rotation-only. Rotation preserves the existing value and
+  never extends the lifetime. Reaching the exact expiry instant fails
+  authentication (`now < expiresAt` when set) without changing the stored
+  `ACTIVE`/`REVOKED` status. The gateway is unchanged because the existing
+  `authenticated:false` response already maps to `401
+  CLIENT_CREDENTIAL_INVALID`.
 
-Not implemented yet (future phases): credential expiry, scopes, gateway-side
+Not implemented yet (future phases): credential scopes, gateway-side
 verification of these credentials beyond the existing check, and
 profile/scope enforcement.
 
@@ -442,7 +455,8 @@ Implemented behavior:
     `{"authenticated":false}`. The same single check returns the **subscription
     verdict** for the authenticated application, so no second network call is
     made.
-  - **Outcomes (fail closed).** Unknown/malformed credentials → `401` + code
+  - **Outcomes (fail closed).** Unknown, malformed, inactive, or expired
+    credentials → `401` + code
     `CLIENT_CREDENTIAL_INVALID`; the check is unreachable (2 s connect / 3 s
     response), returns 5xx, or a malformed/unparseable 2xx body → `503` + code
     `CREDENTIAL_SERVICE_UNAVAILABLE` (an unverified request is **never**
@@ -554,11 +568,12 @@ Implemented behavior:
   material).
 
 Not implemented yet (future phases): subscription tier creation/listing, tier
-lifecycle/pricing, and credential expiry/scopes. The subscription tier
+lifecycle/pricing, and credential scopes. The subscription tier
 foundation, ADMIN-only partial update (`PATCH /subscription-tiers/{tierId}`),
 and safe deletion of unreferenced tiers (`DELETE /subscription-tiers/{tierId}`)
 are implemented (Phase 24, Slices 4, 8, and 9). Credential **status/revocation/
-rotation** are implemented (Phase 24, Slice 3) — see the Credential Security
+rotation** are implemented (Phase 24, Slice 3), and optional **credential
+expiry** is implemented (Phase 24, Slice 11) — see the Credential Security
 section below. Gateway-issued runtime analytics telemetry is implemented
 (Phase 23) — see the Analytics Service section below.
 
@@ -706,11 +721,13 @@ Implemented behavior:
     An ADMIN-only `POST /credentials/{id}/rotate` replaces both the `clientId`
     and the stored hash **in place** (no second row) and returns the new
     plaintext secret exactly once. The internal
-    `GET /internal/credential-check` authenticates **only `ACTIVE`**
-    credentials, so revocation and rotation take effect immediately — a
-    revoked or pre-rotation secret never authenticates, even with the exact
-    correct value, and the check never returns the secret or its hash. Credential
-    expiry and scopes remain planned.
+    `GET /internal/credential-check` authenticates **only `ACTIVE` and
+    unexpired** credentials, so revocation, expiry, and rotation take effect
+    immediately — a revoked, expired, or pre-rotation secret never
+    authenticates, even with the exact correct value, and the check never
+    returns the secret or its hash. Optional `expiresAt` is implemented in
+    Phase 24, Slice 11; rotation preserves it and does not extend the
+    lifetime. Credential scopes remain planned.
 - The gateway **authentication** step that consumes these credentials is
   **implemented (Phase 21)** — see "Gateway Foundations" above. The secret is
   presented as a Basic header, verified server-side on every request (BCrypt

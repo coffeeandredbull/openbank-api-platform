@@ -218,8 +218,8 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   plus, when subscribed, the active subscription's tier policy
   (`tierId`, `tierName`, `requestsPerWindow`, `windowSeconds`)
   (any failure returns `{"authenticated":false}`). Decision table:
-  - credential not found / secret mismatch / malformed credential → `401` +
-    code `CLIENT_CREDENTIAL_INVALID`; stable shape
+  - credential not found / secret mismatch / inactive or expired credential /
+    malformed credential → `401` + code `CLIENT_CREDENTIAL_INVALID`; stable shape
     `{"timestamp","status":401,"error":"Unauthorized","path",
     "code":"CLIENT_CREDENTIAL_INVALID","message":"Invalid client credentials",
     "fieldErrors":{}}`;
@@ -501,25 +501,31 @@ the request body.
     gateway itself is unchanged; the API Management Service remains the source
     of truth.
 
-**Implemented so far (Phase 13) — credentials:** an **application** can hold
-**credentials** (`clientId` + hashed `clientSecret`) in the API Management
-Service. These are the credentials an API Gateway will later use to
-authenticate an application; gateway-side authentication is still a later
-phase. The request body carries only `applicationId`; the **owner is always
-derived from the authenticated user's JWT `sub` claim** and is never taken from
-the request body.
+**Implemented so far (Phase 13; credential expiry in Phase 24, Slice 11) —
+credentials:** an **application** can hold **credentials** (`clientId` + hashed
+`clientSecret`) in the API Management Service. These are the credentials the API
+Gateway uses to authenticate an application. The existing creation body carries
+`applicationId`; the application-scoped route carries the same application id in
+its path. The **owner is always derived from the authenticated user's JWT `sub`
+claim** and is never taken from the request body.
 - `POST /credentials` — create a credential for an owned application. Body:
-  `{ "applicationId": long }` (required). `clientId` and `clientSecret` are
-  generated **server-side** and are not accepted from the client (extra body
-  fields are ignored). Returns `201 Created` with a `Location: /credentials/{id}`
-  header and body (`id`, `applicationId`, `clientId`, `clientSecret`,
-  `status`, `createdAt`, `updatedAt`). The plaintext `clientSecret` is returned
-  **exactly once**, in this creation response only. New credentials start with
-  `status: "ACTIVE"`.
+  `{ "applicationId": long, "expiresAt": ISO-8601 Instant? }`. `applicationId` is
+  required; `expiresAt` is optional, and omitted/`null` means the credential does
+  not expire. A supplied expiry must be in the future. `clientId` and
+  `clientSecret` are generated **server-side** and are not accepted from the
+  client (extra body fields are ignored). Returns `201 Created` with a
+  `Location: /credentials/{id}` header and body (`id`, `applicationId`,
+  `clientId`, `clientSecret`, `status`, `expiresAt`, `createdAt`, `updatedAt`).
+  The plaintext `clientSecret` is returned **exactly once**, in this creation
+  response only. New credentials start with `status: "ACTIVE"`.
+- `POST /applications/{applicationId}/credentials` — the application-scoped
+  creation route. Body: `{ "expiresAt": ISO-8601 Instant? }`; the application id
+  comes from the path. It follows the same generation, validation, one-time
+  secret, and `201` response contract as `POST /credentials`.
 - `GET /credentials/{credentialId}` — the caller's **own** credential
   (applications the caller owns). Returns `CredentialResponse` (`id`,
-  `applicationId`, `clientId`, `status`, `createdAt`, `updatedAt`) — **never**
-  the `clientSecret` or `clientSecretHash`.
+  `applicationId`, `clientId`, `status`, `expiresAt`, `createdAt`, `updatedAt`)
+  — **never** the `clientSecret` or `clientSecretHash`.
 - `GET /credentials` — list the caller's **own** credentials in ascending `id`
   order (owner-scoped; other users' credentials never appear, no secrets).
 - `PATCH /credentials/{credentialId}/status` — **ADMIN-only** credential
@@ -536,9 +542,11 @@ the request body.
   rotation (global, not owner-scoped). The existing credential row is updated
   **in place**: a new server-side `clientId` and a new `SecureRandom`
   256-bit `clientSecret` are generated, only the new BCrypt hash is stored, the
-  status stays `ACTIVE`, and the response returns the **new** `clientId` and
+  status stays `ACTIVE`, the existing `expiresAt` is preserved (rotation never
+  extends the lifetime), and the response returns the **new** `clientId` and
   plaintext `clientSecret` **exactly once** (same shape as creation, plus
-  `status`). The old `clientId`/`clientSecret` stop authenticating immediately.
+  `status` and `expiresAt`). The old `clientId`/`clientSecret` stop
+  authenticating immediately.
   A `REVOKED` credential cannot be rotated → `409
   INVALID_CREDENTIAL_STATUS_TRANSITION`; a missing credential → `404
   CREDENTIAL_NOT_FOUND`. `clientId` collision retries reuse the bounded
@@ -561,15 +569,17 @@ the request body.
 - Secret hashing: the `clientSecret` is hashed with BCrypt (the same
   `PasswordEncoder` infrastructure as user passwords) and **only the hash** is
   stored. The plaintext secret cannot be retrieved after creation or rotation.
-- Validation: `applicationId` is required for creation (`@NotNull`); `status`
-  is required for the status endpoint (`@NotNull`) and must be a valid
-  `CredentialStatus` value; violations return `400 VALIDATION_FAILED`, malformed
-  JSON returns `400 MALFORMED_REQUEST`.
-- Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3).
-  Expiry, scopes, and permissions remain planned (rate limits are enforced per
-  subscription tier, not per credential). The runtime
-  consumer is the internal `GET /internal/credential-check` (see the Gateway
-  section), which authenticates only `ACTIVE` credentials.
+- Validation: `applicationId` is required for creation (`@NotNull`); an optional
+  `expiresAt` must be a future `Instant`; `status` is required for the status
+  endpoint (`@NotNull`) and must be a valid `CredentialStatus` value. Violations
+  return `400 VALIDATION_FAILED`, malformed JSON or an unparseable timestamp
+  returns `400 MALFORMED_REQUEST`.
+- Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3),
+  and optional **credential expiry** is implemented (Phase 24, Slice 11).
+  Scopes and permissions remain planned (rate limits are enforced per
+  subscription tier, not per credential). The runtime consumer is the internal
+  `GET /internal/credential-check` (see the Gateway section), which authenticates
+  only `ACTIVE` credentials with `expiresAt` absent or strictly in the future.
 
 ### Subscription Service
 
@@ -577,18 +587,20 @@ the request body.
 > Management Service (Phase 11), the Application → Subscription → API Version
 > link (`POST /subscriptions`, `GET /subscriptions/{id}`, `GET /subscriptions`)
 > in Phase 12, and application **credentials** (`POST /credentials`,
-> `GET /credentials/{id}`, `GET /credentials`) in Phase 13 — see the sections
-> above. The subscription schema carries a **tier reference**
-> (`subscription_tiers`, Phase 24) and a **status/lifecycle state machine**
-> (`PATCH /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions
-> section above). An `ADMIN` can also explicitly reassign an existing
-> subscription's tier with `PATCH /subscriptions/{id}/tier` (Phase 24 Slice
-> 10). Application credentials carry a **status lifecycle with revocation and
-> rotation** (`PATCH /credentials/{id}/status`, `POST /credentials/{id}/rotate`,
-> Phase 24 Slice 3; see the Credentials section above). Subscription deletion
-> and credential expiry/scopes remain planned.
+> `POST /applications/{id}/credentials`, `GET /credentials/{id}`,
+> `GET /credentials`) in Phases 13 and 24 Slice 11 — see the sections above.
+> The subscription schema carries a **tier reference** (`subscription_tiers`,
+> Phase 24) and a **status/lifecycle state machine** (`PATCH
+> /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions section
+> above). An `ADMIN` can also explicitly reassign an existing subscription's
+> tier with `PATCH /subscriptions/{id}/tier` (Phase 24 Slice 10). Application
+> credentials carry a **status lifecycle with revocation and rotation** and an
+> optional **expiry** (`expiresAt`), both enforced by the internal credential
+> check; secret exposure remains one-time. Subscription deletion and credential
+> scopes remain planned.
 > They are repeated here as the planned contract for the gateway/portal view.
-- `POST   /applications/{id}/credentials` — (implemented via Phase 13 `POST /credentials`; secret shown once).
+- `POST   /applications/{id}/credentials` — (implemented; optional `expiresAt`,
+  secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API
   version + tier; the tiered link already exists via Phase 12 `POST
   /subscriptions` and the Phase 24 tier binding.

@@ -37,7 +37,8 @@
   Service); the subscription **tier foundation** is **implemented** (Phase 24, in
   the API Management Service); the subscription **status lifecycle** is
   **implemented** (Phase 24, Slice 2, in the API Management Service); the
-  credential lifecycle is **implemented** (Phase 24, Slice 3) and **tier rate
+  credential lifecycle is **implemented** (Phase 24, Slice 3), optional
+  credential expiry is **implemented** (Phase 24, Slice 11), and **tier rate
   limits with gateway enforcement** are **implemented** (Phase 24, Slice 4);
   tier creation/listing, lifecycle, and pricing remain planned; an ADMIN-only
   partial update `PATCH /subscription-tiers/{tierId}` and safe deletion of
@@ -76,8 +77,13 @@
 - Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
   issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
   hash is stored; the plaintext secret is returned exactly once at creation.
-  `GET /credentials/{id}` and `GET /credentials` never return the secret or its
-  hash. Ownership flows Credential → Application → owner (JWT `sub`).
+  `POST /applications/{id}/credentials` is the equivalent application-scoped
+  creation route. Both accept an optional ISO-8601 `expiresAt`; omitted/`null`
+  means no expiry, while a supplied value must be in the future. Creation,
+  rotation, GET, and list responses expose `expiresAt`; the plaintext secret
+  remains one-time. `GET /credentials/{id}` and `GET /credentials` never return
+  the secret or its hash. Ownership flows Credential → Application → owner
+  (JWT `sub`).
 - An application's subscription is enforced under a rate-limit **tier**
   (**implemented, Phase 24, Slice 4**): the `subscription_tiers` registry
   (Phase 24) now carries the policy columns `requests_per_window`
@@ -105,12 +111,16 @@
   an **ADMIN-only** `POST /credentials/{credentialId}/rotate` generates a new
   `clientId` + `clientSecret`, stores only the new BCrypt hash, updates the
   **same database row** (same Application), returns the new plaintext secret
-  exactly once, and invalidates the old pair immediately. GET/LIST/PATCH
-  responses expose `status` but never the secret or its hash. The gateway-facing
-  internal `GET /internal/credential-check` authenticates **only `ACTIVE`**
-  credentials, so a `REVOKED` credential stops working even with a correct
-  secret; subscription enforcement is unchanged. The API Management Service
-  remains the source of truth (no gateway changes, no Redis).
+  exactly once, and invalidates the old pair immediately. Optional `expiresAt`
+  is nullable and is preserved by rotation; reaching `now >= expiresAt` makes
+  authentication fail without changing the stored status. GET/LIST/PATCH
+  responses expose `status` and `expiresAt` but never the secret or its hash. The
+  gateway-facing internal `GET /internal/credential-check` authenticates only
+  **active, unexpired** credentials, so a `REVOKED` or expired credential stops
+  working even with a correct secret; the existing gateway maps the false result
+  to its generic invalid-credential response. Subscription enforcement is
+  unchanged. The API Management Service remains the source of truth (no gateway
+  changes, no Redis).
 - The Subscription Service decides whether a given application may call a given
   API version (planned; the gateway enforcement layer, which will authenticate
   applications with the Phase 13 credentials).
@@ -245,8 +255,9 @@
   subscriptions satisfy the internal checks).
 - Credentials are bound to an application, not a user — implemented (Phase 13);
   credential **status / revocation / rotation** are implemented (Phase 24,
-  Slice 3, see the API Management section above). Per-credential scopes and
-  expiry remain planned.
+  Slice 3), and optional **credential expiry** is implemented (Phase 24, Slice
+  11, see the API Management section above). Per-credential scopes remain
+  planned.
 
 ## Rate Limiting Requirements
 

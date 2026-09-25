@@ -40,6 +40,9 @@ public class Credential {
     @Column(name = "client_secret_hash", nullable = false, length = 255)
     private String clientSecretHash;
 
+    @Column(name = "expires_at")
+    private Instant expiresAt;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private CredentialStatus status;
@@ -54,9 +57,14 @@ public class Credential {
     }
 
     public Credential(Application application, String clientId, String clientSecretHash) {
+        this(application, clientId, clientSecretHash, null);
+    }
+
+    public Credential(Application application, String clientId, String clientSecretHash, Instant expiresAt) {
         this.application = application;
         this.clientId = clientId;
         this.clientSecretHash = clientSecretHash;
+        this.expiresAt = expiresAt;
         this.status = CredentialStatus.ACTIVE;
         Instant now = Instant.now();
         this.createdAt = now;
@@ -79,6 +87,10 @@ public class Credential {
         return clientSecretHash;
     }
 
+    public Instant getExpiresAt() {
+        return expiresAt;
+    }
+
     public CredentialStatus getStatus() {
         return status;
     }
@@ -99,7 +111,6 @@ public class Credential {
     public void rotate(String newClientId, String newClientSecretHash) {
         this.clientId = newClientId;
         this.clientSecretHash = newClientSecretHash;
-        this.status = CredentialStatus.ACTIVE;
         this.updatedAt = Instant.now();
     }
 }

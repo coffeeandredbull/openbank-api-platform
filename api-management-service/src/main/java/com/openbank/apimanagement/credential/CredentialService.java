@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -38,9 +39,14 @@ public class CredentialService {
 
     @Transactional
     public CredentialCreatedResponse create(Long ownerUserId, CreateCredentialRequest request) {
+        return create(ownerUserId, request.applicationId(), request.expiresAt());
+    }
+
+    @Transactional
+    public CredentialCreatedResponse create(Long ownerUserId, Long applicationId, Instant expiresAt) {
         Application application = applicationRepository
-                .findByIdAndOwnerUserId(request.applicationId(), ownerUserId)
-                .orElseThrow(() -> new ApplicationNotFoundException(request.applicationId()));
+                .findByIdAndOwnerUserId(applicationId, ownerUserId)
+                .orElseThrow(() -> new ApplicationNotFoundException(applicationId));
 
         String plaintextClientSecret = generateClientSecret();
         for (int attempt = 0; attempt < MAX_CLIENT_ID_ATTEMPTS; attempt++) {
@@ -50,7 +56,7 @@ public class CredentialService {
             }
             try {
                 Credential saved = credentialRepository.save(new Credential(
-                        application, clientId, passwordEncoder.encode(plaintextClientSecret)));
+                        application, clientId, passwordEncoder.encode(plaintextClientSecret), expiresAt));
                 return CredentialCreatedResponse.from(saved, plaintextClientSecret);
             } catch (DataIntegrityViolationException e) {
                 // Concurrent insert won the unique(client_id) race: regenerate and retry.

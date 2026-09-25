@@ -76,7 +76,8 @@ to them, and manage credentials.
 > (`PATCH /subscriptions/{subscriptionId}/tier`), the
 > **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
 > status, ADMIN-only revocation and rotation, ACTIVE-only runtime
-> authentication), and
+> authentication), **optional credential expiry** (Phase 24, Slice 11 —
+> nullable `expiresAt`, ACTIVE-and-unexpired runtime authentication), and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -507,8 +508,21 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    `400 VALIDATION_FAILED`. Same-tier reassignment is idempotent and does not
    update the subscription timestamp. The PostgreSQL transaction remains the
    source of truth; no tier cache entry is evicted.
- - **Planned phases (subject to change):** tier creation/listing and
-   lifecycle/pricing, credential expiry and scopes, the remaining services, the
+  - **Phase 24, Slice 11 — optional credential expiry:** credential creation accepts
+    an optional ISO-8601 `expiresAt`, either through the existing
+    `POST /credentials` body or the application-scoped
+    `POST /applications/{applicationId}/credentials` route. Omitted/`null` means
+    no expiry; a supplied value must be in the future. Creation, rotation, GET,
+    and list responses expose `expiresAt` but never expose the stored secret hash;
+    the plaintext secret remains creation/rotation-only. The internal credential
+    check requires an `ACTIVE` credential whose expiry, if set, is strictly in
+    the future. Rotation preserves the original expiry, never reactivates a
+    `REVOKED` credential, and does not extend an expiring credential. Expiry does
+    not mutate the stored status automatically, and the gateway is unchanged:
+    `authenticated:false` already maps to the generic `CLIENT_CREDENTIAL_INVALID`
+    response. Credential scopes remain planned.
+  - **Planned phases (subject to change):** tier creation/listing and
+    lifecycle/pricing, credential scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,
    explicitly requested phases and verified (compile + tests) at each step.

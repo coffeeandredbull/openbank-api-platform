@@ -21,8 +21,10 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -32,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(CredentialController.class)
+@WebMvcTest({CredentialController.class, ApplicationCredentialController.class})
 @AutoConfigureMockMvc(addFilters = false)
 class CredentialControllerTest {
 
@@ -76,6 +78,7 @@ class CredentialControllerTest {
                 .andExpect(jsonPath("$.clientId").value("client-abc"))
                 .andExpect(jsonPath("$.clientSecret").value("plain-secret-xyz"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value(nullValue()))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
@@ -125,6 +128,30 @@ class CredentialControllerTest {
     }
 
     @Test
+    void applicationScopedCreateReturnsExpirationAndUsesPathApplication() throws Exception {
+        Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        when(credentialService.create(42L, 10L, expiresAt))
+                .thenReturn(new CredentialCreatedResponse(
+                        1L, 10L, "client-abc", "plain-secret-xyz",
+                        CredentialStatus.ACTIVE, expiresAt, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(post("/applications/10/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/credentials/1"))
+                .andExpect(jsonPath("$.applicationId").value(10))
+                .andExpect(jsonPath("$.expiresAt").value("2030-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        verify(credentialService).create(42L, 10L, expiresAt);
+    }
+
+    @Test
     void createRejectsMissingApplicationIdWith400() throws Exception {
         mockMvc.perform(post("/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -135,6 +162,55 @@ class CredentialControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.fieldErrors.applicationId").value("applicationId is required"));
+    }
+
+    @Test
+    void createRejectsPastExpiresAtWith400() throws Exception {
+        mockMvc.perform(post("/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": 10,
+                                  "expiresAt": "2020-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt must be in the future"));
+
+        verify(credentialService, never()).create(eq(42L), any(CreateCredentialRequest.class));
+    }
+
+    @Test
+    void applicationScopedCreateRejectsPastExpiresAtWith400() throws Exception {
+        mockMvc.perform(post("/applications/10/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2020-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt must be in the future"));
+
+        verify(credentialService, never()).create(eq(42L), eq(10L), any(Instant.class));
+    }
+
+    @Test
+    void createRejectsMalformedExpiresAtWith400() throws Exception {
+        mockMvc.perform(post("/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": 10,
+                                  "expiresAt": "not-an-instant"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MALFORMED_REQUEST"));
+
+        verify(credentialService, never()).create(eq(42L), any(CreateCredentialRequest.class));
     }
 
     @Test
@@ -166,6 +242,7 @@ class CredentialControllerTest {
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.clientId").value("client-abc"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value(nullValue()))
                 .andExpect(jsonPath("$.clientSecret").doesNotExist())
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist())
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());

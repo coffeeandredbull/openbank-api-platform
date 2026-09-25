@@ -8,9 +8,21 @@ public record CredentialRotatedResponse(
         String clientId,
         String clientSecret,
         CredentialStatus status,
+        Instant expiresAt,
         Instant createdAt,
         Instant updatedAt
 ) {
+
+    public CredentialRotatedResponse(
+            Long id,
+            Long applicationId,
+            String clientId,
+            String clientSecret,
+            CredentialStatus status,
+            Instant createdAt,
+            Instant updatedAt) {
+        this(id, applicationId, clientId, clientSecret, status, null, createdAt, updatedAt);
+    }
 
     public static CredentialRotatedResponse from(Credential credential, String plaintextClientSecret) {
         return new CredentialRotatedResponse(
@@ -19,6 +31,7 @@ public record CredentialRotatedResponse(
                 credential.getClientId(),
                 plaintextClientSecret,
                 credential.getStatus(),
+                credential.getExpiresAt(),
                 credential.getCreatedAt(),
                 credential.getUpdatedAt()
         );

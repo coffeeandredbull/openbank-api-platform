@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Base64;
 
 @Service
@@ -41,6 +42,9 @@ public class CredentialCheckService {
             return CredentialCheckResponse.unauthorized();
         }
         if (credential.getStatus() != CredentialStatus.ACTIVE) {
+            return CredentialCheckResponse.unauthorized();
+        }
+        if (credential.getExpiresAt() != null && !Instant.now().isBefore(credential.getExpiresAt())) {
             return CredentialCheckResponse.unauthorized();
         }
         if (!passwordEncoder.matches(clientCredentials.clientSecret(), credential.getClientSecretHash())) {

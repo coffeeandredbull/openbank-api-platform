@@ -10,6 +10,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +50,54 @@ class CredentialCheckServiceTest {
 
         assertThat(response).isEqualTo(CredentialCheckResponse.authenticated(
                 application.getId(), 42L, new SubscriptionPolicy(15L, "Developer", 100, 60)));
+    }
+
+    @Test
+    void futureCredentialIsAuthenticated() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(
+                application,
+                "client-abc",
+                "hashed-secret",
+                Instant.now().plusSeconds(60));
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(null);
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response.authenticated()).isTrue();
+    }
+
+    @Test
+    void credentialExpiringNowIsUnauthorized() {
+        Credential credential = new Credential(
+                new Application("Payments App", "desc", 42L),
+                "client-abc",
+                "hashed-secret",
+                Instant.now());
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response).isEqualTo(CredentialCheckResponse.unauthorized());
+        verify(passwordEncoder, never()).matches(anyString(), anyString());
+    }
+
+    @Test
+    void expiredCredentialIsUnauthorizedWithoutCheckingTheSecret() {
+        Credential credential = new Credential(
+                new Application("Payments App", "desc", 42L),
+                "client-abc",
+                "hashed-secret",
+                Instant.now().minusSeconds(1));
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response).isEqualTo(CredentialCheckResponse.unauthorized());
+        verify(passwordEncoder, never()).matches(anyString(), anyString());
     }
 
     @Test

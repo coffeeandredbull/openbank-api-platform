@@ -22,6 +22,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
@@ -90,6 +91,40 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.tierId").isNumber())
                 .andExpect(jsonPath("$.requestsPerWindow").value(100))
                 .andExpect(jsonPath("$.windowSeconds").value(60));
+    }
+
+    @Test
+    void futureCredentialAuthenticates() throws Exception {
+        Long applicationId = createApplication("42", "Payments App");
+        CredentialCreatedResponse credential = createCredential(applicationId, "2030-01-01T00:00:00Z");
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.applicationId").value(applicationId));
+    }
+
+    @Test
+    void expiredCredentialReturns401WithGenericBody() throws Exception {
+        Long applicationId = createApplication("42", "Payments App");
+        CredentialCreatedResponse credential = createCredential(applicationId);
+        jdbcTemplate.update(
+                "update credentials set expires_at = ? where id = ?",
+                Timestamp.from(Instant.now().minusSeconds(60)),
+                credential.id());
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.authenticated").value(false))
+                .andExpect(jsonPath("$.applicationId").doesNotExist())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain(credential.clientSecret()));
     }
 
     @Test
@@ -412,16 +447,22 @@ class CredentialCheckIntegrationTest {
 
     private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(Long applicationId)
             throws Exception {
+        return createCredential(applicationId, null);
+    }
+
+    private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(
+            Long applicationId, String expiresAt) throws Exception {
         String ownerUserId = jdbcTemplate.queryForObject(
                 "SELECT owner_user_id FROM applications WHERE id = ?", Long.class, applicationId).toString();
+        String expirationField = expiresAt == null ? "" : ", \"expiresAt\": \"%s\"".formatted(expiresAt);
         String body = mockMvc.perform(post("/credentials")
                         .header("Authorization", "Bearer " + token(ownerUserId, "DEVELOPER", 3600))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "applicationId": %d
+                                  "applicationId": %d%s
                                 }
-                                """.formatted(applicationId)))
+                                """.formatted(applicationId, expirationField)))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()
