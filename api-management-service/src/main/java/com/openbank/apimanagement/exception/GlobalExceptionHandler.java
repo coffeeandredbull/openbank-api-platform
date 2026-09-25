@@ -97,6 +97,8 @@ public class GlobalExceptionHandler {
         Map<String, String> fieldErrors = new LinkedHashMap<>();
         ex.getBindingResult().getFieldErrors()
                 .forEach(fe -> fieldErrors.putIfAbsent(fe.getField(), fe.getDefaultMessage()));
+        ex.getBindingResult().getGlobalErrors()
+                .forEach(error -> fieldErrors.putIfAbsent("request", error.getDefaultMessage()));
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed", request, fieldErrors);
     }
 

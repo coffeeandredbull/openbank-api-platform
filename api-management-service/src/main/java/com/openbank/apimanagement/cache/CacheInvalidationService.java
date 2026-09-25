@@ -19,7 +19,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * <p>The cached read models are keyed by database identifiers ({@code apiCatalog}
  * by api id, {@code apiVersion} by (api id, version id), {@code subscriptionTier}
  * by tier id), so the only invalidation ever needed is a per-key eviction for an
- * in-place mutation of an existing row (today: {@code ApiVersionService.changeLifecycle}).
+ * in-place mutation of an existing row, including {@code SubscriptionTierService.update}.
  * Creates introduce fresh ids that were never cacheable, so they evict nothing.
  * Whole-cache clearing is deliberately not provided.
  */

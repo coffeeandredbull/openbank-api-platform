@@ -12,7 +12,9 @@ import com.openbank.apimanagement.api.ApiVersionService;
 import com.openbank.apimanagement.api.CreateApiRequest;
 import com.openbank.apimanagement.api.UpdateApiVersionLifecycleRequest;
 import com.openbank.apimanagement.subscription.SubscriptionTier;
+import com.openbank.apimanagement.subscription.SubscriptionTierResponse;
 import com.openbank.apimanagement.subscription.SubscriptionTierService;
+import com.openbank.apimanagement.subscription.UpdateSubscriptionTierRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -178,6 +180,60 @@ class RedisCacheIntegrationTest {
         assertThat(stringRedisTemplate.hasKey(key))
                 .as("tier creation must not evict other cached tiers (per-id keying)")
                 .isTrue();
+    }
+
+    @Test
+    void subscriptionTierUpdateEvictsOnlyTheUpdatedTier() {
+        SubscriptionTier first = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60);
+        SubscriptionTier second = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "second tier", 200, 60);
+        subscriptionTierService.get(first.getId());
+        subscriptionTierService.get(second.getId());
+
+        String firstKey = "subscriptionTier::" + first.getId();
+        String secondKey = "subscriptionTier::" + second.getId();
+        assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+        assertThat(stringRedisTemplate.hasKey(secondKey)).isTrue();
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                first.getId(), new UpdateSubscriptionTierRequest("Updated tier", null, 500, null));
+
+        assertThat(response.name()).isEqualTo("Updated tier");
+        assertThat(stringRedisTemplate.hasKey(firstKey))
+                .as("a successful update must evict the updated tier after commit")
+                .isFalse();
+        assertThat(stringRedisTemplate.hasKey(secondKey))
+                .as("a tier update must not evict another tier's cache entry")
+                .isTrue();
+
+        String refreshed = stringRedisTemplate.opsForValue().get(firstKey);
+        assertThat(refreshed).isNull();
+        subscriptionTierService.get(first.getId());
+        assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+    }
+
+    @Test
+    void rolledBackSubscriptionTierUpdateDoesNotEvictCachedTier() {
+        SubscriptionTier tier = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "original tier", 100, 60);
+        subscriptionTierService.get(tier.getId());
+        String key = "subscriptionTier::" + tier.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
+            subscriptionTierService.update(
+                    tier.getId(), new UpdateSubscriptionTierRequest("rolled back", null, 500, null));
+            throw new IllegalStateException("force rollback after a successful tier update");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a rolled-back tier update must not evict the still-valid cache entry")
+                .isTrue();
+        assertThat(stringRedisTemplate.opsForValue().get(key)).contains("original tier");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT name FROM subscription_tiers WHERE id = ?", String.class, tier.getId()))
+                .isEqualTo(tier.getName());
     }
 
     @Test

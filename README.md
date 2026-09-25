@@ -374,8 +374,10 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    conflict handling, and every subscription now references a **required tier**
    (`tier_id` FK): `POST /subscriptions` accepts `tierId` (missing tier → `404
    SUBSCRIPTION_TIER_NOT_FOUND`), and `GET /subscriptions[/{id}]` responses
-   expose `tierId` + `tierName`. No tier admin CRUD yet; tier-based rate
-   limiting is implemented in Phase 24 Slice 4 (below).
+   expose `tierId` + `tierName`. Slice 8 adds an ADMIN-only
+   `PATCH /subscription-tiers/{tierId}` for partial tier-policy updates; tier
+   creation, listing, deletion, lifecycle, and pricing remain planned. Tier-based
+   rate limiting is implemented in Phase 24 Slice 4 (below).
 - **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
    subscriptions now carry a **status state machine** — `PENDING → ACTIVE →
    REVOKED`, `PENDING → DENIED → ACTIVE/REVOKED` (REVOKED is terminal) — and a
@@ -432,11 +434,12 @@ a subscribed request with a missing/malformed policy fails closed with `503`
    configurable TTL (`spring.cache.redis.time-to-live`, default `60s`, values
    JSON-serialized with an explicit type hint so records/entities round-trip).
    Read path: cache lookup → PostgreSQL on miss → populate. Because every
-   cached read model is keyed by a database id, a **create never evicts** (it
-   only introduces a fresh id that was never cacheable — a natural miss on
-   first read, so no existing entry can go stale); the single in-place mutation
-   of a cached value — the version **lifecycle change** — evicts exactly its
-   own `apiVersion::<apiId>::<versionId>` key **after commit** (Slice 7). A
+    cached read model is keyed by a database id, a **create never evicts** (it
+    only introduces a fresh id that was never cacheable — a natural miss on
+    first read, so no existing entry can go stale); in-place mutations — the
+    version **lifecycle change** and the tier update — evict exactly their own
+    `apiVersion::<apiId>::<versionId>` or `subscriptionTier::<tierId>` key
+    **after commit**. A
    Redis outage is **fail-open on reads**: a
    `CacheErrorHandler` treats cache failures as misses (PostgreSQL fallback, no
    `503`) while health groups stay accurate (`redis`/`cache` contributors
@@ -465,12 +468,21 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    key while the management-service cache (Slice 5) uses a different logical
    Redis. Verified by unit tests (TTL-bounded writes, fail-closed 503) and
    Testcontainers integration tests on both sides — including that a revoked JWT
-   returns `401` before it is ever forwarded upstream.
-- **Planned phases (subject to change):** tier admin CRUD/lifecycle,
-     credential expiry and scopes, the remaining services, the Developer Portal,
-    shared infrastructure (PostgreSQL/Redis via Docker Compose), CI/CD (GitHub Actions)
-    and Kubernetes manifests will be built in small, explicitly requested phases
-    and verified (compile + tests) at each step.
+    returns `401` before it is ever forwarded upstream.
+ - **Phase 24, Slice 8 — ADMIN-only subscription tier updates:** an authenticated
+   `ADMIN` can partially update an existing tier with
+   `PATCH /subscription-tiers/{tierId}`. The body may contain `name`,
+   `description`, `requestsPerWindow`, and/or `windowSeconds`; at least one field
+   is required and omitted fields remain unchanged. PostgreSQL remains the
+   system of record, name conflicts return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`,
+   missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
+   update evicts only `subscriptionTier::<tierId>` after commit. Tier creation,
+   listing, deletion, lifecycle, and pricing remain planned.
+ - **Planned phases (subject to change):** tier creation/listing/deletion and
+   lifecycle/pricing, credential expiry and scopes, the remaining services, the
+   Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
+   CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,
+   explicitly requested phases and verified (compile + tests) at each step.
 
 ## Planned Features
 

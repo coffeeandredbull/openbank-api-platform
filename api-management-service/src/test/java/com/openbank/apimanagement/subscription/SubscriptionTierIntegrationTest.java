@@ -1,6 +1,8 @@
 package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+
+import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,6 +62,94 @@ class SubscriptionTierIntegrationTest {
         assertThat(stored.getRequestsPerWindow()).isEqualTo(1000);
         assertThat(stored.getWindowSeconds()).isEqualTo(60);
         assertThat(stored.getCreatedAt()).isEqualTo(stored.getUpdatedAt());
+    }
+
+    @Test
+    void serviceUpdatesMutableFieldsAndPersistsThem() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        Instant createdAt = subscriptionTierRepository.findById(created.getId())
+                .orElseThrow()
+                .getCreatedAt();
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                created.getId(),
+                new UpdateSubscriptionTierRequest("Premium", "Updated access", 500, 30));
+
+        assertThat(response.id()).isEqualTo(created.getId());
+        assertThat(response.name()).isEqualTo("Premium");
+        assertThat(response.description()).isEqualTo("Updated access");
+        assertThat(response.requestsPerWindow()).isEqualTo(500);
+        assertThat(response.windowSeconds()).isEqualTo(30);
+        assertThat(response.createdAt()).isEqualTo(createdAt);
+
+        SubscriptionTier stored = subscriptionTierRepository.findById(created.getId()).orElseThrow();
+        assertThat(stored.getName()).isEqualTo("Premium");
+        assertThat(stored.getDescription()).isEqualTo("Updated access");
+        assertThat(stored.getRequestsPerWindow()).isEqualTo(500);
+        assertThat(stored.getWindowSeconds()).isEqualTo(30);
+        assertThat(stored.getCreatedAt()).isEqualTo(createdAt);
+        assertThat(stored.getUpdatedAt()).isAfter(createdAt);
+    }
+
+    @Test
+    void serviceUpdatesOnlySuppliedFields() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Keep this", 1000, 60);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                created.getId(), new UpdateSubscriptionTierRequest("Premium", null, null, null));
+
+        assertThat(response.name()).isEqualTo("Premium");
+        assertThat(response.description()).isEqualTo("Keep this");
+        assertThat(response.requestsPerWindow()).isEqualTo(1000);
+        assertThat(response.windowSeconds()).isEqualTo(60);
+    }
+
+    @Test
+    void serviceAllowsUpdatingATierToItsExistingName() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                created.getId(), new UpdateSubscriptionTierRequest("Gold", "Updated access", 500, 30));
+
+        assertThat(response.name()).isEqualTo("Gold");
+        assertThat(response.description()).isEqualTo("Updated access");
+    }
+
+    @Test
+    void serviceRejectsDuplicateNameOnUpdateWithoutChangingRows() {
+        SubscriptionTier first = subscriptionTierService.create("Gold", "First", 1000, 60);
+        SubscriptionTier second = subscriptionTierService.create("Silver", "Second", 2000, 30);
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                first.getId(), new UpdateSubscriptionTierRequest("Silver", "Changed", 1, 1)))
+                .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
+                .hasMessageContaining("Silver");
+
+        SubscriptionTier unchangedFirst = subscriptionTierRepository.findById(first.getId()).orElseThrow();
+        SubscriptionTier unchangedSecond = subscriptionTierRepository.findById(second.getId()).orElseThrow();
+        assertThat(unchangedFirst.getName()).isEqualTo("Gold");
+        assertThat(unchangedFirst.getDescription()).isEqualTo("First");
+        assertThat(unchangedFirst.getRequestsPerWindow()).isEqualTo(1000);
+        assertThat(unchangedFirst.getWindowSeconds()).isEqualTo(60);
+        assertThat(unchangedSecond.getName()).isEqualTo("Silver");
+    }
+
+    @Test
+    void serviceRejectsUnknownTierOnUpdate() {
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null)))
+                .isInstanceOf(com.openbank.apimanagement.exception.SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+    }
+
+    @Test
+    void serviceRejectsEmptyUpdate() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                created.getId(), new UpdateSubscriptionTierRequest(null, null, null, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one field");
     }
 
     @Test

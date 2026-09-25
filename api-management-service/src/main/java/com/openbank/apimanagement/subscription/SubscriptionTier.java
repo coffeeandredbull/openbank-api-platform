@@ -55,6 +55,26 @@ public class SubscriptionTier {
         this.updatedAt = now;
     }
 
+    public void update(
+            String newName,
+            String newDescription,
+            Integer newRequestsPerWindow,
+            Integer newWindowSeconds) {
+        if (newName != null) {
+            this.name = newName;
+        }
+        if (newDescription != null) {
+            this.description = newDescription;
+        }
+        if (newRequestsPerWindow != null) {
+            this.requestsPerWindow = newRequestsPerWindow;
+        }
+        if (newWindowSeconds != null) {
+            this.windowSeconds = newWindowSeconds;
+        }
+        this.updatedAt = Instant.now();
+    }
+
     public Long getId() {
         return id;
     }

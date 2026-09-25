@@ -1,5 +1,6 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,9 @@ class SubscriptionTierServiceTest {
 
     @Mock
     private SubscriptionTierRepository subscriptionTierRepository;
+
+    @Mock
+    private CacheInvalidationService cacheInvalidationService;
 
     @InjectMocks
     private SubscriptionTierService subscriptionTierService;
@@ -158,6 +162,105 @@ class SubscriptionTierServiceTest {
     }
 
     @Test
+    void updateChangesSuppliedFieldsAndEvictsTheUpdatedTier() {
+        SubscriptionTier stored = tier(7L, "Gold", "Old description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest("Premium", "New description", 500, 30));
+
+        assertThat(response.id()).isEqualTo(7L);
+        assertThat(response.name()).isEqualTo("Premium");
+        assertThat(response.description()).isEqualTo("New description");
+        assertThat(response.requestsPerWindow()).isEqualTo(500);
+        assertThat(response.windowSeconds()).isEqualTo(30);
+        assertThat(response.createdAt()).isEqualTo(stored.getCreatedAt());
+        assertThat(response.updatedAt()).isAfter(stored.getCreatedAt());
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void updateKeepsOmittedFields() {
+        SubscriptionTier stored = tier(7L, "Gold", "Keep this", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, 500, null));
+
+        assertThat(response.name()).isEqualTo("Gold");
+        assertThat(response.description()).isEqualTo("Keep this");
+        assertThat(response.requestsPerWindow()).isEqualTo(500);
+        assertThat(response.windowSeconds()).isEqualTo(60);
+    }
+
+    @Test
+    void updateRejectsEmptyRequest() {
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one field");
+
+        verify(subscriptionTierRepository, never()).findById(any());
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void updateAllowsTheExistingName() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        subscriptionTierService.update(7L, new UpdateSubscriptionTierRequest("Gold", null, null, null));
+
+        verify(subscriptionTierRepository).existsByNameAndIdNot("Gold", 7L);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void updateRejectsDuplicateNameBeforePersisting() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.existsByNameAndIdNot("Silver", 7L)).thenReturn(true);
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null)))
+                .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
+                .hasMessageContaining("Silver");
+
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void updateTranslatesDatabaseUniqueViolation() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored))
+                .thenThrow(new DataIntegrityViolationException("could not execute statement; constraint"));
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null)))
+                .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
+                .hasMessageContaining("Silver");
+
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void updateThrowsNotFoundForUnknownTier() {
+        when(subscriptionTierRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null)))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
     void getReturnsTheStoredTierById() {
         SubscriptionTier expected = new SubscriptionTier("Gold", "Premium access", 1000, 60);
         setField(expected, "id", 7L);
@@ -175,6 +278,20 @@ class SubscriptionTierServiceTest {
         assertThatThrownBy(() -> subscriptionTierService.get(999L))
                 .isInstanceOf(SubscriptionTierNotFoundException.class)
                 .hasMessageContaining("999");
+    }
+
+    private SubscriptionTier tier(
+            Long id,
+            String name,
+            String description,
+            int requestsPerWindow,
+            int windowSeconds) {
+        SubscriptionTier tier = new SubscriptionTier(name, description, requestsPerWindow, windowSeconds);
+        java.time.Instant timestamp = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        setField(tier, "id", id);
+        setField(tier, "createdAt", timestamp);
+        setField(tier, "updatedAt", timestamp);
+        return tier;
     }
 
     private void setField(Object target, String name, Object value) {

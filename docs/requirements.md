@@ -39,7 +39,9 @@
   **implemented** (Phase 24, Slice 2, in the API Management Service); the
   credential lifecycle is **implemented** (Phase 24, Slice 3) and **tier rate
   limits with gateway enforcement** are **implemented** (Phase 24, Slice 4);
-  tier lifecycle/admin CRUD remain planned.
+  tier creation/listing/deletion, lifecycle, and pricing remain planned; an
+  ADMIN-only partial update `PATCH /subscription-tiers/{tierId}` is implemented
+  (Phase 24, Slice 8).
 - An application can be **subscribed** to an API version (implemented, Phase 12):
   `POST /subscriptions` creates the Application → Subscription → API Version
   link (`applicationId` + `apiVersionId` + `tierId`), `GET /subscriptions/{subscriptionId}`
@@ -76,7 +78,9 @@
   fixed-window counters — with no gateway rate-limit configuration. A
   subscription/credential check that confirms access but supplies a
   missing/malformed policy **fails closed** (`503`) before the limiter is
-  contacted. Tier lifecycle/admin CRUD and per-tier pricing remain planned.
+  contacted. Tier creation/listing/deletion, lifecycle, and per-tier pricing
+  remain planned; the ADMIN-only partial tier update is implemented (Phase 24,
+  Slice 8).
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
@@ -220,8 +224,9 @@
 - Tier defines allowed rates (requests per window, burst) — implemented for the
   rate-limit policy (Phase 24, Slice 4): tiers carry `requests_per_window`/
   `window_seconds` and the gateway enforces the active subscription's tier policy
-  per request; tier lifecycle/admin CRUD, per-hour/burst variants, and pricing
-  remain planned.
+  per request; ADMIN-only partial tier updates are implemented (Phase 24, Slice
+  8), while tier creation/listing/deletion, lifecycle, per-hour/burst variants,
+  and pricing remain planned.
 - Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
   (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
   subscriptions satisfy the internal checks).

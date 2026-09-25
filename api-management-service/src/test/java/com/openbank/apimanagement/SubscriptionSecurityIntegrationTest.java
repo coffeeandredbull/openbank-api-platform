@@ -209,6 +209,56 @@ class SubscriptionSecurityIntegrationTest {
     }
 
     @Test
+    void adminCanUpdateSubscriptionTier() throws Exception {
+        Long tierId = createTier();
+
+        mockMvc.perform(patch("/subscription-tiers/" + tierId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Admin Updated",
+                                  "requestsPerWindow": 500,
+                                  "windowSeconds": 30
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(tierId))
+                .andExpect(jsonPath("$.name").value("Admin Updated"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(500))
+                .andExpect(jsonPath("$.windowSeconds").value(30));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select requests_per_window from subscription_tiers where id = ?", Integer.class, tierId))
+                .isEqualTo(500);
+    }
+
+    @Test
+    void developerCannotUpdateSubscriptionTier() throws Exception {
+        Long tierId = createTier();
+
+        mockMvc.perform(patch("/subscription-tiers/" + tierId)
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"requestsPerWindow\":500}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select requests_per_window from subscription_tiers where id = ?", Integer.class, tierId))
+                .isEqualTo(100);
+    }
+
+    @Test
+    void unauthenticatedSubscriptionTierUpdateReturns401() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"requestsPerWindow\":500}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
     void unauthenticatedSubscriptionStatusChangeReturns401() throws Exception {
         mockMvc.perform(patch("/subscriptions/1/status")
                         .contentType(MediaType.APPLICATION_JSON)
