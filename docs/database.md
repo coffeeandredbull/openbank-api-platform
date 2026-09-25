@@ -129,11 +129,16 @@ above, and the internal subscription/credential checks return the tier's
 Slice 8 adds an ADMIN-only `PATCH /subscription-tiers/{tierId}` that partially
 updates `name`, `description`, `requests_per_window`, and `window_seconds`; at
 least one field is required, omitted fields remain unchanged, and a successful
-transaction evicts only that tier's post-commit cache key. Tier creation
-through the public API, listing, deletion, lifecycle, and pricing remain
-planned — the current table is the domain foundation plus the enforced
-rate-limit policy. `created_at` is write-once; `updated_at` is set on creation
-and on every successful tier update.
+transaction evicts only that tier's post-commit cache key. Slice 9 adds an
+ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced tiers: the
+service returns `204 No Content`, and a tier referenced by any subscription
+returns `409 SUBSCRIPTION_TIER_IN_USE`. The application reference check is
+backed by PostgreSQL's `subscriptions.tier_id` foreign key, which has no
+cascade; a failed delete leaves both rows unchanged. Tier creation through
+the public API, listing, lifecycle, and pricing remain planned — the current
+table is the domain foundation plus the enforced rate-limit policy. `created_at`
+is write-once; `updated_at` is set on creation and on every successful tier
+update.
 
 **Implemented so far (Phase 13; lifecycle Phase 24 Slice 3) — `credentials`:**
 application credentials are now implemented in the **API Management Service**
@@ -166,7 +171,7 @@ key.
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3) — see above; `api_key_hash`, scopes, and expiry remain planned |
-| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4), with ADMIN-only partial updates (Phase 24, Slice 8); pricing/burst and tier create/list/delete/lifecycle endpoints remain planned |
+| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4), with ADMIN-only partial updates (Phase 24, Slice 8) and safe deletion of unreferenced tiers (Phase 24, Slice 9); pricing/burst and tier create/list/lifecycle endpoints remain planned |
 | `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service
@@ -221,7 +226,9 @@ Transaction together because they share one database and money rules.
   be subscribed to many API versions; a subscription references one application
   and one API version). Implemented (Phase 12) with real DB-level foreign keys
   from `subscriptions` to both tables plus a unique constraint on
-  `(application_id, api_version_id)`. Tier binding remains planned.
+  `(application_id, api_version_id)`. Tier binding is implemented via the
+  `tier_id` foreign key, and Phase 24 Slice 9 protects tier deletion with an
+  application reference check plus that database constraint.
 - `users` **1—1/n** `accounts` — one account per user; `accounts.owner_user_id`
   is unique and references an Identity Service user ID with no foreign key,
   since the tables live in different services. Implemented (Phase 14).

@@ -71,6 +71,7 @@ to them, and manage credentials.
 > registry + required `tier_id` binding on every subscription, plus the
 > **subscription lifecycle/status** state machine: `PENDING` → `ACTIVE` /
 > `DENIED` / `REVOKED`, ADMIN-only status management, since Phase 24)**, the
+> **ADMIN-only safe tier deletion** added in Phase 24 Slice 9, the
 > **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
 > status, ADMIN-only revocation and rotation, ACTIVE-only runtime
 > authentication), and
@@ -375,9 +376,12 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    (`tier_id` FK): `POST /subscriptions` accepts `tierId` (missing tier → `404
    SUBSCRIPTION_TIER_NOT_FOUND`), and `GET /subscriptions[/{id}]` responses
    expose `tierId` + `tierName`. Slice 8 adds an ADMIN-only
-   `PATCH /subscription-tiers/{tierId}` for partial tier-policy updates; tier
-   creation, listing, deletion, lifecycle, and pricing remain planned. Tier-based
-   rate limiting is implemented in Phase 24 Slice 4 (below).
+   `PATCH /subscription-tiers/{tierId}` for partial tier-policy updates; Slice 9
+   adds safe ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced
+   tiers, returning `204` and `409 SUBSCRIPTION_TIER_IN_USE` when subscriptions
+   still reference the tier. Tier creation, listing, lifecycle, and pricing
+   remain planned. Tier-based rate limiting is implemented in Phase 24 Slice 4
+   (below).
 - **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
    subscriptions now carry a **status state machine** — `PENDING → ACTIVE →
    REVOKED`, `PENDING → DENIED → ACTIVE/REVOKED` (REVOKED is terminal) — and a
@@ -439,7 +443,8 @@ a subscribed request with a missing/malformed policy fails closed with `503`
     first read, so no existing entry can go stale); in-place mutations — the
     version **lifecycle change** and the tier update — evict exactly their own
     `apiVersion::<apiId>::<versionId>` or `subscriptionTier::<tierId>` key
-    **after commit**. A
+    **after commit**; tier deletion is included in the same post-commit
+    exact-key invalidation path. A
    Redis outage is **fail-open on reads**: a
    `CacheErrorHandler` treats cache failures as misses (PostgreSQL fallback, no
    `503`) while health groups stay accurate (`redis`/`cache` contributors
@@ -477,8 +482,18 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    system of record, name conflicts return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`,
    missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
    update evicts only `subscriptionTier::<tierId>` after commit. Tier creation,
-   listing, deletion, lifecycle, and pricing remain planned.
- - **Planned phases (subject to change):** tier creation/listing/deletion and
+   listing, lifecycle, and pricing remain planned.
+ - **Phase 24, Slice 9 — safe subscription tier deletion:** an authenticated
+   `ADMIN` can delete an unreferenced tier with
+   `DELETE /subscription-tiers/{tierId}`; success returns `204 No Content`.
+   A missing tier returns `404 SUBSCRIPTION_TIER_NOT_FOUND`; a tier referenced
+   by any subscription returns `409 SUBSCRIPTION_TIER_IN_USE`. The service
+   checks references and relies on the PostgreSQL `tier_id` foreign key as the
+   race-condition backstop, with no cascade or subscription reassignment. A
+   successful transaction evicts only the deleted tier's exact
+   `subscriptionTier::<tierId>` key after commit; failed or rolled-back deletes
+   do not evict it.
+ - **Planned phases (subject to change):** tier creation/listing and
    lifecycle/pricing, credential expiry and scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,

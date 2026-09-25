@@ -1,6 +1,7 @@
 package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierInUseException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,10 +16,13 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -146,6 +150,39 @@ class SubscriptionTierControllerTest {
                 .andExpect(r -> assertThat(r.getResponse().getContentAsString())
                         .doesNotContain("DataIntegrityViolation")
                         .doesNotContain("unique constraint"));
+    }
+
+    @Test
+    void deleteReturns204WithNoBody() throws Exception {
+        mockMvc.perform(delete("/subscription-tiers/7"))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        verify(subscriptionTierService).delete(7L);
+    }
+
+    @Test
+    void deleteReturns404WhenTierDoesNotExist() throws Exception {
+        doThrow(new SubscriptionTierNotFoundException(999L)).when(subscriptionTierService).delete(999L);
+
+        mockMvc.perform(delete("/subscription-tiers/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/subscription-tiers/999"));
+    }
+
+    @Test
+    void deleteReturns409WhenTierIsReferenced() throws Exception {
+        doThrow(new SubscriptionTierInUseException(7L)).when(subscriptionTierService).delete(7L);
+
+        mockMvc.perform(delete("/subscription-tiers/7"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_IN_USE"))
+                .andExpect(jsonPath("$.message").value(
+                        "Subscription tier with id 7 is referenced by one or more subscriptions"))
+                .andExpect(r -> assertThat(r.getResponse().getContentAsString())
+                        .doesNotContain("foreign key")
+                        .doesNotContain("DataIntegrityViolation"));
     }
 
     private void assertInvalid(String field, String value, String message) throws Exception {

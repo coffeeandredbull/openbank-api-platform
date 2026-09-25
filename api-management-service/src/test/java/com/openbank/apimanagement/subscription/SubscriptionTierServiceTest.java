@@ -2,6 +2,7 @@ package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierInUseException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,6 +17,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -25,6 +27,9 @@ class SubscriptionTierServiceTest {
 
     @Mock
     private SubscriptionTierRepository subscriptionTierRepository;
+
+    @Mock
+    private SubscriptionRepository subscriptionRepository;
 
     @Mock
     private CacheInvalidationService cacheInvalidationService;
@@ -257,6 +262,64 @@ class SubscriptionTierServiceTest {
                 .isInstanceOf(SubscriptionTierNotFoundException.class)
                 .hasMessageContaining("999");
 
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void deleteRemovesUnreferencedTierAndEvictsExactCacheKey() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionRepository.existsByTierId(7L)).thenReturn(false);
+
+        subscriptionTierService.delete(7L);
+
+        verify(subscriptionTierRepository).delete(stored);
+        verify(subscriptionTierRepository).flush();
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void deleteThrowsNotFoundForUnknownTier() {
+        when(subscriptionTierRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(999L))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+
+        verify(subscriptionRepository, never()).existsByTierId(any());
+        verify(subscriptionTierRepository, never()).delete(any());
+        verify(subscriptionTierRepository, never()).flush();
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void deleteRejectsTierReferencedBySubscription() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionRepository.existsByTierId(7L)).thenReturn(true);
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(7L))
+                .isInstanceOf(SubscriptionTierInUseException.class)
+                .hasMessageContaining("7");
+
+        verify(subscriptionTierRepository, never()).delete(any());
+        verify(subscriptionTierRepository, never()).flush();
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void deleteTranslatesDatabaseReferentialIntegrityRace() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionRepository.existsByTierId(7L)).thenReturn(false);
+        doThrow(new DataIntegrityViolationException("foreign key violation"))
+                .when(subscriptionTierRepository).flush();
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(7L))
+                .isInstanceOf(SubscriptionTierInUseException.class)
+                .hasMessageContaining("7");
+
+        verify(subscriptionTierRepository).delete(stored);
         verify(cacheInvalidationService, never()).evict(any(), any());
     }
 

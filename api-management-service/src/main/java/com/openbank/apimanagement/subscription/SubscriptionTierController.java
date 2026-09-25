@@ -1,10 +1,13 @@
 package com.openbank.apimanagement.subscription;
 
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -22,5 +25,11 @@ public class SubscriptionTierController {
             @PathVariable Long tierId,
             @Valid @RequestBody UpdateSubscriptionTierRequest request) {
         return subscriptionTierService.update(tierId, request);
+    }
+
+    @DeleteMapping("/{tierId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable Long tierId) {
+        subscriptionTierService.delete(tierId);
     }
 }

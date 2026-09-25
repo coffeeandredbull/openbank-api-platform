@@ -214,6 +214,75 @@ class RedisCacheIntegrationTest {
     }
 
     @Test
+    void subscriptionTierDeleteEvictsOnlyTheDeletedTier() {
+        SubscriptionTier first = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60);
+        SubscriptionTier second = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "second tier", 200, 60);
+        subscriptionTierService.get(first.getId());
+        subscriptionTierService.get(second.getId());
+
+        String firstKey = "subscriptionTier::" + first.getId();
+        String secondKey = "subscriptionTier::" + second.getId();
+        assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+        assertThat(stringRedisTemplate.hasKey(secondKey)).isTrue();
+
+        subscriptionTierService.delete(first.getId());
+
+        assertThat(stringRedisTemplate.hasKey(firstKey))
+                .as("a successful delete must evict the deleted tier after commit")
+                .isFalse();
+        assertThat(stringRedisTemplate.hasKey(secondKey))
+                .as("a tier delete must not evict another tier's cache entry")
+                .isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, first.getId()))
+                .isZero();
+    }
+
+    @Test
+    void rolledBackSubscriptionTierDeleteDoesNotEvictCachedTier() {
+        SubscriptionTier tier = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "original tier", 100, 60);
+        subscriptionTierService.get(tier.getId());
+        String key = "subscriptionTier::" + tier.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
+            subscriptionTierService.delete(tier.getId());
+            throw new IllegalStateException("force rollback after a successful tier delete");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a rolled-back tier delete must not evict the still-valid cache entry")
+                .isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, tier.getId()))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void rejectedSubscriptionTierDeleteDoesNotEvictCachedTier() throws Exception {
+        SubscriptionTier tier = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "protected tier", 100, 60);
+        Long subscriptionId = subscribeAndReadId(
+                createVersionedApi(), createApplication("42", "DEVELOPER", "Cache App"), tier.getId());
+        subscriptionTierService.get(tier.getId());
+        String key = "subscriptionTier::" + tier.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(tier.getId()))
+                .isInstanceOf(com.openbank.apimanagement.exception.SubscriptionTierInUseException.class);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a rejected tier delete must not evict the cached tier")
+                .isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(1L);
+    }
+
+    @Test
     void rolledBackSubscriptionTierUpdateDoesNotEvictCachedTier() {
         SubscriptionTier tier = subscriptionTierService.create(
                 "cache-tier-" + SEQUENCE.incrementAndGet(), "original tier", 100, 60);

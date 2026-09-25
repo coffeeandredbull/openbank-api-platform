@@ -1,6 +1,14 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.api.Api;
+import com.openbank.apimanagement.api.ApiRepository;
+import com.openbank.apimanagement.api.ApiVersion;
+import com.openbank.apimanagement.api.ApiVersionRepository;
+import com.openbank.apimanagement.application.Application;
+import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierInUseException;
+import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 
 import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +51,18 @@ class SubscriptionTierIntegrationTest {
 
     @Autowired
     private SubscriptionTierRepository subscriptionTierRepository;
+
+    @Autowired
+    private SubscriptionRepository subscriptionRepository;
+
+    @Autowired
+    private ApplicationRepository applicationRepository;
+
+    @Autowired
+    private ApiRepository apiRepository;
+
+    @Autowired
+    private ApiVersionRepository apiVersionRepository;
 
     @BeforeEach
     void cleanTables() {
@@ -135,6 +155,63 @@ class SubscriptionTierIntegrationTest {
     }
 
     @Test
+    void serviceDeletesUnreferencedTier() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        subscriptionTierService.delete(created.getId());
+
+        assertThat(subscriptionTierRepository.findById(created.getId())).isEmpty();
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, created.getId()))
+                .isZero();
+    }
+
+    @Test
+    void serviceRejectsReferencedTierWithoutDeletingSubscription() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        Subscription subscription = createSubscription(created);
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(created.getId()))
+                .isInstanceOf(SubscriptionTierInUseException.class)
+                .hasMessageContaining(String.valueOf(created.getId()));
+
+        assertThat(subscriptionTierRepository.findById(created.getId())).isPresent();
+        assertThat(subscriptionRepository.findById(subscription.getId())).isPresent();
+        assertThat(jdbcTemplate.queryForObject("select count(*) from subscriptions", Long.class)).isEqualTo(1L);
+    }
+
+    @Test
+    void serviceRejectsUnknownTierOnDelete() {
+        assertThatThrownBy(() -> subscriptionTierService.delete(999L))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+    }
+
+    @Test
+    void repeatedDeleteReturnsNotFoundAfterFirstDelete() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        subscriptionTierService.delete(created.getId());
+
+        assertThatThrownBy(() -> subscriptionTierService.delete(created.getId()))
+                .isInstanceOf(SubscriptionTierNotFoundException.class);
+        assertThat(subscriptionTierRepository.findById(created.getId())).isEmpty();
+    }
+
+    @Test
+    void databaseForeignKeyRejectsDirectTierDeleteWithoutCascade() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        Subscription subscription = createSubscription(created);
+
+        assertThatThrownBy(() -> jdbcTemplate.update(
+                "delete from subscription_tiers where id = ?", created.getId()))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+
+        assertThat(subscriptionTierRepository.findById(created.getId())).isPresent();
+        assertThat(subscriptionRepository.findById(subscription.getId())).isPresent();
+    }
+
+    @Test
     void serviceRejectsUnknownTierOnUpdate() {
         assertThatThrownBy(() -> subscriptionTierService.update(
                 999L, new UpdateSubscriptionTierRequest("Gold", null, null, null)))
@@ -204,6 +281,16 @@ class SubscriptionTierIntegrationTest {
 
         assertThat(jdbcTemplate.queryForObject(
                 "select count(*) from subscription_tiers", Long.class)).isEqualTo(1L);
+    }
+
+    private Subscription createSubscription(SubscriptionTier created) {
+        Api api = apiRepository.saveAndFlush(new Api(
+                "Payments API " + System.nanoTime(), "Payment operations", "/payments-" + System.nanoTime()));
+        ApiVersion version = apiVersionRepository.saveAndFlush(new ApiVersion(api, "v1"));
+        Application application = applicationRepository.saveAndFlush(new Application(
+                "Test App " + System.nanoTime(), "Integration test", 42L));
+        SubscriptionTier managedTier = subscriptionTierRepository.findById(created.getId()).orElseThrow();
+        return subscriptionRepository.saveAndFlush(new Subscription(application, version, managedTier));
     }
 
     @Test

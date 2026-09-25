@@ -351,6 +351,27 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void referencedSubscriptionTierProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionTierInUse(
+                        new SubscriptionTierInUseException(7L), request("DELETE", "/subscription-tiers/7"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.code()).isEqualTo("SUBSCRIPTION_TIER_IN_USE");
+        assertThat(body.path()).isEqualTo("/subscription-tiers/7");
+        assertThat(body.message()).contains("7");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("foreign key")
+                .doesNotContain("SQL")
+                .doesNotContain("DataIntegrityViolation");
+    }
+
+    @Test
     void credentialNotFoundProducesStructured404() {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
                 handler.handleCredentialNotFound(

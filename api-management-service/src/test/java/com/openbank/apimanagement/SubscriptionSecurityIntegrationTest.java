@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -254,6 +255,70 @@ class SubscriptionSecurityIntegrationTest {
         mockMvc.perform(patch("/subscription-tiers/1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"requestsPerWindow\":500}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void adminCanDeleteUnreferencedSubscriptionTier() throws Exception {
+        Long tierId = createTier();
+
+        mockMvc.perform(delete("/subscription-tiers/" + tierId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isNoContent());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, tierId))
+                .isZero();
+    }
+
+    @Test
+    void adminCannotDeleteReferencedSubscriptionTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long tierId = createTier();
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": %d
+                                }
+                                """.formatted(applicationId, versionId, tierId)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(delete("/subscription-tiers/" + tierId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_IN_USE"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, tierId))
+                .isEqualTo(1L);
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscriptions where tier_id = ?", Long.class, tierId))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void developerCannotDeleteSubscriptionTier() throws Exception {
+        Long tierId = createTier();
+
+        mockMvc.perform(delete("/subscription-tiers/" + tierId)
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where id = ?", Long.class, tierId))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void unauthenticatedSubscriptionTierDeleteReturns401() throws Exception {
+        mockMvc.perform(delete("/subscription-tiers/1"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
     }

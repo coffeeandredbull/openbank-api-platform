@@ -2,6 +2,7 @@ package com.openbank.apimanagement.subscription;
 
 import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
+import com.openbank.apimanagement.exception.SubscriptionTierInUseException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -17,12 +18,15 @@ public class SubscriptionTierService {
     private static final String NO_LEADING_OR_TRAILING_WHITESPACE = "\\S(?:.*\\S)?";
 
     private final SubscriptionTierRepository subscriptionTierRepository;
+    private final SubscriptionRepository subscriptionRepository;
     private final CacheInvalidationService cacheInvalidationService;
 
     public SubscriptionTierService(
             SubscriptionTierRepository subscriptionTierRepository,
+            SubscriptionRepository subscriptionRepository,
             CacheInvalidationService cacheInvalidationService) {
         this.subscriptionTierRepository = subscriptionTierRepository;
+        this.subscriptionRepository = subscriptionRepository;
         this.cacheInvalidationService = cacheInvalidationService;
     }
 
@@ -72,6 +76,22 @@ public class SubscriptionTierService {
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(updatedName);
         }
+    }
+
+    @Transactional
+    public void delete(Long tierId) {
+        SubscriptionTier tier = subscriptionTierRepository.findById(tierId)
+                .orElseThrow(() -> new SubscriptionTierNotFoundException(tierId));
+        if (subscriptionRepository.existsByTierId(tierId)) {
+            throw new SubscriptionTierInUseException(tierId);
+        }
+        try {
+            subscriptionTierRepository.delete(tier);
+            subscriptionTierRepository.flush();
+        } catch (DataIntegrityViolationException ex) {
+            throw new SubscriptionTierInUseException(tierId);
+        }
+        cacheInvalidationService.evict("subscriptionTier", tierId);
     }
 
     @Transactional(readOnly = true)

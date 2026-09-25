@@ -397,8 +397,21 @@ VALIDATION_FAILED`. The response is the tier's public fields (`id`, `name`,
 `description`, `requestsPerWindow`, `windowSeconds`, `createdAt`, `updatedAt`).
 PostgreSQL remains the source of truth; after a successful commit, only the
 exact `subscriptionTier::<tierId>` Redis entry is evicted. A failed transaction
-does not evict. Tier creation, listing, deletion, lifecycle, and pricing remain
-planned.
+does not evict. Tier creation, listing, lifecycle, and pricing remain planned.
+
+**Implemented so far (Phase 24, Slice 9) — safe subscription tier deletion:**
+an `ADMIN` can remove an unreferenced tier with
+`DELETE /subscription-tiers/{tierId}`. The endpoint returns `204 No Content`
+with an empty body on success. A missing tier returns `404
+SUBSCRIPTION_TIER_NOT_FOUND`; a `DEVELOPER` receives `403 ACCESS_DENIED`; and an
+unauthenticated caller receives `401 UNAUTHENTICATED`. The service checks for
+subscriptions before deleting and maps both the application-level reference
+check and the PostgreSQL foreign-key race backstop to `409
+SUBSCRIPTION_TIER_IN_USE`. The `subscriptions.tier_id` foreign key is `NOT
+NULL` and has no cascade, so subscriptions are never reassigned or deleted.
+PostgreSQL remains the source of truth. A successful transaction evicts only
+`subscriptionTier::<tierId>` after commit; rejected or rolled-back deletes do
+not evict.
 
 **Implemented so far (Phase 12) — subscriptions:** an application can be
 **subscribed** to an **API version** in the API Management Service. This
@@ -441,8 +454,8 @@ the request body.
   id+secret). Each tier now carries its rate-limit policy
   (`requestsPerWindow`/`windowSeconds`, Phase 24 Slice 4) that the gateway
   enforces per active subscription; Slice 8 adds ADMIN-only partial tier
-  updates, while tier creation/listing/deletion, lifecycle, and pricing remain
-  planned.
+  updates and Slice 9 adds safe deletion of unreferenced tiers, while tier
+  creation/listing, lifecycle, and pricing remain planned.
 - **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
   a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
   and a nullable `revokedAt` timestamp (set when a subscription is revoked).

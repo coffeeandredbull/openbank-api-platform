@@ -13,6 +13,8 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Long
 
     boolean existsByApplicationIdAndApiVersionId(Long applicationId, Long apiVersionId);
 
+    boolean existsByTierId(Long tierId);
+
     Optional<Subscription> findByApiVersionIdAndApplication_OwnerUserIdAndStatus(
             Long apiVersionId, Long ownerUserId, SubscriptionStatus status);
 

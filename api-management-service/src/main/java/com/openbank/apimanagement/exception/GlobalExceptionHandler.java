@@ -87,6 +87,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "SUBSCRIPTION_TIER_ALREADY_EXISTS", ex.getMessage(), request, Map.of());
     }
 
+    @ExceptionHandler(SubscriptionTierInUseException.class)
+    public ResponseEntity<ErrorResponse> handleSubscriptionTierInUse(SubscriptionTierInUseException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "SUBSCRIPTION_TIER_IN_USE", ex.getMessage(), request, Map.of());
+    }
+
     @ExceptionHandler(CredentialNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleCredentialNotFound(CredentialNotFoundException ex, HttpServletRequest request) {
         return build(HttpStatus.NOT_FOUND, "CREDENTIAL_NOT_FOUND", ex.getMessage(), request, Map.of());
