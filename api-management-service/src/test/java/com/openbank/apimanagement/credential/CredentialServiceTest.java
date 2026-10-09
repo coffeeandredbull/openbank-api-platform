@@ -334,6 +334,61 @@ class CredentialServiceTest {
     }
 
     @Test
+    void changeExpirationUpdatesOnlyExpiration() {
+        Instant oldExpiresAt = Instant.parse("2020-01-01T00:00:00Z");
+        Instant newExpiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue", oldExpiresAt);
+        Instant createdAt = stored.getCreatedAt();
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialResponse response = credentialService.changeExpiration(
+                1L, new UpdateCredentialExpirationRequest(newExpiresAt));
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.applicationId()).isEqualTo(10L);
+        assertThat(response.clientId()).isEqualTo("client-123");
+        assertThat(response.status()).isEqualTo(CredentialStatus.ACTIVE);
+        assertThat(response.expiresAt()).isEqualTo(newExpiresAt);
+        assertThat(response.createdAt()).isEqualTo(createdAt);
+
+        Credential persisted = capturedSaved();
+        assertThat(persisted.getClientId()).isEqualTo("client-123");
+        assertThat(persisted.getClientSecretHash()).isEqualTo("$2a$10$hashvalue");
+        assertThat(persisted.getStatus()).isEqualTo(CredentialStatus.ACTIVE);
+        assertThat(persisted.getApplication().getId()).isEqualTo(10L);
+        assertThat(persisted.getCreatedAt()).isEqualTo(createdAt);
+        assertThat(persisted.getExpiresAt()).isEqualTo(newExpiresAt);
+    }
+
+    @Test
+    void changeExpirationKeepsRevokedStatus() {
+        Instant newExpiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        setField(stored, "status", CredentialStatus.REVOKED);
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialResponse response = credentialService.changeExpiration(
+                1L, new UpdateCredentialExpirationRequest(newExpiresAt));
+
+        assertThat(response.status()).isEqualTo(CredentialStatus.REVOKED);
+        assertThat(response.expiresAt()).isEqualTo(newExpiresAt);
+        assertThat(capturedSaved().getStatus()).isEqualTo(CredentialStatus.REVOKED);
+    }
+
+    @Test
+    void changeExpirationThrowsNotFoundWhenCredentialMissing() {
+        when(credentialRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> credentialService.changeExpiration(
+                999L, new UpdateCredentialExpirationRequest(Instant.parse("2030-01-01T00:00:00Z"))))
+                .isInstanceOf(CredentialNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
     void rotateActiveCredentialReturnsNewClientIdAndSecretKeepingIdAndApplication() {
         Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
         when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));

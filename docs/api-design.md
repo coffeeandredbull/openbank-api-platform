@@ -501,7 +501,8 @@ the request body.
     gateway itself is unchanged; the API Management Service remains the source
     of truth.
 
-**Implemented so far (Phase 13; credential expiry in Phase 24, Slice 11) —
+**Implemented so far (Phase 13; credential expiry in Phase 24, Slice 11;
+expiration update in Phase 24, Slice 12) —
 credentials:** an **application** can hold **credentials** (`clientId` + hashed
 `clientSecret`) in the API Management Service. These are the credentials the API
 Gateway uses to authenticate an application. The existing creation body carries
@@ -551,16 +552,34 @@ claim** and is never taken from the request body.
   INVALID_CREDENTIAL_STATUS_TRANSITION`; a missing credential → `404
   CREDENTIAL_NOT_FOUND`. `clientId` collision retries reuse the bounded
   creation policy (never an unbounded loop).
+- `PATCH /credentials/{credentialId}/expiration` — **ADMIN-only** credential
+  expiration update (Phase 24, Slice 12; a global management operation keyed by
+  credential id, not owner-scoped). Body: `{ "expiresAt": ISO-8601 Instant }`;
+  `expiresAt` is required and must be strictly in the future. The update
+  changes **only** the credential's `expiresAt` (and `updatedAt`) — the
+  `clientId` and `clientSecret`/hash are **not rotated** (the existing pair
+  keeps authenticating) and the `status` is untouched. Response is the same
+  `CredentialResponse` (`id`, `applicationId`, `clientId`, `status`,
+  `expiresAt`, `createdAt`, `updatedAt`) — **never** the `clientSecret` or
+  `clientSecretHash`. A `REVOKED` credential remains `REVOKED` (an expiration
+  update never reactivates it), while an expired `ACTIVE` credential whose
+  expiration is extended into the future authenticates again (the internal
+  credential check requires `ACTIVE` and, when set, an expiration strictly in
+  the future). A missing credential → `404 CREDENTIAL_NOT_FOUND`; a
+  missing/non-future `expiresAt` → `400 VALIDATION_FAILED` (`fieldErrors.expiresAt`);
+  an unparseable `expiresAt` or malformed JSON → `400 MALFORMED_REQUEST`; a
+  `DEVELOPER` → `403 ACCESS_DENIED`; an unauthenticated caller → `401
+  UNAUTHENTICATED`.
 - Authorization is uniform for `ADMIN` and `DEVELOPER` with owner-based
   semantics, exactly like applications/subscriptions: `ADMIN` owns what it
   creates and has **no** global access for reads — but **lifecycle management
-  (PATCH status, rotate) is an ADMIN-only global operation** by credential id,
-  exactly like the subscription lifecycle endpoint. Credential ownership is
-  derived through Credential → Application → ownerUserId. Accessing a credential
-  that does not exist **or belongs to an application the caller does not own**
-  returns `404 CREDENTIAL_NOT_FOUND` (no existence leak). Creating a credential
-  against an application the caller does not own (or that does not exist)
-  returns `404 APPLICATION_NOT_FOUND`.
+  (PATCH status, PATCH expiration, rotate) is an ADMIN-only global operation**
+  by credential id, exactly like the subscription lifecycle endpoint.
+  Credential ownership is derived through Credential → Application →
+  ownerUserId. Accessing a credential that does not exist **or belongs to an
+  application the caller does not own** returns `404 CREDENTIAL_NOT_FOUND`
+  (no existence leak). Creating a credential against an application the caller
+  does not own (or that does not exist) returns `404 APPLICATION_NOT_FOUND`.
 - `clientId` uniqueness: generated as a random UUID, unique per credential. A
   service-level existence check plus a database unique constraint on
   `client_id`; if a collision somehow occurs, the service regenerates and
@@ -575,7 +594,8 @@ claim** and is never taken from the request body.
   return `400 VALIDATION_FAILED`, malformed JSON or an unparseable timestamp
   returns `400 MALFORMED_REQUEST`.
 - Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3),
-  and optional **credential expiry** is implemented (Phase 24, Slice 11).
+  optional **credential expiry** is implemented (Phase 24, Slice 11), and the
+  **ADMIN-only expiration update** is implemented (Phase 24, Slice 12).
   Scopes and permissions remain planned (rate limits are enforced per
   subscription tier, not per credential). The runtime consumer is the internal
   `GET /internal/credential-check` (see the Gateway section), which authenticates

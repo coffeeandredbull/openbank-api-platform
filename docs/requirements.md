@@ -38,8 +38,10 @@
   the API Management Service); the subscription **status lifecycle** is
   **implemented** (Phase 24, Slice 2, in the API Management Service); the
   credential lifecycle is **implemented** (Phase 24, Slice 3), optional
-  credential expiry is **implemented** (Phase 24, Slice 11), and **tier rate
-  limits with gateway enforcement** are **implemented** (Phase 24, Slice 4);
+  credential expiry is **implemented** (Phase 24, Slice 11), an ADMIN-only
+  credential expiration update (`PATCH /credentials/{credentialId}/expiration`)
+  is **implemented** (Phase 24, Slice 12), and **tier rate limits with gateway
+  enforcement** are **implemented** (Phase 24, Slice 4);
   tier creation/listing, lifecycle, and pricing remain planned; an ADMIN-only
   partial update `PATCH /subscription-tiers/{tierId}` and safe deletion of
   unreferenced tiers with `DELETE /subscription-tiers/{tierId}` are implemented
@@ -121,6 +123,21 @@
   to its generic invalid-credential response. Subscription enforcement is
   unchanged. The API Management Service remains the source of truth (no gateway
   changes, no Redis).
+- **Credential expiration update (implemented, Phase 24, Slice 12):** an
+  **ADMIN-only** `PATCH /credentials/{credentialId}/expiration` accepts a body
+  with a required `expiresAt` — a non-null ISO-8601 timestamp strictly in the
+  future — and updates the credential's expiration. The operation changes
+  **only** the expiration (and `updatedAt`): it does not rotate the `clientId`
+  or `clientSecret` (the existing pair keeps working), and it does not change
+  the status. Responses return the safe credential fields only (`id`,
+  `applicationId`, `clientId`, `status`, `expiresAt`, `createdAt`,
+  `updatedAt`) — never the secret or its hash. A `REVOKED` credential remains
+  revoked (an expiration update never reactivates it), while an expired
+  `ACTIVE` credential becomes usable again when its expiration is extended
+  into the future (the internal credential check requires `ACTIVE` and an
+  unset-or-future expiry). A missing credential → `404 CREDENTIAL_NOT_FOUND`;
+  a missing/non-future `expiresAt` → `400 VALIDATION_FAILED`; a `DEVELOPER` →
+  `403 ACCESS_DENIED`; an unauthenticated caller → `401 UNAUTHENTICATED`.
 - The Subscription Service decides whether a given application may call a given
   API version (planned; the gateway enforcement layer, which will authenticate
   applications with the Phase 13 credentials).

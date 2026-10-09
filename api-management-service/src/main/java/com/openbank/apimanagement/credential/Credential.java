@@ -108,6 +108,11 @@ public class Credential {
         this.updatedAt = Instant.now();
     }
 
+    public void changeExpiration(Instant newExpiresAt) {
+        this.expiresAt = newExpiresAt;
+        this.updatedAt = Instant.now();
+    }
+
     public void rotate(String newClientId, String newClientSecretHash) {
         this.clientId = newClientId;
         this.clientSecretHash = newClientSecretHash;

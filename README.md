@@ -77,7 +77,9 @@ to them, and manage credentials.
 > **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
 > status, ADMIN-only revocation and rotation, ACTIVE-only runtime
 > authentication), **optional credential expiry** (Phase 24, Slice 11 —
-> nullable `expiresAt`, ACTIVE-and-unexpired runtime authentication), and
+> nullable `expiresAt`, ACTIVE-and-unexpired runtime authentication), the
+> **ADMIN-only credential expiration update** (Phase 24, Slice 12 —
+> `PATCH /credentials/{credentialId}/expiration`), and
 > **shared Redis infrastructure (Phase 18 — connectivity + health monitoring,
 > now with real rate-limit counters since Phase 21)** are implemented. The
 > remaining services and the portal are planned. See the
@@ -521,6 +523,22 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     not mutate the stored status automatically, and the gateway is unchanged:
     `authenticated:false` already maps to the generic `CLIENT_CREDENTIAL_INVALID`
     response. Credential scopes remain planned.
+  - **Phase 24, Slice 12 — ADMIN-only credential expiration update:** an
+    authenticated `ADMIN` can change a credential's expiration with
+    `PATCH /credentials/{credentialId}/expiration` and body
+    `{ "expiresAt": ISO-8601 Instant }`. `expiresAt` is required and must be
+    strictly in the future (a missing/non-future value returns
+    `400 VALIDATION_FAILED`; a missing credential returns
+    `404 CREDENTIAL_NOT_FOUND`). The update changes only the expiration (and
+    `updatedAt`): the `clientId`/`clientSecret` are **not rotated** — the
+    existing pair keeps authenticating — and the status is untouched. The
+    response exposes only the safe credential fields (`id`, `applicationId`,
+    `clientId`, `status`, `expiresAt`, `createdAt`, `updatedAt`), never the
+    secret or its hash. A `REVOKED` credential remains revoked, while an
+    expired `ACTIVE` credential becomes usable again when its expiration is
+    extended into the future (the internal check requires `ACTIVE` and an
+    unset-or-future expiry). A `DEVELOPER` receives `403 ACCESS_DENIED` and an
+    unauthenticated caller receives `401 UNAUTHENTICATED`.
   - **Planned phases (subject to change):** tier creation/listing and
     lifecycle/pricing, credential scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),

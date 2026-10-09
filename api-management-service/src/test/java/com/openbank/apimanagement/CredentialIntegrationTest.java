@@ -840,4 +840,186 @@ class CredentialIntegrationTest {
         jwt.sign(new MACSigner(TEST_JWT_SECRET.getBytes(StandardCharsets.UTF_8)));
         return jwt.serialize();
     }
+
+    @Test
+    void adminCanUpdateCredentialExpirationAndPersistIt() throws Exception {
+        String adminToken = "Bearer " + token("1", "ADMIN", 3600);
+
+        long applicationId = createApplication("1", "ADMIN", "Test Application");
+        long credentialId = createCredentialAndReadId("1", applicationId);
+
+        String newExpiration = "2030-01-01T00:00:00Z";
+
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credentialId)
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2030-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credentialId))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.expiresAt").value(newExpiration))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        Timestamp expiresAt = jdbcTemplate.queryForObject(
+                "SELECT expires_at FROM credentials WHERE id = ?",
+                Timestamp.class,
+                credentialId
+        );
+
+        assertThat(expiresAt).isNotNull();
+        assertThat(expiresAt.toInstant()).isEqualTo(Instant.parse(newExpiration));
+    }
+
+    @Test
+    void developerCannotChangeCredentialExpiration() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/expiration")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select expires_at from credentials where id = ?", Timestamp.class, credentialId))
+                .isNull();
+    }
+
+    @Test
+    void unauthenticatedExpirationUpdateReturns401() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void expirationUpdateForMissingCredentialReturns404() throws Exception {
+        mockMvc.perform(patch("/credentials/98765/expiration")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/credentials/98765/expiration"));
+    }
+
+    @Test
+    void expirationUpdatePreservesClientIdStatusAndSecretHashAndAdvancesUpdatedAt() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        String clientIdBefore = jdbcTemplate.queryForObject(
+                "select client_id from credentials where id = ?", String.class, credentialId);
+        String secretHashBefore = jdbcTemplate.queryForObject(
+                "select client_secret_hash from credentials where id = ?", String.class, credentialId);
+        String statusBefore = jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId);
+        Instant updatedAtBefore = jdbcTemplate.queryForObject(
+                "select updated_at from credentials where id = ?", Timestamp.class, credentialId)
+                .toInstant();
+
+        String newExpiration = "2030-01-01T00:00:00Z";
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credentialId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2030-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.clientId").value(clientIdBefore))
+                .andExpect(jsonPath("$.status").value(statusBefore))
+                .andExpect(jsonPath("$.expiresAt").value(newExpiration))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select client_id from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(clientIdBefore);
+        assertThat(jdbcTemplate.queryForObject(
+                "select client_secret_hash from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(secretHashBefore)
+                .isNotNull();
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(statusBefore);
+
+        Instant updatedAtAfter = jdbcTemplate.queryForObject(
+                "select updated_at from credentials where id = ?", Timestamp.class, credentialId)
+                .toInstant();
+        assertThat(updatedAtAfter).isAfter(updatedAtBefore);
+    }
+
+    @Test
+    void revokedCredentialExpirationUpdateDoesNotReactivateStatus() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+        String adminToken = "Bearer " + token("1", "ADMIN", 3600);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/status")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credentialId)
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2030-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.expiresAt").value("2030-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("REVOKED");
+    }
+
+    @Test
+    void adminCanUpdateAnotherUsersCredentialExpiration() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credentialId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2030-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credentialId))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.expiresAt").value("2030-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select expires_at from credentials where id = ?", Timestamp.class, credentialId)
+                .toInstant())
+                .isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
+    }
 }

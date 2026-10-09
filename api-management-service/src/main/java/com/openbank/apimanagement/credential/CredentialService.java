@@ -92,6 +92,15 @@ public class CredentialService {
     }
 
     @Transactional
+    public CredentialResponse changeExpiration(
+            Long credentialId, UpdateCredentialExpirationRequest request) {
+        Credential credential = credentialRepository.findById(credentialId)
+                .orElseThrow(() -> new CredentialNotFoundException(credentialId));
+        credential.changeExpiration(request.expiresAt());
+        return CredentialResponse.from(credentialRepository.save(credential));
+    }
+
+    @Transactional
     public CredentialRotatedResponse rotate(Long credentialId) {
         Credential credential = credentialRepository.findById(credentialId)
                 .orElseThrow(() -> new CredentialNotFoundException(credentialId));

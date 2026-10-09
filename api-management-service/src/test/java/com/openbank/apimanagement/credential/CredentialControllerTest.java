@@ -370,6 +370,130 @@ class CredentialControllerTest {
     }
 
     @Test
+    void patchExpirationReturns200WithSafeResponse() throws Exception {
+        Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        when(credentialService.changeExpiration(eq(1L), any(UpdateCredentialExpirationRequest.class)))
+                .thenReturn(new CredentialResponse(
+                        1L, 10L, "client-abc", CredentialStatus.ACTIVE, expiresAt, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.applicationId").value(10))
+                .andExpect(jsonPath("$.clientId").value("client-abc"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value("2030-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        verify(credentialService).changeExpiration(eq(1L),
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        request.expiresAt().equals(Instant.parse("2030-01-01T00:00:00Z"))));
+    }
+
+    @Test
+    void patchExpirationRequiresExpiresAtField() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt is required"));
+
+        verify(credentialService, never()).changeExpiration(any(), any());
+    }
+
+    @Test
+    void patchExpirationRejectsExplicitNull() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": null
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt is required"));
+
+        verify(credentialService, never()).changeExpiration(any(), any());
+    }
+
+    @Test
+    void patchExpirationRejectsPastTimestamp() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2020-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt must be in the future"));
+
+        verify(credentialService, never()).changeExpiration(any(), any());
+    }
+
+    @Test
+    void patchExpirationRejectsCurrentTimestamp() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "%s"
+                                }
+                                """.formatted(Instant.now())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt must be in the future"));
+
+        verify(credentialService, never()).changeExpiration(any(), any());
+    }
+
+    @Test
+    void patchExpirationRejectsMalformedTimestamp() throws Exception {
+        mockMvc.perform(patch("/credentials/1/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "not-an-instant"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("MALFORMED_REQUEST"));
+
+        verify(credentialService, never()).changeExpiration(any(), any());
+    }
+
+    @Test
+    void patchExpirationMissingCredentialProducesStructured404() throws Exception {
+        when(credentialService.changeExpiration(eq(999L), any(UpdateCredentialExpirationRequest.class)))
+                .thenThrow(new CredentialNotFoundException(999L));
+
+        mockMvc.perform(patch("/credentials/999/expiration")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/credentials/999/expiration"))
+                .andExpect(jsonPath("$.message").value("Credential with id 999 does not exist"));
+    }
+
+    @Test
     void rotateReturns200WithNewSecretExactlyOnce() throws Exception {
         when(credentialService.rotate(1L))
                 .thenReturn(new CredentialRotatedResponse(1L, 10L, "new-client-id", "new-secret-once",

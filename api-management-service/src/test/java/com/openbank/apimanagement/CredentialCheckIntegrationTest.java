@@ -128,6 +128,82 @@ class CredentialCheckIntegrationTest {
     }
 
     @Test
+    void extendingExpiredActiveCredentialAllowsAuthenticationAgain() throws Exception {
+        Long applicationId = createApplication("42", "Payments App");
+        CredentialCreatedResponse credential = createCredential(applicationId);
+        jdbcTemplate.update(
+                "update credentials set expires_at = ? where id = ?",
+                Timestamp.from(Instant.now().minusSeconds(60)),
+                credential.id());
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.authenticated").value(false));
+
+        String extendedExpiration = "2030-01-01T00:00:00Z";
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credential.id())
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2030-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credential.id()))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.expiresAt").value(extendedExpiration))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist());
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.applicationId").value(applicationId));
+    }
+
+    @Test
+    void extendingRevokedCredentialDoesNotReactivateAuthentication() throws Exception {
+        Long applicationId = createApplication("42", "Payments App");
+        CredentialCreatedResponse credential = createCredential(applicationId, "2030-01-01T00:00:00Z");
+        String adminToken = "Bearer " + token("1", "ADMIN", 3600);
+
+        mockMvc.perform(patch("/credentials/" + credential.id() + "/status")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/credentials/{credentialId}/expiration", credential.id())
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expiresAt":"2031-01-01T00:00:00Z"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.expiresAt").value("2031-01-01T00:00:00Z"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credential.id()))
+                .isEqualTo("REVOKED");
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .param("contextPath", "/payments")
+                        .param("version", "v1")
+                        .header("Authorization", basicHeader(credential)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.authenticated").value(false));
+    }
+
+    @Test
     void validCredentialWithAnInactiveSubscriptionReportsSubscribedFalse() throws Exception {
         Long versionId = createApiWithVersion("/payments", "v1");
         Long applicationId = createApplication("42", "Payments App");

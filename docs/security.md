@@ -137,7 +137,8 @@ checks are implemented in Phases 17 and 21. The subscription **status
 lifecycle** is implemented in the API Management Service in Phase 24, Slice 2;
 the **credential lifecycle** — `ACTIVE`/`REVOKED` status, ADMIN-only revocation
 and rotation — in Phase 24, Slice 3; optional credential expiry in Phase 24,
-Slice 11; and **tier-based rate limiting** in Phase 24, Slice 4; see below.)
+Slice 11; ADMIN-only credential expiration update in Phase 24, Slice 12; and
+**tier-based rate limiting** in Phase 24, Slice 4; see below.)
 
 ## Application Ownership — Implemented (Phase 11)
 
@@ -299,6 +300,24 @@ Implemented behavior:
   `ACTIVE`/`REVOKED` status. The gateway is unchanged because the existing
   `authenticated:false` response already maps to `401
   CLIENT_CREDENTIAL_INVALID`.
+- **Expiration update (implemented, Phase 24, Slice 12):**
+  `PATCH /credentials/{id}/expiration` is an **ADMIN-only global operation**
+  keyed by credential id (same authorization model as status change and
+  rotation; not owner-scoped). The body requires a strictly future
+  `expiresAt`; the update changes **only** `expires_at` (and `updated_at`) —
+  it never rotates the `clientId`/`clientSecretHash` and never changes
+  `status`. A `REVOKED` credential stays `REVOKED` (an expiration update is
+  not a reactivation path; `REVOKED → ACTIVE` remains impossible). Extending
+  an expired `ACTIVE` credential into the future makes the existing
+  `clientId`/`clientSecret` authenticate again, because the internal check
+  requires `ACTIVE` plus an unset-or-future expiry. Responses reuse the safe
+  `CredentialResponse` shape (never `clientSecret` or `clientSecretHash`).
+  A `DEVELOPER` receives `403 ACCESS_DENIED`; unauthenticated callers receive
+  `401 UNAUTHENTICATED`; a missing credential returns `404
+  CREDENTIAL_NOT_FOUND`; a missing/non-future `expiresAt` returns `400
+  VALIDATION_FAILED`; an unparseable timestamp or malformed JSON returns `400
+  MALFORMED_REQUEST`. No credential data is cached in Redis, so no cache
+  invalidation is required.
 
 Not implemented yet (future phases): credential scopes, gateway-side
 verification of these credentials beyond the existing check, and
@@ -572,9 +591,10 @@ lifecycle/pricing, and credential scopes. The subscription tier
 foundation, ADMIN-only partial update (`PATCH /subscription-tiers/{tierId}`),
 and safe deletion of unreferenced tiers (`DELETE /subscription-tiers/{tierId}`)
 are implemented (Phase 24, Slices 4, 8, and 9). Credential **status/revocation/
-rotation** are implemented (Phase 24, Slice 3), and optional **credential
-expiry** is implemented (Phase 24, Slice 11) — see the Credential Security
-section below. Gateway-issued runtime analytics telemetry is implemented
+rotation** are implemented (Phase 24, Slice 3), optional **credential
+expiry** is implemented (Phase 24, Slice 11), and the ADMIN-only credential
+expiration update is implemented (Phase 24, Slice 12) — see the Credential
+Security section below. Gateway-issued runtime analytics telemetry is implemented
 (Phase 23) — see the Analytics Service section below.
 
 ## JWT Revocation — Implemented (Phase 24 Slice 6)
@@ -727,7 +747,10 @@ Implemented behavior:
     authenticates, even with the exact correct value, and the check never
     returns the secret or its hash. Optional `expiresAt` is implemented in
     Phase 24, Slice 11; rotation preserves it and does not extend the
-    lifetime. Credential scopes remain planned.
+    lifetime. An ADMIN-only `PATCH /credentials/{id}/expiration` (Phase 24,
+    Slice 12) updates only the expiration and `updated_at`; it never rotates
+    the pair and never reactivates a `REVOKED` credential. Credential scopes
+    remain planned.
 - The gateway **authentication** step that consumes these credentials is
   **implemented (Phase 21)** — see "Gateway Foundations" above. The secret is
   presented as a Basic header, verified server-side on every request (BCrypt
@@ -813,7 +836,7 @@ Implemented behavior:
 | Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
 | Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
 | Subscription tier administration | **Partially implemented (Phase 24, Slices 8 and 9)** — `PATCH /subscription-tiers/{tierId}` is ADMIN-only, validates partial fields, persists the update, and evicts only the exact post-commit `subscriptionTier::<tierId>` cache key; `DELETE /subscription-tiers/{tierId}` is also ADMIN-only, refuses referenced tiers with `409 SUBSCRIPTION_TIER_IN_USE`, relies on the non-cascading `subscriptions.tier_id` foreign key as a race backstop, and evicts the exact key only after a successful commit; tier creation/listing, lifecycle, and pricing remain planned |
-| Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level |
+| Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level; lifecycle management (PATCH status, PATCH expiration, rotate) is ADMIN-only and global by credential id (Phase 24 Slices 3, 11, 12) |
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
