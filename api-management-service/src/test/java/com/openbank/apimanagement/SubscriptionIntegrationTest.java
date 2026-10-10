@@ -689,6 +689,105 @@ class SubscriptionIntegrationTest {
                 .isEqualTo(originalTierId);
     }
 
+    @Test
+    void createRejectsInactiveTierWith409AndPersistsNoSubscription() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long tierId = createTier();
+        jdbcTemplate.update("UPDATE subscription_tiers SET status = 'INACTIVE' WHERE id = ?", tierId);
+
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": %d
+                                }
+                                """.formatted(applicationId, versionId, tierId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_INACTIVE"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id " + tierId + " is not active"));
+
+        assertThat(jdbcTemplate.queryForObject("select count(*) from subscriptions", Long.class)).isZero();
+    }
+
+    @Test
+    void tierReassignmentToInactiveTierReturns409AndPreservesTheStoredTier() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long subscriptionId = subscribeAndReadId("42", "DEVELOPER", applicationId, versionId);
+        Long originalTierId = jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId);
+        Long targetTierId = createTier();
+        jdbcTemplate.update("UPDATE subscription_tiers SET status = 'INACTIVE' WHERE id = ?", targetTierId);
+
+        mockMvc.perform(patch("/subscriptions/" + subscriptionId + "/tier")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":" + targetTierId + "}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_INACTIVE"))
+                .andExpect(jsonPath("$.path").value("/subscriptions/" + subscriptionId + "/tier"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscriptionId))
+                .isEqualTo(originalTierId);
+    }
+
+    @Test
+    void aDeactivatedTierRejectsSubscriptionsUntilItIsReactivatedAgain() throws Exception {
+        Long versionId = createVersionedApi();
+        Long applicationId = createApplication("42", "DEVELOPER", "My App");
+        Long tierId = createTier();
+
+        setTierStatus(tierId, "INACTIVE").andExpect(status().isOk());
+
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": %d
+                                }
+                                """.formatted(applicationId, versionId, tierId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_INACTIVE"));
+        assertThat(jdbcTemplate.queryForObject("select count(*) from subscriptions", Long.class)).isZero();
+
+        setTierStatus(tierId, "ACTIVE").andExpect(status().isOk());
+
+        mockMvc.perform(post("/subscriptions")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "apiVersionId": %d,
+                                  "tierId": %d
+                                }
+                                """.formatted(applicationId, versionId, tierId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.tierId").value(tierId));
+
+        assertThat(jdbcTemplate.queryForObject("select count(*) from subscriptions", Long.class)).isEqualTo(1L);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions setTierStatus(Long tierId, String status)
+            throws Exception {
+        return mockMvc.perform(patch("/subscription-tiers/" + tierId + "/status")
+                .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "status": "%s"
+                        }
+                        """.formatted(status)));
+    }
+
     private Long createVersionedApi() throws Exception {
         Long apiId = createApi("/payments");
         return createVersion(apiId, "v1");

@@ -205,13 +205,15 @@ Implemented behavior:
   keys, not in the route matcher; the security filter only authenticates.
 
 Not implemented yet (future phases): subscription-specific credentials (the
-OAuth2-style client registry in the Identity Service), tier creation/listing/
-deletion, tier lifecycle and pricing, auto-approval, revocation flows, and
+OAuth2-style client registry in the Identity Service), tier pricing,
+auto-approval, revocation flows, and
 additional gateway-level subscription enforcement. (The un-tiered
 Application → Subscription → API Version link is implemented in Phase 12; the
 subscription **status lifecycle** — `PENDING`/`ACTIVE`/`DENIED`/`REVOKED`,
 ADMIN-only management, ACTIVE-only enforcement — is implemented in Phase 24,
-Slice 2; the ADMIN-only partial tier update is implemented in Phase 24, Slice 8;
+Slice 2; ADMIN-only tier creation/listing/deletion and the `ACTIVE`/`INACTIVE`
+tier status lifecycle are implemented in Phase 24, Slices 9, 13, and 14, and
+the ADMIN-only partial tier update is implemented in Phase 24, Slice 8;
 see the API Subscription Enforcement section below.)
 
 ## Credential Ownership & Disclosure — Implemented (Phase 13)
@@ -586,13 +588,16 @@ Implemented behavior:
   (a configuration test asserts the YAML contains no secret/password/jwt/token
   material).
 
-Not implemented yet (future phases): subscription tier lifecycle states and
-pricing beyond the rate-limit policy, and credential scopes. The subscription
+Not implemented yet (future phases): tier pricing beyond the rate-limit
+policy, and credential scopes. The subscription
 tier foundation, ADMIN-only creation (`POST /subscription-tiers`) and listing
 (`GET /subscription-tiers`) (Phase 24, Slice 13), ADMIN-only partial update
 (`PATCH /subscription-tiers/{tierId}`), and safe deletion of unreferenced tiers
 (`DELETE /subscription-tiers/{tierId}`) are implemented (Phase 24, Slices 4,
-8, 9, and 13). Credential **status/revocation/
+8, 9, and 13), and the ADMIN-only tier status lifecycle
+(`PATCH /subscription-tiers/{tierId}/status`, `ACTIVE`/`INACTIVE`, with
+inactive tiers blocked as targets for new subscriptions via `409
+SUBSCRIPTION_TIER_INACTIVE`) is implemented (Phase 24, Slice 14). Credential **status/revocation/
 rotation** are implemented (Phase 24, Slice 3), optional **credential
 expiry** is implemented (Phase 24, Slice 11), and the ADMIN-only credential
 expiration update is implemented (Phase 24, Slice 12) — see the Credential
@@ -808,9 +813,12 @@ Implemented behavior:
   `Retry-After`; Redis/counter failures return `503` + code
   `RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed).
 - Redis is ephemeral here; counters are not the source of truth.
-- Tier lifecycle and pricing (per-tier burst/hard limits) remain planned; the
-  ADMIN-only tier creation/listing, partial tier update, and safe deletion of
-  unreferenced tiers are implemented in Phase 24 Slices 8, 9, and 13.
+- Tier pricing (per-tier burst/hard limits) remains planned; the
+  ADMIN-only tier creation/listing, partial tier update, safe deletion of
+  unreferenced tiers, and the `ACTIVE`/`INACTIVE` tier status lifecycle are
+  implemented in Phase 24 Slices 8, 9, 13, and 14 (an inactive tier blocks
+  only new assignments/reassignments; existing subscriptions keep enforcing
+  their tier policy).
 
 ## Security Boundaries
 
@@ -837,15 +845,15 @@ Implemented behavior:
 | Shared JWT validation & RBAC (other services) | **Partially implemented (Phase 8)** — the API Management Service validates the same JWT locally (`JWT_SECRET`) and enforces `ADMIN`/`DEVELOPER` roles on its catalog endpoints |
 | Resource ownership (applications) | **Implemented (Phase 11)** — applications carry `ownerUserId` from the JWT `sub`; all reads/updates are owner-scoped; cross-owner access returns `404 APPLICATION_NOT_FOUND` (no existence leak) |
 | Subscription ownership (subscriptions) | **Implemented (Phase 12)** — subscriptions are owner-scoped through their application; cross-owner access returns `404 APPLICATION_SUBSCRIPTION_NOT_FOUND` (no existence leak); duplicates rejected (`409`) |
-| Subscription tier administration | **Implemented (Phase 24, Slices 8, 9, and 13)** — `POST /subscription-tiers` and `GET /subscription-tiers` are ADMIN-only (creation returns `201` + `Location` and rejects duplicate names with `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`; listing returns all tiers ordered by `id` ASC and is not cached); `PATCH /subscription-tiers/{tierId}` is ADMIN-only, validates partial fields, persists the update, and evicts only the exact post-commit `subscriptionTier::<tierId>` cache key; `DELETE /subscription-tiers/{tierId}` is also ADMIN-only, refuses referenced tiers with `409 SUBSCRIPTION_TIER_IN_USE`, relies on the non-cascading `subscriptions.tier_id` foreign key as a race backstop, and evicts the exact key only after a successful commit; tier lifecycle and pricing remain planned |
+| Subscription tier administration | **Implemented (Phase 24, Slices 8, 9, 13, and 14)** — `POST /subscription-tiers` and `GET /subscription-tiers` are ADMIN-only (creation returns `201` + `Location` and rejects duplicate names with `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`; listing returns all tiers ordered by `id` ASC and is not cached); `PATCH /subscription-tiers/{tierId}` is ADMIN-only, validates partial fields, persists the update, and evicts only the exact post-commit `subscriptionTier::<tierId>` cache key; `DELETE /subscription-tiers/{tierId}` is also ADMIN-only, refuses referenced tiers with `409 SUBSCRIPTION_TIER_IN_USE`, relies on the non-cascading `subscriptions.tier_id` foreign key as a race backstop, and evicts the exact key only after a successful commit; `PATCH /subscription-tiers/{tierId}/status` is ADMIN-only, switches `ACTIVE`/`INACTIVE` with an idempotent no-op for the current status, and evicts the exact key only after a real, committed change — while an `INACTIVE` tier is rejected as a target for `POST /subscriptions` and `PATCH /subscriptions/{id}/tier` with `409 SUBSCRIPTION_TIER_INACTIVE` (existing subscriptions referencing the tier are never modified); pricing remains planned |
 | Credential ownership & issuance (credentials) | **Implemented (Phase 13)** — credentials are owner-scoped through their application; server-generated `clientId` + `clientSecret` (BCrypt hash stored, plaintext shown once); cross-owner access returns `404 CREDENTIAL_NOT_FOUND` (no existence leak); `clientId` unique at service + DB level; lifecycle management (PATCH status, PATCH expiration, rotate) is ADMIN-only and global by credential id (Phase 24 Slices 3, 11, 12) |
 | Account/Payment/Transaction ownership | **Implemented (Phase 14)** — the Payment Service validates the same JWT locally, requires `ADMIN`/`DEVELOPER` on all endpoints (`.anyRequest().denyAll()`, unknown roles fail closed to `401`), derives owners from `sub`, and returns `404` (no existence leak) for any missing or unowned account/payment/transaction; financial fields (status/type/currency) are always server-derived |
 | Gateway routing & upstream failure handling | **Implemented (Phase 15)** — 9 path routes forward to Identity/API Management/Payment with the URI untouched; unreachable/timed-out upstreams return a generic `503 UPSTREAM_SERVICE_UNAVAILABLE` (no internal addresses or stack traces); backend 4xx/5xx pass through; method/path/route/status/duration logged without `Authorization` headers or bodies; only `/actuator/health` exposed |
 | JWT validation at gateway | **Implemented (Phase 16)** — the gateway rejects any non-public routed request without a valid Bearer JWT (HS256 verified against the shared `JWT_SECRET`, unexpired, numeric `sub` + `ADMIN`/`DEVELOPER` `role`); rejections return a generic `401 UNAUTHENTICATED` that never reveals which check failed or any token material; valid `Authorization` headers are forwarded unchanged and services still validate locally (defense in depth); the gateway issues no tokens and does no business authorization |
-| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Since Phase 24 (Slice 2) only **active** subscriptions satisfy the checks (an ADMIN-only status lifecycle manages `PENDING/ACTIVE/DENIED/REVOKED`); since Phase 24 (Slice 3) the application flow additionally authenticates **only `ACTIVE` credentials** — `GET /internal/credential-check` rejects `REVOKED` credentials (the ADMIN-only status/rotation endpoints manage `ACTIVE`/`REVOKED`). Since Phase 24 (Slice 4) the checks also carry the active subscription's **tier rate-limit policy** that the gateway enforces per request; tier lifecycle and pricing remain planned; ADMIN-only tier create/list, partial update, and safe deletion are implemented (Phase 24 Slices 8, 9, and 13) and Redis authorization caching remains unused |
+| Subscription enforcement | **Implemented (Phases 17 and 21, managed-API calls)** — for `/runtime/apis/**`: JWT callers (Phase 17) must own an application subscribed to the target API version, verified via the authenticated, non-routable internal API Management `GET /internal/subscription-check` endpoint against PostgreSQL (no cache); application callers (Phase 21) are authorized by the **authenticated application's own** subscription, returned by the same single `GET /internal/credential-check` call that verifies the credential. Unsubscribed → `403 SUBSCRIPTION_REQUIRED`, failed check → `503` (`SUBSCRIPTION_SERVICE_UNAVAILABLE` / `CREDENTIAL_SERVICE_UNAVAILABLE`) — fail closed; identity is never client-supplied and there is no `ADMIN` bypass. Since Phase 24 (Slice 2) only **active** subscriptions satisfy the checks (an ADMIN-only status lifecycle manages `PENDING/ACTIVE/DENIED/REVOKED`); since Phase 24 (Slice 3) the application flow additionally authenticates **only `ACTIVE` credentials** — `GET /internal/credential-check` rejects `REVOKED` credentials (the ADMIN-only status/rotation endpoints manage `ACTIVE`/`REVOKED`). Since Phase 24 (Slice 4) the checks also carry the active subscription's **tier rate-limit policy** that the gateway enforces per request; ADMIN-only tier create/list, partial update, safe deletion, and the `ACTIVE`/`INACTIVE` tier status lifecycle are implemented (Phase 24 Slices 8, 9, 13, and 14 — an `INACTIVE` tier blocks only **new** subscription/reassignment targets with `409 SUBSCRIPTION_TIER_INACTIVE`, never de-authorizing existing subscriptions), tier pricing remains planned, and Redis authorization caching remains unused |
 | Client-credential gateway authentication | **Implemented (Phase 21)** — `/runtime/apis/**` accepts `Authorization: Basic base64(clientId:clientSecret)`; the gateway verifies the credential (and the application's subscription) via the internal `GET /internal/credential-check` endpoint (BCrypt against the stored hash, direct PostgreSQL query, no cache) and **strips the Basic header before forwarding**; unknown/malformed credentials → `401 CLIENT_CREDENTIAL_INVALID`, check failure → `503 CREDENTIAL_SERVICE_UNAVAILABLE` (fail closed), no subscription → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic on `/apis/**` → `401`); secrets/hashes are never stored, returned, forwarded, or logged by the gateway |
 | Trusted identity headers (gateway → managed APIs) | **Implemented (Phase 22)** — after authenticating a `/runtime/apis/**` request the gateway adds verified identity headers (`X-User-Id` + `X-Roles` for the JWT/user flow; `X-User-Id` + `X-Application-Id` + `X-Client-Id` for the client-credential/application flow) before forwarding, keeps Bearer forwarding / Basic stripping unchanged, applies them only on runtime routes, and always strips client-supplied values of these four headers (never trusted from the client); platform-management routes receive none. `X-Scopes` remains planned |
-| Rate limiting | **Implemented (Phase 21; tier-policy-driven since Phase 24 Slice 4)** — the gateway rate-limits `/runtime/apis/**` before routing with Redis fixed-window counters per API version (`rate_limit:user:{userId}:{context}:{version}` for JWT callers, `rate_limit:app:{applicationId}:{context}:{version}` for application callers); the limit/window come from the **active subscription's tier policy** (`requestsPerWindow` default `100` per `windowSeconds` default `60` s) returned by the internal subscription/credential checks — the gateway has no rate-limit configuration, and a confirmed subscription with a missing/malformed policy fails closed (`503`) before the limiter is contacted; exceed → `429 RATE_LIMIT_EXCEEDED` with `Retry-After`, Redis failure → `503 RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). Tier lifecycle and per-subscription pricing remain planned; ADMIN-only tier create/list, partial tier updates, and safe deletion of unreferenced tiers are implemented (Phase 24 Slices 8, 9, and 13) |
+| Rate limiting | **Implemented (Phase 21; tier-policy-driven since Phase 24 Slice 4)** — the gateway rate-limits `/runtime/apis/**` before routing with Redis fixed-window counters per API version (`rate_limit:user:{userId}:{context}:{version}` for JWT callers, `rate_limit:app:{applicationId}:{context}:{version}` for application callers); the limit/window come from the **active subscription's tier policy** (`requestsPerWindow` default `100` per `windowSeconds` default `60` s) returned by the internal subscription/credential checks — the gateway has no rate-limit configuration, and a confirmed subscription with a missing/malformed policy fails closed (`503`) before the limiter is contacted; exceed → `429 RATE_LIMIT_EXCEEDED` with `Retry-After`, Redis failure → `503 RATE_LIMIT_SERVICE_UNAVAILABLE` (fail closed). Per-subscription pricing remains planned; ADMIN-only tier create/list, partial tier updates, safe deletion of unreferenced tiers, and the tier status lifecycle are implemented (Phase 24 Slices 8, 9, 13, and 14) |
 | Password hashing | **Implemented (Phases 3/4)** — BCrypt via `spring-security-crypto`; only hashes are stored |
 | Credential hashing (client secrets) | **Implemented (Phase 13)** — client secrets hashed with the same BCrypt `PasswordEncoder`; only `client_secret_hash` is persisted |
 | Secret management / env-config | **Partially implemented** — datasource credentials and the JWT signing secret (`JWT_SECRET`, `JWT_EXPIRATION_SECONDS`) come from environment variables; fail-fast if the required signing secret is absent. Redis coordinates (`REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`) are env-bound since Phase 18 and an empty password maps to *no password* (never a literal AUTH); the gateway config declares no password key |
@@ -874,7 +882,7 @@ Implemented behavior:
 > caller's verified identity to the consumed API as gateway-generated
 > `X-User-Id`/`X-Roles` (user flow) and `X-User-Id`/`X-Application-Id`/
 > `X-Client-Id` (application flow) headers (Phase 22), always stripping any
-> client-supplied values of those headers. Scope enforcement and tier lifecycle/
+> client-supplied values of those headers. Scope enforcement and
 > access-control expansion remain planned; subscription **status**
 > (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`) is enforced by the API Management
 > Service's internal checks (Phase 24, Slice 2) and credential **status**

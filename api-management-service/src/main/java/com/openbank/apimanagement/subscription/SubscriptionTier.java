@@ -2,6 +2,8 @@ package com.openbank.apimanagement.subscription;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -36,6 +38,15 @@ public class SubscriptionTier {
     @Column(name = "window_seconds", nullable = false, columnDefinition = "integer not null default 60")
     private int windowSeconds;
 
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "status",
+            nullable = false,
+            length = 32,
+            columnDefinition = "varchar(32) not null default 'ACTIVE'"
+    )
+    private SubscriptionTierStatus status;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -50,6 +61,7 @@ public class SubscriptionTier {
         this.description = description;
         this.requestsPerWindow = requestsPerWindow;
         this.windowSeconds = windowSeconds;
+        this.status = SubscriptionTierStatus.ACTIVE;
         Instant now = Instant.now();
         this.createdAt = now;
         this.updatedAt = now;
@@ -75,6 +87,11 @@ public class SubscriptionTier {
         this.updatedAt = Instant.now();
     }
 
+    public void changeStatus(SubscriptionTierStatus newStatus) {
+        this.status = newStatus;
+        this.updatedAt = Instant.now();
+    }
+
     public Long getId() {
         return id;
     }
@@ -93,6 +110,10 @@ public class SubscriptionTier {
 
     public int getWindowSeconds() {
         return windowSeconds;
+    }
+
+    public SubscriptionTierStatus getStatus() {
+        return status;
     }
 
     public Instant getCreatedAt() {

@@ -31,6 +31,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -116,11 +117,14 @@ class SubscriptionTierIntegrationTest {
                 .andExpect(jsonPath("$.windowSeconds").value(60))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
-                .andExpect(jsonPath("$.status").doesNotExist());
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
 
         assertThat(jdbcTemplate.queryForObject(
                 "select requests_per_window from subscription_tiers where name = 'Bronze'", Integer.class))
                 .isEqualTo(100);
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where name = 'Bronze'", String.class))
+                .isEqualTo("ACTIVE");
         assertThat(jdbcTemplate.queryForObject(
                 "select window_seconds from subscription_tiers where name = 'Bronze'", Integer.class))
                 .isEqualTo(60);
@@ -204,7 +208,7 @@ class SubscriptionTierIntegrationTest {
                 .andExpect(jsonPath("$[0].requestsPerWindow").value(200))
                 .andExpect(jsonPath("$[1].name").value("Gold"))
                 .andExpect(jsonPath("$[1].requestsPerWindow").value(1000))
-                .andExpect(jsonPath("$[0].status").doesNotExist());
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"));
     }
 
     @Test
@@ -414,6 +418,112 @@ class SubscriptionTierIntegrationTest {
                 "select count(*) from subscription_tiers", Long.class)).isEqualTo(1L);
     }
 
+    @Test
+    void updateStatusEndpointPersistsNewStatusAndReturnsIt() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId() + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(created.getId().intValue()))
+                .andExpect(jsonPath("$.name").value("Gold"))
+                .andExpect(jsonPath("$.status").value("INACTIVE"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("INACTIVE");
+    }
+
+    @Test
+    void updateStatusEndpointReactivatesADeactivatedTier() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        subscriptionTierService.changeStatus(
+                created.getId(), new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE));
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId() + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "ACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACTIVE"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void updateStatusEndpointRejectsMissingStatusWith400() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId() + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("status is required"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void updateStatusEndpointRejectsUnknownTierWith404() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/999/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"));
+    }
+
+    @Test
+    void changeStatusWithTheSameStatusDoesNotTouchUpdatedAt() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        String updatedAtBefore = jdbcTemplate.queryForObject(
+                "select updated_at::text from subscription_tiers where id = ?", String.class, created.getId());
+
+        subscriptionTierService.changeStatus(
+                created.getId(), new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.ACTIVE));
+
+        String updatedAtAfter = jdbcTemplate.queryForObject(
+                "select updated_at::text from subscription_tiers where id = ?", String.class, created.getId());
+        assertThat(updatedAtAfter).isEqualTo(updatedAtBefore);
+    }
+
+    @Test
+    void deactivatingATierKeepsExistingSubscriptionsIntact() {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+        Subscription subscription = createSubscription(created);
+
+        subscriptionTierService.changeStatus(
+                created.getId(), new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("INACTIVE");
+        assertThat(subscriptionRepository.findById(subscription.getId())).isPresent();
+        assertThat(jdbcTemplate.queryForObject(
+                "select tier_id from subscriptions where id = ?", Long.class, subscription.getId()))
+                .isEqualTo(created.getId());
+    }
+
     private Subscription createSubscription(SubscriptionTier created) {
         Api api = apiRepository.saveAndFlush(new Api(
                 "Payments API " + System.nanoTime(), "Payment operations", "/payments-" + System.nanoTime()));
@@ -449,7 +559,8 @@ class SubscriptionTierIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "name", "description", "requests_per_window", "window_seconds", "created_at", "updated_at");
+                "id", "name", "description", "requests_per_window", "window_seconds", "status",
+                "created_at", "updated_at");
 
         List<String> nullableColumns = jdbcTemplate.queryForList(
                 "select column_name from information_schema.columns "
@@ -485,6 +596,13 @@ class SubscriptionTierIntegrationTest {
                         + "and column_name = 'window_seconds'",
                 String.class);
         assertThat(defaultWindowSeconds).isEqualTo("60");
+
+        String defaultStatus = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscription_tiers' "
+                        + "and column_name = 'status'",
+                String.class);
+        assertThat(defaultStatus).isEqualTo("'ACTIVE'::character varying");
 
         List<String> uniqueColumns = jdbcTemplate.queryForList(
                 "select a.attname from pg_constraint con "

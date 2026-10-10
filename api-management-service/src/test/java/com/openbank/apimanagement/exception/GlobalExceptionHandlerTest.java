@@ -372,6 +372,23 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void inactiveSubscriptionTierProducesStructured409() {
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleSubscriptionTierInactive(
+                        new SubscriptionTierInactiveException(7L), request("PATCH", "/subscription-tiers/7/status"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(409);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(409);
+        assertThat(body.error()).isEqualTo("Conflict");
+        assertThat(body.code()).isEqualTo("SUBSCRIPTION_TIER_INACTIVE");
+        assertThat(body.path()).isEqualTo("/subscription-tiers/7/status");
+        assertThat(body.message()).contains("7").contains("not active");
+        assertThat(body.fieldErrors()).isEmpty();
+    }
+
+    @Test
     void credentialNotFoundProducesStructured404() {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
                 handler.handleCredentialNotFound(

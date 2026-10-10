@@ -45,6 +45,13 @@ public class SubscriptionTierController {
         return subscriptionTierService.update(tierId, request);
     }
 
+    @PatchMapping("/{tierId}/status")
+    public SubscriptionTierResponse updateStatus(
+            @PathVariable Long tierId,
+            @Valid @RequestBody UpdateSubscriptionTierStatusRequest request) {
+        return subscriptionTierService.changeStatus(tierId, request);
+    }
+
     @DeleteMapping("/{tierId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long tierId) {

@@ -62,6 +62,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/subscription-tiers").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/subscription-tiers").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/subscription-tiers/{tierId}").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PATCH, "/subscription-tiers/{tierId}/status").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.DELETE, "/subscription-tiers/{tierId}").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/internal/subscription-check").authenticated()
                         // Intentionally public: the API Gateway calls this with the caller's

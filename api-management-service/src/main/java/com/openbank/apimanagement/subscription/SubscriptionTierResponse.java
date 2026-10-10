@@ -8,6 +8,7 @@ public record SubscriptionTierResponse(
         String description,
         int requestsPerWindow,
         int windowSeconds,
+        SubscriptionTierStatus status,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -19,6 +20,7 @@ public record SubscriptionTierResponse(
                 tier.getDescription(),
                 tier.getRequestsPerWindow(),
                 tier.getWindowSeconds(),
+                tier.getStatus(),
                 tier.getCreatedAt(),
                 tier.getUpdatedAt()
         );

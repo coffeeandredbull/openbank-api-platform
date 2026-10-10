@@ -44,7 +44,8 @@ class SubscriptionTierControllerTest {
     @Test
     void createReturns201WithLocationAndPublicTierFields() throws Exception {
         when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
-                .thenReturn(new SubscriptionTierResponse(7L, "Premium", "Premium access", 500, 30, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscription-tiers")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -65,7 +66,7 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$.windowSeconds").value(30))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
-                .andExpect(jsonPath("$.status").doesNotExist())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());
 
         verify(subscriptionTierService).create(any(CreateSubscriptionTierRequest.class));
@@ -74,7 +75,8 @@ class SubscriptionTierControllerTest {
     @Test
     void createForwardsTheRequestBody() throws Exception {
         when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
-                .thenReturn(new SubscriptionTierResponse(7L, "Developer", null, 100, 60, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Developer", null, 100, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscription-tiers")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -152,8 +154,10 @@ class SubscriptionTierControllerTest {
     @Test
     void listReturnsPublicTierFieldsInIdOrder() throws Exception {
         when(subscriptionTierService.list()).thenReturn(java.util.List.of(
-                new SubscriptionTierResponse(1L, "Bronze", "Basic", 100, 60, TIMESTAMP, TIMESTAMP),
-                new SubscriptionTierResponse(2L, "Gold", "Premium", 1000, 60, TIMESTAMP, TIMESTAMP)));
+                new SubscriptionTierResponse(
+                        1L, "Bronze", "Basic", 100, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP),
+                new SubscriptionTierResponse(
+                        2L, "Gold", "Premium", 1000, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/subscription-tiers"))
                 .andExpect(status().isOk())
@@ -164,7 +168,7 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$[0].windowSeconds").value(60))
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].name").value("Gold"))
-                .andExpect(jsonPath("$[0].status").doesNotExist())
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"))
                 .andExpect(jsonPath("$[0].ownerUserId").doesNotExist());
     }
 
@@ -191,7 +195,8 @@ class SubscriptionTierControllerTest {
     @Test
     void updateReturns200WithPublicTierFields() throws Exception {
         when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
-                .thenReturn(new SubscriptionTierResponse(7L, "Premium", "Premium access", 500, 30, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(patch("/subscription-tiers/7")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -211,14 +216,15 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$.windowSeconds").value(30))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
-                .andExpect(jsonPath("$.status").doesNotExist())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist());
     }
 
     @Test
     void updateForwardsOmittedFieldsAsNull() throws Exception {
         when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
-                .thenReturn(new SubscriptionTierResponse(7L, "Gold", "Description", 500, 60, TIMESTAMP, TIMESTAMP));
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Gold", "Description", 500, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(patch("/subscription-tiers/7")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -333,6 +339,74 @@ class SubscriptionTierControllerTest {
                 .andExpect(r -> assertThat(r.getResponse().getContentAsString())
                         .doesNotContain("foreign key")
                         .doesNotContain("DataIntegrityViolation"));
+    }
+
+    @Test
+    void updateStatusReturns200WithUpdatedStatus() throws Exception {
+        when(subscriptionTierService.changeStatus(eq(7L), any(UpdateSubscriptionTierStatusRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.INACTIVE, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscription-tiers/7/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(7))
+                .andExpect(jsonPath("$.name").value("Premium"))
+                .andExpect(jsonPath("$.status").value("INACTIVE"));
+
+        verify(subscriptionTierService)
+                .changeStatus(eq(7L), eq(new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE)));
+    }
+
+    @Test
+    void updateStatusRejectsMissingStatusWith400() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/7/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("status is required"));
+
+        verify(subscriptionTierService, never()).changeStatus(any(), any());
+    }
+
+    @Test
+    void updateStatusRejectsInvalidStatusValueWith400() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/7/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "PAUSED"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.status").value("invalid value"));
+
+        verify(subscriptionTierService, never()).changeStatus(any(), any());
+    }
+
+    @Test
+    void updateStatusReturns404WhenTierDoesNotExist() throws Exception {
+        when(subscriptionTierService.changeStatus(eq(999L), any(UpdateSubscriptionTierStatusRequest.class)))
+                .thenThrow(new SubscriptionTierNotFoundException(999L));
+
+        mockMvc.perform(patch("/subscription-tiers/999/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/subscription-tiers/999/status"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id 999 does not exist"));
     }
 
     private void assertInvalid(String field, String value, String message) throws Exception {

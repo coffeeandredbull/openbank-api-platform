@@ -11,6 +11,7 @@ import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierInactiveException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -107,6 +108,23 @@ class SubscriptionServiceTest {
         assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 999L)))
                 .isInstanceOf(SubscriptionTierNotFoundException.class)
                 .hasMessageContaining("999");
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void createRejectsInactiveTierBeforeTheDuplicateCheck() {
+        SubscriptionTier inactive = tier(15L, "Developer");
+        inactive.changeStatus(SubscriptionTierStatus.INACTIVE);
+        when(applicationRepository.findByIdAndOwnerUserId(10L, 42L))
+                .thenReturn(Optional.of(application(10L, 42L)));
+        when(apiVersionRepository.findById(20L)).thenReturn(Optional.of(apiVersion(20L)));
+        when(subscriptionTierService.get(15L)).thenReturn(inactive);
+
+        assertThatThrownBy(() -> subscriptionService.create(42L, new CreateSubscriptionRequest(10L, 20L, 15L)))
+                .isInstanceOf(SubscriptionTierInactiveException.class)
+                .hasMessageContaining("15")
+                .hasMessageContaining("not active");
+        verify(subscriptionRepository, never()).existsByApplicationIdAndApiVersionId(any(), any());
         verify(subscriptionRepository, never()).save(any(Subscription.class));
     }
 
@@ -481,6 +499,39 @@ class SubscriptionServiceTest {
                 .hasMessageContaining("999");
 
         assertThat(stored.getTier().getId()).isEqualTo(15L);
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeTierRejectsInactiveTargetTierWithoutChangingTheSubscription() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        SubscriptionTier inactive = tier(16L, "Gold");
+        inactive.changeStatus(SubscriptionTierStatus.INACTIVE);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(16L)).thenReturn(inactive);
+
+        assertThatThrownBy(() -> subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(16L)))
+                .isInstanceOf(SubscriptionTierInactiveException.class)
+                .hasMessageContaining("16");
+
+        assertThat(stored.getTier().getId()).isEqualTo(15L);
+        verify(subscriptionRepository, never()).save(any(Subscription.class));
+    }
+
+    @Test
+    void changeTierRejectsAnInactiveTierEvenWhenItIsTheCurrentTier() {
+        Subscription stored = subscription(30L, 10L, 20L, TIMESTAMP, TIMESTAMP);
+        SubscriptionTier inactiveCurrent = tier(15L, "Developer");
+        inactiveCurrent.changeStatus(SubscriptionTierStatus.INACTIVE);
+        when(subscriptionRepository.findById(30L)).thenReturn(Optional.of(stored));
+        when(subscriptionTierService.get(15L)).thenReturn(inactiveCurrent);
+
+        assertThatThrownBy(() -> subscriptionService.changeTier(
+                30L, new ChangeSubscriptionTierRequest(15L)))
+                .isInstanceOf(SubscriptionTierInactiveException.class)
+                .hasMessageContaining("15");
+
         verify(subscriptionRepository, never()).save(any(Subscription.class));
     }
 

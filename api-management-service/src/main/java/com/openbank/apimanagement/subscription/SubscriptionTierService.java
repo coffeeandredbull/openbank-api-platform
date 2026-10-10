@@ -125,6 +125,30 @@ public class SubscriptionTierService {
                 .orElseThrow(() -> new SubscriptionTierNotFoundException(id));
     }
 
+    /**
+     * Changes only the lifecycle status of an existing tier. The tier status is
+     * a two-state lifecycle ({@code ACTIVE}/{@code INACTIVE}) with no
+     * transition restrictions, so setting the current status again is an
+     * idempotent no-op: the tier is not saved, its timestamps are untouched,
+     * and no cache entry is evicted (nothing can have gone stale). A real
+     * change saves and flushes first and then evicts exactly its own
+     * {@code subscriptionTier::<tierId>} entry through the post-commit
+     * {@link CacheInvalidationService}, so a rejected or rolled-back update
+     * evicts nothing.
+     */
+    @Transactional
+    public SubscriptionTierResponse changeStatus(Long tierId, UpdateSubscriptionTierStatusRequest request) {
+        SubscriptionTier tier = subscriptionTierRepository.findById(tierId)
+                .orElseThrow(() -> new SubscriptionTierNotFoundException(tierId));
+        if (tier.getStatus() == request.status()) {
+            return SubscriptionTierResponse.from(tier);
+        }
+        tier.changeStatus(request.status());
+        SubscriptionTier saved = subscriptionTierRepository.saveAndFlush(tier);
+        cacheInvalidationService.evict("subscriptionTier", tierId);
+        return SubscriptionTierResponse.from(saved);
+    }
+
     @Transactional(readOnly = true)
     public List<SubscriptionTierResponse> list() {
         return subscriptionTierRepository.findAllByOrderByIdAsc().stream()

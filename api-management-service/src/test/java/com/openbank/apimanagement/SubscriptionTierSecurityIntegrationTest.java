@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.Date;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -121,6 +122,76 @@ class SubscriptionTierSecurityIntegrationTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
 
         assertThatNoTiersPersisted();
+    }
+
+    @Test
+    void adminCanChangeSubscriptionTierStatus() throws Exception {
+        Long tierId = jdbcTemplate.queryForObject(
+                "insert into subscription_tiers (name, description, requests_per_window, window_seconds, status, "
+                        + "created_at, updated_at) values ('Gold', 'Premium', 1000, 60, 'ACTIVE', now(), now()) "
+                        + "returning id",
+                Long.class);
+
+        mockMvc.perform(patch("/subscription-tiers/" + tierId + "/status")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(tierId.intValue()))
+                .andExpect(jsonPath("$.status").value("INACTIVE"));
+    }
+
+    @Test
+    void developerCannotChangeSubscriptionTierStatus() throws Exception {
+        Long tierId = jdbcTemplate.queryForObject(
+                "insert into subscription_tiers (name, description, requests_per_window, window_seconds, status, "
+                        + "created_at, updated_at) values ('Gold', 'Premium', 1000, 60, 'ACTIVE', now(), now()) "
+                        + "returning id",
+                Long.class);
+
+        mockMvc.perform(patch("/subscription-tiers/" + tierId + "/status")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThatTierStatusRemains(tierId, "ACTIVE");
+    }
+
+    @Test
+    void unauthenticatedStatusChangeReturns401() throws Exception {
+        Long tierId = jdbcTemplate.queryForObject(
+                "insert into subscription_tiers (name, description, requests_per_window, window_seconds, status, "
+                        + "created_at, updated_at) values ('Gold', 'Premium', 1000, 60, 'ACTIVE', now(), now()) "
+                        + "returning id",
+                Long.class);
+
+        mockMvc.perform(patch("/subscription-tiers/" + tierId + "/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "INACTIVE"
+                                }
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+
+        assertThatTierStatusRemains(tierId, "ACTIVE");
+    }
+
+    private void assertThatTierStatusRemains(Long tierId, String expectedStatus) {
+        org.assertj.core.api.Assertions.assertThat(jdbcTemplate.queryForObject(
+                "select status from subscription_tiers where id = ?", String.class, tierId))
+                .isEqualTo(expectedStatus);
     }
 
     private void assertThatNoTiersPersisted() {

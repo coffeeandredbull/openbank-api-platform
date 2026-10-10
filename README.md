@@ -384,8 +384,9 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    `PATCH /subscription-tiers/{tierId}` for partial tier-policy updates; Slice 9
    adds safe ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced
    tiers, returning `204` and `409 SUBSCRIPTION_TIER_IN_USE` when subscriptions
-   still reference the tier. Tier creation, listing, lifecycle, and pricing
-   remain planned. Tier-based rate limiting is implemented in Phase 24 Slice 4
+   still reference the tier. Tier creation/listing (Slice 13) and the tier
+   status lifecycle (Slice 14) are implemented; pricing remains planned.
+   Tier-based rate limiting is implemented in Phase 24 Slice 4
    (below).
 - **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
    subscriptions now carry a **status state machine** — `PENDING → ACTIVE →
@@ -446,7 +447,8 @@ a subscribed request with a missing/malformed policy fails closed with `503`
     cached read model is keyed by a database id, a **create never evicts** (it
     only introduces a fresh id that was never cacheable — a natural miss on
     first read, so no existing entry can go stale); in-place mutations — the
-    version **lifecycle change** and the tier update — evict exactly their own
+    version **lifecycle change**, the tier update, and the tier **status
+    change** — evict exactly their own
     `apiVersion::<apiId>::<versionId>` or `subscriptionTier::<tierId>` key
     **after commit**; tier deletion is included in the same post-commit
     exact-key invalidation path. A
@@ -485,9 +487,10 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    `description`, `requestsPerWindow`, and/or `windowSeconds`; at least one field
    is required and omitted fields remain unchanged. PostgreSQL remains the
    system of record, name conflicts return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`,
-   missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
-   update evicts only `subscriptionTier::<tierId>` after commit. Tier creation,
-   listing, lifecycle, and pricing remain planned.
+    missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
+    update evicts only `subscriptionTier::<tierId>` after commit. Pricing
+    beyond the rate-limit policy remains planned (creation/listing arrived in
+    Slice 13, the status lifecycle in Slice 14).
  - **Phase 24, Slice 9 — safe subscription tier deletion:** an authenticated
    `ADMIN` can delete an unreferenced tier with
    `DELETE /subscription-tiers/{tierId}`; success returns `204 No Content`.
@@ -549,8 +552,24 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     invalid input returns `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403
     ACCESS_DENIED` and an unauthenticated caller receives `401
     UNAUTHENTICATED`. Creation does not evict Redis (a new id was never
-    cached). Tier lifecycle and pricing remain planned.
-  - **Planned phases (subject to change):** tier lifecycle/pricing,
+    cached). Tier pricing beyond the rate-limit policy remains planned.
+  - **Phase 24, Slice 14 — subscription tier status lifecycle:** every tier
+    carries a `status` (`ACTIVE` on creation, persisted as `varchar(32) NOT NULL
+    default 'ACTIVE'`), and an authenticated `ADMIN` can switch it with
+    `PATCH /subscription-tiers/{tierId}/status` and body
+    `{ "status": "ACTIVE" | "INACTIVE" }`. Both transitions are allowed in
+    either direction; setting the current status is an idempotent no-op that
+    does not touch `updatedAt`. A missing status returns `400
+    VALIDATION_FAILED`, a missing tier returns `404
+    SUBSCRIPTION_TIER_NOT_FOUND`, a `DEVELOPER` receives `403 ACCESS_DENIED`,
+    and an unauthenticated caller receives `401 UNAUTHENTICATED`. A real change
+    evicts only `subscriptionTier::<tierId>` after commit (failed/rolled-back
+    changes evict nothing). An `INACTIVE` tier cannot be selected for a new
+    subscription or a tier reassignment — both return `409
+    SUBSCRIPTION_TIER_INACTIVE` — while existing subscriptions that already
+    reference the tier are left untouched, keep their rate-limit policy, and
+    remain enforced by the gateway.
+  - **Planned phases (subject to change):** tier pricing,
     credential scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,

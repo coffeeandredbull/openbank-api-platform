@@ -4,6 +4,7 @@ import com.openbank.apimanagement.auth.JwtIdentity;
 import com.openbank.apimanagement.auth.UserRole;
 import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierInactiveException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,6 +87,27 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.ownerUserId").doesNotExist())
                 .andExpect(jsonPath("$.apiKey").doesNotExist());
+    }
+
+    @Test
+    void createReturnsStructured409WhenTargetTierIsInactive() throws Exception {
+        when(subscriptionService.create(eq(42L), any(CreateSubscriptionRequest.class)))
+                .thenThrow(new SubscriptionTierInactiveException(15L));
+
+        mockMvc.perform(post("/subscriptions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": 10,
+                                  "apiVersionId": 20,
+                                  "tierId": 15
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_INACTIVE"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.path").value("/subscriptions"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id 15 is not active"));
     }
 
     @Test
@@ -401,6 +423,21 @@ class SubscriptionControllerTest {
                 .andExpect(jsonPath("$.code").value("APPLICATION_SUBSCRIPTION_NOT_FOUND"))
                 .andExpect(jsonPath("$.path").value("/subscriptions/999/tier"))
                 .andExpect(jsonPath("$.message").value("Subscription with id 999 does not exist"));
+    }
+
+    @Test
+    void changeTierReturnsStructured409WhenTargetTierIsInactive() throws Exception {
+        when(subscriptionService.changeTier(eq(1L), any(ChangeSubscriptionTierRequest.class)))
+                .thenThrow(new SubscriptionTierInactiveException(16L));
+
+        mockMvc.perform(patch("/subscriptions/1/tier")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":16}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_INACTIVE"))
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.path").value("/subscriptions/1/tier"))
+                .andExpect(jsonPath("$.message").value("Subscription tier with id 16 is not active"));
     }
 
     @Test

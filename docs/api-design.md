@@ -394,7 +394,8 @@ unchanged. A `DEVELOPER` receives `403 ACCESS_DENIED`; an unauthenticated caller
 SUBSCRIPTION_TIER_NOT_FOUND`, a conflicting name returns `409
 SUBSCRIPTION_TIER_ALREADY_EXISTS`, and invalid values return `400
 VALIDATION_FAILED`. The response is the tier's public fields (`id`, `name`,
-`description`, `requestsPerWindow`, `windowSeconds`, `createdAt`, `updatedAt`).
+`description`, `requestsPerWindow`, `windowSeconds`, `status`, `createdAt`,
+`updatedAt`).
 PostgreSQL remains the source of truth; after a successful commit, only the
 exact `subscriptionTier::<tierId>` Redis entry is evicted. A failed transaction
 does not evict. Explicit ADMIN tier reassignment is implemented in Phase 24
@@ -410,8 +411,8 @@ listing:**
   default to `100`/`60` (the same defaults as the table columns), and when
   supplied they must be positive. Returns `201 Created` with
   `Location: /subscription-tiers/{id}` and the tier's public fields (`id`,
-  `name`, `description`, `requestsPerWindow`, `windowSeconds`, `createdAt`,
-  `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
+  `name`, `description`, `requestsPerWindow`, `windowSeconds`, `status`,
+  `createdAt`, `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
   (service check plus unique-constraint race backstop). Invalid input returns
   `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403 ACCESS_DENIED`; an
   unauthenticated caller receives `401 UNAUTHENTICATED`. Creation does not
@@ -422,7 +423,35 @@ listing:**
   same public fields. The list is not cached (only `GET`-by-id via the internal
   `subscriptionTier` cache is). A `DEVELOPER` receives `403 ACCESS_DENIED`; an
   unauthenticated caller receives `401 UNAUTHENTICATED`.
-- Tier lifecycle states and pricing beyond the rate-limit policy remain planned.
+- Pricing beyond the rate-limit policy remains planned; the tier status
+  lifecycle is implemented in Slice 14 below.
+
+**Implemented so far (Phase 24, Slice 14) — subscription tier status
+lifecycle:**
+- Every tier carries a `status` (`ACTIVE` or `INACTIVE`), persisted as
+  `varchar(32) NOT NULL DEFAULT 'ACTIVE'` and exposed in every tier response
+  alongside the other public fields. New tiers are `ACTIVE`.
+- `PATCH /subscription-tiers/{tierId}/status` — **ADMIN-only** change of the
+  lifecycle state. Body: `{ "status": "ACTIVE" | "INACTIVE" }` (`status` is
+  required). Both directions are allowed — there is no transition matrix for
+  the two-state lifecycle — and supplying the current status is an idempotent
+  no-op: the tier is not saved, `updatedAt` is untouched, and no cache entry
+  is evicted. Returns `200 OK` with the tier's public fields; a missing status
+  or invalid value returns `400 VALIDATION_FAILED`; a missing tier returns
+  `404 SUBSCRIPTION_TIER_NOT_FOUND`; a `DEVELOPER` receives `403
+  ACCESS_DENIED`; an unauthenticated caller receives `401 UNAUTHENTICATED`.
+  A real change evicts only the exact `subscriptionTier::<tierId>` Redis entry
+  **after commit** (via `CacheInvalidationService`); a rejected or rolled-back
+  update evicts nothing.
+- **Inactive-tier enforcement:** selecting an `INACTIVE` tier as the target of
+  `POST /subscriptions` or `PATCH /subscriptions/{subscriptionId}/tier`
+  returns `409 SUBSCRIPTION_TIER_INACTIVE` and changes nothing (the tier is
+  checked right after the lookup, before the duplicate-subscription and
+  same-tier idempotency checks respectively). Deactivating a tier **never**
+  touches subscriptions that already reference it: they keep their
+  `tier_id`, status, and rate-limit policy, and the gateway's enforcement is
+  unchanged — existing traffic continues under the same policy. Reactivating
+  the tier simply re-enables new assignments.
 
 **Implemented so far (Phase 24, Slice 9) — safe subscription tier deletion:**
 an `ADMIN` can remove an unreferenced tier with
@@ -502,8 +531,10 @@ the request body.
   (`requestsPerWindow`/`windowSeconds`, Phase 24 Slice 4) that the gateway
   enforces per active subscription; Slice 8 adds ADMIN-only partial tier
   updates, Slice 9 adds safe deletion of unreferenced tiers, and Slice 10 adds
-  explicit ADMIN tier reassignment for existing subscriptions, while tier
-  creation/listing, lifecycle, and pricing remain planned.
+  explicit ADMIN tier reassignment for existing subscriptions; tier
+  creation/listing (Slice 13) and the ACTIVE/INACTIVE tier status lifecycle
+  (Slice 14) are implemented, while pricing beyond the rate-limit policy
+  remains planned.
 - **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
   a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
   and a nullable `revokedAt` timestamp (set when a subscription is revoked).

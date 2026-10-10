@@ -54,6 +54,7 @@ class SubscriptionTierServiceTest {
         assertThat(persisted.getDescription()).isEqualTo("Standard access");
         assertThat(persisted.getRequestsPerWindow()).isEqualTo(500);
         assertThat(persisted.getWindowSeconds()).isEqualTo(30);
+        assertThat(persisted.getStatus()).isEqualTo(SubscriptionTierStatus.ACTIVE);
         assertThat(persisted.getCreatedAt()).isEqualTo(persisted.getUpdatedAt());
 
         assertThat(created.getId()).isEqualTo(1L);
@@ -320,6 +321,66 @@ class SubscriptionTierServiceTest {
                 .hasMessageContaining("7");
 
         verify(subscriptionTierRepository).delete(stored);
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void changeStatusPersistsNewStatusAndEvictsExactCacheKey() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.changeStatus(
+                7L, new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE));
+
+        assertThat(response.id()).isEqualTo(7L);
+        assertThat(response.status()).isEqualTo(SubscriptionTierStatus.INACTIVE);
+        assertThat(stored.getStatus()).isEqualTo(SubscriptionTierStatus.INACTIVE);
+        assertThat(response.updatedAt()).isAfter(stored.getCreatedAt());
+        verify(subscriptionTierRepository).saveAndFlush(stored);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void changeStatusReactivatesAnInactiveTier() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        stored.changeStatus(SubscriptionTierStatus.INACTIVE);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.changeStatus(
+                7L, new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.ACTIVE));
+
+        assertThat(response.status()).isEqualTo(SubscriptionTierStatus.ACTIVE);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void changeStatusWithSameStatusIsIdempotentAndSkipsEviction() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        stored.changeStatus(SubscriptionTierStatus.INACTIVE);
+        java.time.Instant updatedAtBefore = stored.getUpdatedAt();
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+
+        SubscriptionTierResponse response = subscriptionTierService.changeStatus(
+                7L, new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE));
+
+        assertThat(response.status()).isEqualTo(SubscriptionTierStatus.INACTIVE);
+        assertThat(stored.getUpdatedAt()).isEqualTo(updatedAtBefore);
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void changeStatusThrowsNotFoundForUnknownTier() {
+        when(subscriptionTierRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> subscriptionTierService.changeStatus(
+                999L, new UpdateSubscriptionTierStatusRequest(SubscriptionTierStatus.INACTIVE)))
+                .isInstanceOf(SubscriptionTierNotFoundException.class)
+                .hasMessageContaining("999");
+
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
         verify(cacheInvalidationService, never()).evict(any(), any());
     }
 

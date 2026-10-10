@@ -116,6 +116,7 @@ now a real table in the **API Management Service**. Actual implemented columns:
 `uc_subscription_tier_name`), `description` (`varchar(500)`, nullable),
 `requests_per_window` (`integer`, `NOT NULL`, default `100`), `window_seconds`
 (`integer`, `NOT NULL`, default `60`),
+`status` (`varchar(32)`, `NOT NULL`, default `'ACTIVE'`, Phase 24 Slice 14),
 `created_at`, `updated_at`. Tiers are created through the service layer
 (`SubscriptionTierService`), which validates that the name is non-blank, has no
 leading/trailing whitespace, is at most 100 characters, the description is
@@ -134,11 +135,17 @@ ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced tiers: the
 service returns `204 No Content`, and a tier referenced by any subscription
 returns `409 SUBSCRIPTION_TIER_IN_USE`. The application reference check is
 backed by PostgreSQL's `subscriptions.tier_id` foreign key, which has no
-cascade; a failed delete leaves both rows unchanged. Tier creation through
-the public API, listing, lifecycle, and pricing remain planned — the current
-table is the domain foundation plus the enforced rate-limit policy. `created_at`
+cascade; a failed delete leaves both rows unchanged. Tier creation and
+listing through the public API are implemented (Slice 13), and Slice 14 adds
+the `status` lifecycle: an ADMIN-only `PATCH /subscription-tiers/{tierId}/status`
+flips `ACTIVE`/`INACTIVE` (idempotent when unchanged), evicts only that tier's
+post-commit cache key, and blocks assignment of inactive tiers to new or
+reassigned subscriptions with `409 SUBSCRIPTION_TIER_INACTIVE` — existing rows
+in `subscriptions` are never modified when a tier is deactivated. The column
+default guarantees every pre-existing row reads as `ACTIVE` after the
+migration. Pricing remains planned. `created_at`
 is write-once; `updated_at` is set on creation and on every successful tier
-update.
+update or status change.
 
 **Implemented so far (Phase 13; lifecycle Phase 24 Slice 3) — `credentials`:**
 application credentials are now implemented in the **API Management Service**
@@ -171,7 +178,10 @@ key.
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
 | `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3) — see above; `api_key_hash`, scopes, and expiry remain planned |
-| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4), with ADMIN-only partial updates (Phase 24, Slice 8), safe deletion of unreferenced tiers (Phase 24, Slice 9), and ADMIN-only creation/listing endpoints (Phase 24, Slice 13); pricing/burst and tier lifecycle remain planned |
+| `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4), with ADMIN-only partial updates (Phase 24, Slice 8), safe deletion of unreferenced tiers (Phase 24, Slice 9), and ADMIN-only creation/listing endpoints (Phase 24, Slice 13), and an
+`ACTIVE`/`INACTIVE` `status` column (default `'ACTIVE'`) with an ADMIN-only
+status endpoint that blocks inactive-tier assignment to subscriptions (Phase
+24, Slice 14); pricing/burst remains planned |
 | `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service

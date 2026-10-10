@@ -11,6 +11,7 @@ import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.InvalidSubscriptionStatusTransitionException;
 import com.openbank.apimanagement.exception.SubscriptionAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionNotFoundException;
+import com.openbank.apimanagement.exception.SubscriptionTierInactiveException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -48,6 +49,7 @@ public class SubscriptionService {
         ApiVersion apiVersion = apiVersionRepository.findById(request.apiVersionId())
                 .orElseThrow(() -> new ApiVersionNotFoundException(request.apiVersionId()));
         SubscriptionTier tier = subscriptionTierService.get(request.tierId());
+        requireActiveTier(tier);
         if (subscriptionRepository.existsByApplicationIdAndApiVersionId(
                 request.applicationId(), request.apiVersionId())) {
             throw new SubscriptionAlreadyExistsException(request.applicationId(), request.apiVersionId());
@@ -80,6 +82,7 @@ public class SubscriptionService {
         Subscription subscription = subscriptionRepository.findById(subscriptionId)
                 .orElseThrow(() -> new SubscriptionNotFoundException(subscriptionId));
         SubscriptionTier tier = subscriptionTierService.get(request.tierId());
+        requireActiveTier(tier);
         if (subscription.getTier().getId().equals(tier.getId())) {
             return SubscriptionResponse.from(subscription);
         }
@@ -132,5 +135,17 @@ public class SubscriptionService {
             return null;
         }
         return apiVersionRepository.findByApiIdAndVersion(api.getId(), version).orElse(null);
+    }
+
+    /**
+     * An {@code INACTIVE} tier may not be selected for a new subscription or a
+     * tier reassignment. Existing subscriptions that already reference a tier
+     * are never touched when that tier is deactivated later — this guard only
+     * runs when a tier is chosen as a target.
+     */
+    private void requireActiveTier(SubscriptionTier tier) {
+        if (tier.getStatus() != SubscriptionTierStatus.ACTIVE) {
+            throw new SubscriptionTierInactiveException(tier.getId());
+        }
     }
 }

@@ -44,7 +44,10 @@
   enforcement** are **implemented** (Phase 24, Slice 4);
   ADMIN-only subscription tier creation (`POST /subscription-tiers`) and
   listing (`GET /subscription-tiers`) are **implemented** (Phase 24, Slice 13);
-  tier lifecycle and pricing remain planned; an ADMIN-only
+  the tier **status lifecycle** (`ACTIVE`/`INACTIVE`, ADMIN-only `PATCH
+  /subscription-tiers/{tierId}/status`, and `409 SUBSCRIPTION_TIER_INACTIVE`
+  when an inactive tier is selected for a subscription) is **implemented**
+  (Phase 24, Slice 14); tier pricing remains planned; an ADMIN-only
   partial update `PATCH /subscription-tiers/{tierId}` and safe deletion of
   unreferenced tiers with `DELETE /subscription-tiers/{tierId}` are implemented
   (Phase 24, Slices 8 and 9); an ADMIN-only subscription tier reassignment via
@@ -87,6 +90,20 @@
   ascending using the same public fields. `DEVELOPER` callers receive `403`
   and unauthenticated callers receive `401`. No Redis caching or eviction is
   required for create/list.
+- **Subscription tier status lifecycle (implemented, Phase 24, Slice 14):**
+  every tier carries a `status` (`ACTIVE` on creation, persisted as
+  `varchar(32) NOT NULL DEFAULT 'ACTIVE'`) that is part of the public tier
+  fields. An **ADMIN-only** `PATCH /subscription-tiers/{tierId}/status`
+  accepts a required `status` of `ACTIVE` or `INACTIVE`; either transition is
+  allowed and setting the current status is an idempotent no-op (`updatedAt`
+  untouched, no cache eviction). A real change evicts only the exact
+  `subscriptionTier::{tierId}` cache entry after commit. An `INACTIVE` tier
+  cannot be chosen for `POST /subscriptions` or `PATCH
+  /subscriptions/{subscriptionId}/tier` — both return `409
+  SUBSCRIPTION_TIER_INACTIVE` — while subscriptions that already reference the
+  tier are never modified and keep their rate-limit policy. Missing/invalid
+  input maps to `400`, a missing tier to `404`, `DEVELOPER` to `403`, and an
+  unauthenticated caller to `401`.
 - Applications hold **credentials** (implemented, Phase 13): `POST /credentials`
   issues a `clientId` + `clientSecret` generated server-side; only the BCrypt
   hash is stored; the plaintext secret is returned exactly once at creation.
@@ -108,10 +125,10 @@
   fixed-window counters — with no gateway rate-limit configuration. A
   subscription/credential check that confirms access but supplies a
   missing/malformed policy **fails closed** (`503`) before the limiter is
-  contacted. Tier lifecycle and per-tier pricing remain planned; the
-  ADMIN-only tier creation/listing, partial tier update, safe deletion of
-  unreferenced tiers, and explicit ADMIN subscription tier reassignment are
-  implemented (Phase 24, Slices 8–10 and 13).
+  contacted. Per-tier pricing remains planned; the
+  ADMIN-only tier creation/listing, tier status lifecycle, partial tier
+  update, safe deletion of unreferenced tiers, and explicit ADMIN subscription
+  tier reassignment are implemented (Phase 24, Slices 8–10 and 13–14).
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
@@ -276,8 +293,10 @@
   `window_seconds` and the gateway enforces the active subscription's tier policy
   per request; ADMIN-only tier creation/listing, partial tier updates, safe
   deletion of unreferenced tiers, and explicit subscription tier reassignment
-  are implemented (Phase 24, Slices 8–10 and 13). Tier lifecycle,
-  per-hour/burst variants, and pricing remain planned.
+  are implemented (Phase 24, Slices 8–10 and 13). Tiers carry an
+  `ACTIVE`/`INACTIVE` status lifecycle and inactive tiers are blocked from new
+  subscription assignments (Phase 24, Slice 14); per-hour/burst variants and
+  pricing remain planned.
 - Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
   (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
   subscriptions satisfy the internal checks).
