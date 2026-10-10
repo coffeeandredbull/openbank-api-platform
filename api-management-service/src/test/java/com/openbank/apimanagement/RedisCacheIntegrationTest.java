@@ -204,7 +204,7 @@ class RedisCacheIntegrationTest {
         assertThat(stringRedisTemplate.hasKey(secondKey)).isTrue();
 
         SubscriptionTierResponse response = subscriptionTierService.update(
-                first.getId(), new UpdateSubscriptionTierRequest("Updated tier", null, 500, null));
+                first.getId(), new UpdateSubscriptionTierRequest("Updated tier", null, 500, null, null));
 
         assertThat(response.name()).isEqualTo("Updated tier");
         assertThat(stringRedisTemplate.hasKey(firstKey))
@@ -218,6 +218,39 @@ class RedisCacheIntegrationTest {
         assertThat(refreshed).isNull();
         subscriptionTierService.get(first.getId());
         assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+    }
+
+    @Test
+    void subscriptionTierPriceUpdateEvictsOnlyThatTier() {
+        SubscriptionTier first = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60);
+        SubscriptionTier second = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "second tier", 200, 60);
+        subscriptionTierService.get(first.getId());
+        subscriptionTierService.get(second.getId());
+
+        String firstKey = "subscriptionTier::" + first.getId();
+        String secondKey = "subscriptionTier::" + second.getId();
+        assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+        assertThat(stringRedisTemplate.hasKey(secondKey)).isTrue();
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                first.getId(), new UpdateSubscriptionTierRequest(null, null, null, null, 4999));
+
+        assertThat(response.priceCentsPerMonth()).isEqualTo(4999);
+        assertThat(stringRedisTemplate.hasKey(firstKey))
+                .as("a price-only update must evict the changed tier after commit")
+                .isFalse();
+        assertThat(stringRedisTemplate.hasKey(secondKey))
+                .as("a price-only update must not evict another tier's cache entry")
+                .isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where id = ?", Integer.class, first.getId()))
+                .isEqualTo(4999);
+
+        SubscriptionTier rehydrated = subscriptionTierService.get(first.getId());
+        assertThat(rehydrated.getPriceCentsPerMonth()).isEqualTo(4999);
+        assertThat(stringRedisTemplate.opsForValue().get(firstKey)).contains("4999");
     }
 
     @Test
@@ -299,7 +332,7 @@ class RedisCacheIntegrationTest {
 
         assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
             subscriptionTierService.update(
-                    tier.getId(), new UpdateSubscriptionTierRequest("rolled back", null, 500, null));
+                    tier.getId(), new UpdateSubscriptionTierRequest("rolled back", null, 500, null, null));
             throw new IllegalStateException("force rollback after a successful tier update");
         })).isInstanceOf(IllegalStateException.class);
 

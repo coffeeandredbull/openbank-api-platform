@@ -94,6 +94,7 @@ class SubscriptionTierIntegrationTest {
         assertThat(stored.getDescription()).isEqualTo("Premium access");
         assertThat(stored.getRequestsPerWindow()).isEqualTo(1000);
         assertThat(stored.getWindowSeconds()).isEqualTo(60);
+        assertThat(stored.getPriceCentsPerMonth()).isZero();
         assertThat(stored.getCreatedAt()).isEqualTo(stored.getUpdatedAt());
     }
 
@@ -115,6 +116,7 @@ class SubscriptionTierIntegrationTest {
                 .andExpect(jsonPath("$.description").value("Basic access"))
                 .andExpect(jsonPath("$.requestsPerWindow").value(100))
                 .andExpect(jsonPath("$.windowSeconds").value(60))
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(0))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
@@ -122,6 +124,9 @@ class SubscriptionTierIntegrationTest {
         assertThat(jdbcTemplate.queryForObject(
                 "select requests_per_window from subscription_tiers where name = 'Bronze'", Integer.class))
                 .isEqualTo(100);
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where name = 'Bronze'", Integer.class))
+                .isZero();
         assertThat(jdbcTemplate.queryForObject(
                 "select status from subscription_tiers where name = 'Bronze'", String.class))
                 .isEqualTo("ACTIVE");
@@ -153,6 +158,49 @@ class SubscriptionTierIntegrationTest {
         assertThat(jdbcTemplate.queryForObject(
                 "select window_seconds from subscription_tiers where name = 'Gold'", Integer.class))
                 .isEqualTo(30);
+    }
+
+    @Test
+    void createEndpointPersistsExplicitPrice() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Platinum",
+                                  "description": "Premium access",
+                                  "requestsPerWindow": 5000,
+                                  "windowSeconds": 60,
+                                  "priceCentsPerMonth": 4999
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(4999));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where name = 'Platinum'", Integer.class))
+                .isEqualTo(4999);
+    }
+
+    @Test
+    void createEndpointRejectsNegativePriceWith400() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Invalid",
+                                  "description": "Negative price",
+                                  "priceCentsPerMonth": -1
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.priceCentsPerMonth").value(
+                        "priceCentsPerMonth must not be negative"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers", Long.class)).isZero();
     }
 
     @Test
@@ -206,9 +254,82 @@ class SubscriptionTierIntegrationTest {
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].name").value("Silver"))
                 .andExpect(jsonPath("$[0].requestsPerWindow").value(200))
+                .andExpect(jsonPath("$[0].priceCentsPerMonth").value(0))
                 .andExpect(jsonPath("$[1].name").value("Gold"))
                 .andExpect(jsonPath("$[1].requestsPerWindow").value(1000))
                 .andExpect(jsonPath("$[0].status").value("ACTIVE"));
+    }
+
+    @Test
+    void updateEndpointAppliesPriceOnlyPatchAndPersistsIt() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId())
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "priceCentsPerMonth": 2999
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Gold"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(1000))
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(2999));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where id = ?", Integer.class, created.getId()))
+                .isEqualTo(2999);
+        SubscriptionTier rehydrated = subscriptionTierService.get(created.getId());
+        assertThat(rehydrated.getPriceCentsPerMonth()).isEqualTo(2999);
+    }
+
+    @Test
+    void updateEndpointRejectsNegativePriceWith400() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId())
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "priceCentsPerMonth": -100
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.priceCentsPerMonth").value(
+                        "priceCentsPerMonth must not be negative"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where id = ?", Integer.class, created.getId()))
+                .isZero();
+    }
+
+    @Test
+    void updateEndpointRejectsUnknownTierWith404() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/999")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "priceCentsPerMonth": 100
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_NOT_FOUND"));
+    }
+
+    @Test
+    void tiersInsertedWithoutThePriceColumnDefaultToZero() {
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES ('Legacy', 'Existing row', 100, 60, now(), now())");
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select price_cents_per_month from subscription_tiers where name = 'Legacy'", Integer.class))
+                .isZero();
     }
 
     @Test
@@ -228,7 +349,7 @@ class SubscriptionTierIntegrationTest {
 
         SubscriptionTierResponse response = subscriptionTierService.update(
                 created.getId(),
-                new UpdateSubscriptionTierRequest("Premium", "Updated access", 500, 30));
+                new UpdateSubscriptionTierRequest("Premium", "Updated access", 500, 30, null));
 
         assertThat(response.id()).isEqualTo(created.getId());
         assertThat(response.name()).isEqualTo("Premium");
@@ -251,7 +372,7 @@ class SubscriptionTierIntegrationTest {
         SubscriptionTier created = subscriptionTierService.create("Gold", "Keep this", 1000, 60);
 
         SubscriptionTierResponse response = subscriptionTierService.update(
-                created.getId(), new UpdateSubscriptionTierRequest("Premium", null, null, null));
+                created.getId(), new UpdateSubscriptionTierRequest("Premium", null, null, null, null));
 
         assertThat(response.name()).isEqualTo("Premium");
         assertThat(response.description()).isEqualTo("Keep this");
@@ -264,7 +385,7 @@ class SubscriptionTierIntegrationTest {
         SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
 
         SubscriptionTierResponse response = subscriptionTierService.update(
-                created.getId(), new UpdateSubscriptionTierRequest("Gold", "Updated access", 500, 30));
+                created.getId(), new UpdateSubscriptionTierRequest("Gold", "Updated access", 500, 30, null));
 
         assertThat(response.name()).isEqualTo("Gold");
         assertThat(response.description()).isEqualTo("Updated access");
@@ -276,7 +397,7 @@ class SubscriptionTierIntegrationTest {
         SubscriptionTier second = subscriptionTierService.create("Silver", "Second", 2000, 30);
 
         assertThatThrownBy(() -> subscriptionTierService.update(
-                first.getId(), new UpdateSubscriptionTierRequest("Silver", "Changed", 1, 1)))
+                first.getId(), new UpdateSubscriptionTierRequest("Silver", "Changed", 1, 1, null)))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Silver");
 
@@ -349,7 +470,7 @@ class SubscriptionTierIntegrationTest {
     @Test
     void serviceRejectsUnknownTierOnUpdate() {
         assertThatThrownBy(() -> subscriptionTierService.update(
-                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null)))
+                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null, null)))
                 .isInstanceOf(com.openbank.apimanagement.exception.SubscriptionTierNotFoundException.class)
                 .hasMessageContaining("999");
     }
@@ -359,7 +480,7 @@ class SubscriptionTierIntegrationTest {
         SubscriptionTier created = subscriptionTierService.create("Gold", "Premium access", 1000, 60);
 
         assertThatThrownBy(() -> subscriptionTierService.update(
-                created.getId(), new UpdateSubscriptionTierRequest(null, null, null, null)))
+                created.getId(), new UpdateSubscriptionTierRequest(null, null, null, null, null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("at least one field");
     }
@@ -559,8 +680,8 @@ class SubscriptionTierIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "name", "description", "requests_per_window", "window_seconds", "status",
-                "created_at", "updated_at");
+                "id", "name", "description", "requests_per_window", "window_seconds", "price_cents_per_month",
+                "status", "created_at", "updated_at");
 
         List<String> nullableColumns = jdbcTemplate.queryForList(
                 "select column_name from information_schema.columns "
@@ -596,6 +717,13 @@ class SubscriptionTierIntegrationTest {
                         + "and column_name = 'window_seconds'",
                 String.class);
         assertThat(defaultWindowSeconds).isEqualTo("60");
+
+        String defaultPriceCentsPerMonth = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscription_tiers' "
+                        + "and column_name = 'price_cents_per_month'",
+                String.class);
+        assertThat(defaultPriceCentsPerMonth).isEqualTo("0");
 
         String defaultStatus = jdbcTemplate.queryForObject(
                 "select column_default from information_schema.columns "

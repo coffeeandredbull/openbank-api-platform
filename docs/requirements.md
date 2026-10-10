@@ -47,7 +47,8 @@
   the tier **status lifecycle** (`ACTIVE`/`INACTIVE`, ADMIN-only `PATCH
   /subscription-tiers/{tierId}/status`, and `409 SUBSCRIPTION_TIER_INACTIVE`
   when an inactive tier is selected for a subscription) is **implemented**
-  (Phase 24, Slice 14); tier pricing remains planned; an ADMIN-only
+  (Phase 24, Slice 14); tier pricing (`priceCentsPerMonth`, integer cents per
+  month, default `0`) is **implemented** (Phase 24, Slice 15); an ADMIN-only
   partial update `PATCH /subscription-tiers/{tierId}` and safe deletion of
   unreferenced tiers with `DELETE /subscription-tiers/{tierId}` are implemented
   (Phase 24, Slices 8 and 9); an ADMIN-only subscription tier reassignment via
@@ -83,8 +84,9 @@
   source of truth and no tier cache entry is evicted.
 - **Subscription tier creation and listing (implemented, Phase 24, Slice 13):**
   an **ADMIN-only** `POST /subscription-tiers` creates a tier from a body with
-  required `name` and optional `description`/`requestsPerWindow`/`windowSeconds`
-  (defaults `100`/`60`), returns `201` + `Location` + public tier fields, and
+  required `name` and optional `description`/`requestsPerWindow`/`windowSeconds`/
+  `priceCentsPerMonth`
+  (defaults `100`/`60`/`0`), returns `201` + `Location` + public tier fields, and
   rejects duplicate names with `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`. An
   **ADMIN-only** `GET /subscription-tiers` lists all tiers ordered by `id`
   ascending using the same public fields. `DEVELOPER` callers receive `403`
@@ -125,10 +127,13 @@
   fixed-window counters — with no gateway rate-limit configuration. A
   subscription/credential check that confirms access but supplies a
   missing/malformed policy **fails closed** (`503`) before the limiter is
-  contacted. Per-tier pricing remains planned; the
+  contacted. Per-tier pricing (`price_cents_per_month`, default `0`) is
+  implemented (Phase 24, Slice 15), as are the
   ADMIN-only tier creation/listing, tier status lifecycle, partial tier
   update, safe deletion of unreferenced tiers, and explicit ADMIN subscription
-  tier reassignment are implemented (Phase 24, Slices 8–10 and 13–14).
+  tier reassignment (Phase 24, Slices 8–10 and 13–15). Per-hour/burst
+  variants, hard limits, and billing remain
+  planned.
 - Subscriptions can be approved/denied (per tier policy) and revoked (planned —
   the status engine that will support them is in place, but automatic tier-based
   approval and deletion are not).
@@ -295,8 +300,11 @@
   deletion of unreferenced tiers, and explicit subscription tier reassignment
   are implemented (Phase 24, Slices 8–10 and 13). Tiers carry an
   `ACTIVE`/`INACTIVE` status lifecycle and inactive tiers are blocked from new
-  subscription assignments (Phase 24, Slice 14); per-hour/burst variants and
-  pricing remain planned.
+  subscription assignments (Phase 24, Slice 14); tiers carry a
+  `price_cents_per_month` price (integer cents, default `0`, part of the
+  public tier fields, optional on create and partial update, negative values
+  rejected with `400`) implemented in Phase 24, Slice 15; per-hour/burst
+  variants, hard limits, and actual billing remain planned.
 - Subscription statuses: `PENDING`, `ACTIVE`, `DENIED`, `REVOKED` — implemented
   (Phase 24, Slice 2; created `PENDING`, ADMIN-only lifecycle, only `ACTIVE`
   subscriptions satisfy the internal checks).

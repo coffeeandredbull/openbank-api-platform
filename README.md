@@ -74,6 +74,12 @@ to them, and manage credentials.
 > **ADMIN-only safe tier deletion** added in Phase 24 Slice 9, the
 > **ADMIN-only subscription tier reassignment** added in Phase 24 Slice 10
 > (`PATCH /subscriptions/{subscriptionId}/tier`), the
+> **ADMIN-only subscription tier creation/listing** added in Phase 24 Slice 13
+> (`POST /subscription-tiers`, `GET /subscription-tiers`), the **tier status
+> lifecycle** added in Phase 24 Slice 14 (`ACTIVE`/`INACTIVE`, ADMIN-only
+> `PATCH /subscription-tiers/{tierId}/status`), the **tier pricing** added in
+> Phase 24 Slice 15 (`priceCentsPerMonth`, integer cents per month, default
+> `0`), the
 > **credential lifecycle** (Phase 24, Slice 3 — `ACTIVE`/`REVOKED` credential
 > status, ADMIN-only revocation and rotation, ACTIVE-only runtime
 > authentication), **optional credential expiry** (Phase 24, Slice 11 —
@@ -384,8 +390,10 @@ from/to bounds, plus a single-row global usage summary (`totalRequests`,
    `PATCH /subscription-tiers/{tierId}` for partial tier-policy updates; Slice 9
    adds safe ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced
    tiers, returning `204` and `409 SUBSCRIPTION_TIER_IN_USE` when subscriptions
-   still reference the tier. Tier creation/listing (Slice 13) and the tier
-   status lifecycle (Slice 14) are implemented; pricing remains planned.
+    still reference the tier. Tier creation/listing (Slice 13), the tier
+    status lifecycle (Slice 14), and tier pricing
+    (`price_cents_per_month integer NOT NULL DEFAULT 0`, Slice 15) are
+    implemented; hard limits/burst remain planned.
    Tier-based rate limiting is implemented in Phase 24 Slice 4
    (below).
 - **Phase 24, Slice 2 — API Management Service (subscription lifecycle/status):**
@@ -481,16 +489,17 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
    Redis. Verified by unit tests (TTL-bounded writes, fail-closed 503) and
    Testcontainers integration tests on both sides — including that a revoked JWT
     returns `401` before it is ever forwarded upstream.
- - **Phase 24, Slice 8 — ADMIN-only subscription tier updates:** an authenticated
-   `ADMIN` can partially update an existing tier with
-   `PATCH /subscription-tiers/{tierId}`. The body may contain `name`,
-   `description`, `requestsPerWindow`, and/or `windowSeconds`; at least one field
-   is required and omitted fields remain unchanged. PostgreSQL remains the
-   system of record, name conflicts return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`,
-    missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
-    update evicts only `subscriptionTier::<tierId>` after commit. Pricing
-    beyond the rate-limit policy remains planned (creation/listing arrived in
-    Slice 13, the status lifecycle in Slice 14).
+  - **Phase 24, Slice 8 — ADMIN-only subscription tier updates:** an authenticated
+    `ADMIN` can partially update an existing tier with
+    `PATCH /subscription-tiers/{tierId}`. The body may contain `name`,
+    `description`, `requestsPerWindow`, `windowSeconds`, and/or
+    `priceCentsPerMonth`; at least one field is required and omitted fields
+    remain unchanged. PostgreSQL remains the
+    system of record, name conflicts return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`,
+     missing tiers return `404 SUBSCRIPTION_TIER_NOT_FOUND`, and a successful
+     update evicts only `subscriptionTier::<tierId>` after commit. (Creation
+     listing arrived in Slice 13, the status lifecycle in Slice 14, and pricing
+     in Slice 15.)
  - **Phase 24, Slice 9 — safe subscription tier deletion:** an authenticated
    `ADMIN` can delete an unreferenced tier with
    `DELETE /subscription-tiers/{tierId}`; success returns `204 No Content`.
@@ -545,14 +554,15 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
   - **Phase 24, Slice 13 — ADMIN-only subscription tier creation and
     listing:** an authenticated `ADMIN` can create a tier with
     `POST /subscription-tiers` (body `{ "name", "description"?,
-    "requestsPerWindow"?, "windowSeconds"? }`; omitted rate-limit fields
-    default to `100`/`60`) and list all tiers with `GET /subscription-tiers`
+    "requestsPerWindow"?, "windowSeconds"?, "priceCentsPerMonth"? }`; omitted
+    rate-limit fields default to `100`/`60` and an omitted price defaults to
+    `0`) and list all tiers with `GET /subscription-tiers`
     (ordered by `id` ascending). Both endpoints return the safe public tier
     fields only. Duplicate names return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`;
     invalid input returns `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403
     ACCESS_DENIED` and an unauthenticated caller receives `401
     UNAUTHENTICATED`. Creation does not evict Redis (a new id was never
-    cached). Tier pricing beyond the rate-limit policy remains planned.
+    cached). Tier pricing is implemented in Slice 15 below.
   - **Phase 24, Slice 14 — subscription tier status lifecycle:** every tier
     carries a `status` (`ACTIVE` on creation, persisted as `varchar(32) NOT NULL
     default 'ACTIVE'`), and an authenticated `ADMIN` can switch it with
@@ -569,8 +579,23 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     SUBSCRIPTION_TIER_INACTIVE` — while existing subscriptions that already
     reference the tier are left untouched, keep their rate-limit policy, and
     remain enforced by the gateway.
-  - **Planned phases (subject to change):** tier pricing,
-    credential scopes, the remaining services, the
+  - **Phase 24, Slice 15 — subscription tier pricing:** every tier carries a
+    `priceCentsPerMonth` (integer cents per month, persisted as
+    `price_cents_per_month integer NOT NULL DEFAULT 0`, `0` meaning a free
+    tier) that is exposed in every tier response after `windowSeconds`.
+    `POST /subscription-tiers` and `PATCH /subscription-tiers/{tierId}` accept
+    an optional `priceCentsPerMonth`; an omitted value means `0` on creation
+    and "unchanged" on update, so a price-only PATCH works like any other
+    partial update (the at-least-one-field rule includes it). A negative price
+    returns `400 VALIDATION_FAILED`, and the service validation is the same
+    backstop for direct callers. The gateway, internal subscription/credential
+    checks, and rate-limit enforcement are unchanged — price is carried and
+    stored only, not charged — and a real change evicts only
+    `subscriptionTier::<tierId>` after commit. Existing rows written before
+    this column existed read back as `0` via the column default. Hard
+    limits/burst and actual billing remain planned.
+  - **Planned phases (subject to change):** credential scopes,
+    the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,
    explicitly requested phases and verified (compile + tests) at each step.

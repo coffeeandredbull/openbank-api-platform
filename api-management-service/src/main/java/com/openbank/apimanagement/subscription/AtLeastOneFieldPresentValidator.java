@@ -11,6 +11,7 @@ public class AtLeastOneFieldPresentValidator implements ConstraintValidator<AtLe
                 && (request.name() != null
                 || request.description() != null
                 || request.requestsPerWindow() != null
-                || request.windowSeconds() != null);
+                || request.windowSeconds() != null
+                || request.priceCentsPerMonth() != null);
     }
 }

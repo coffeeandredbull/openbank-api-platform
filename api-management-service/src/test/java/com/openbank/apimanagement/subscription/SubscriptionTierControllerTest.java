@@ -45,7 +45,8 @@ class SubscriptionTierControllerTest {
     void createReturns201WithLocationAndPublicTierFields() throws Exception {
         when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
                 .thenReturn(new SubscriptionTierResponse(
-                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+                        7L, "Premium", "Premium access", 500, 30, 4999, SubscriptionTierStatus.ACTIVE,
+                        TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscription-tiers")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -64,6 +65,7 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$.description").value("Premium access"))
                 .andExpect(jsonPath("$.requestsPerWindow").value(500))
                 .andExpect(jsonPath("$.windowSeconds").value(30))
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(4999))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
@@ -76,7 +78,7 @@ class SubscriptionTierControllerTest {
     void createForwardsTheRequestBody() throws Exception {
         when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
                 .thenReturn(new SubscriptionTierResponse(
-                        7L, "Developer", null, 100, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+                        7L, "Developer", null, 100, 60, 0, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/subscription-tiers")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -87,7 +89,7 @@ class SubscriptionTierControllerTest {
                                 """))
                 .andExpect(status().isCreated());
 
-        verify(subscriptionTierService).create(eq(new CreateSubscriptionTierRequest("Developer", null, null, null)));
+        verify(subscriptionTierService).create(eq(new CreateSubscriptionTierRequest("Developer", null, null, null, null)));
     }
 
     @Test
@@ -137,6 +139,11 @@ class SubscriptionTierControllerTest {
     }
 
     @Test
+    void createRejectsNegativePrice() throws Exception {
+        assertCreateInvalid("priceCentsPerMonth", "-1", "priceCentsPerMonth must not be negative");
+    }
+
+    @Test
     void createReturns409WhenTierNameAlreadyExists() throws Exception {
         when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
                 .thenThrow(new SubscriptionTierAlreadyExistsException("Silver"));
@@ -155,9 +162,9 @@ class SubscriptionTierControllerTest {
     void listReturnsPublicTierFieldsInIdOrder() throws Exception {
         when(subscriptionTierService.list()).thenReturn(java.util.List.of(
                 new SubscriptionTierResponse(
-                        1L, "Bronze", "Basic", 100, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP),
+                        1L, "Bronze", "Basic", 100, 60, 0, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP),
                 new SubscriptionTierResponse(
-                        2L, "Gold", "Premium", 1000, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP)));
+                        2L, "Gold", "Premium", 1000, 60, 0, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP)));
 
         mockMvc.perform(get("/subscription-tiers"))
                 .andExpect(status().isOk())
@@ -166,6 +173,7 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$[0].name").value("Bronze"))
                 .andExpect(jsonPath("$[0].requestsPerWindow").value(100))
                 .andExpect(jsonPath("$[0].windowSeconds").value(60))
+                .andExpect(jsonPath("$[0].priceCentsPerMonth").value(0))
                 .andExpect(jsonPath("$[1].id").value(2))
                 .andExpect(jsonPath("$[1].name").value("Gold"))
                 .andExpect(jsonPath("$[0].status").value("ACTIVE"))
@@ -196,7 +204,8 @@ class SubscriptionTierControllerTest {
     void updateReturns200WithPublicTierFields() throws Exception {
         when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
                 .thenReturn(new SubscriptionTierResponse(
-                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+                        7L, "Premium", "Premium access", 500, 30, 0, SubscriptionTierStatus.ACTIVE,
+                        TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(patch("/subscription-tiers/7")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -214,6 +223,7 @@ class SubscriptionTierControllerTest {
                 .andExpect(jsonPath("$.description").value("Premium access"))
                 .andExpect(jsonPath("$.requestsPerWindow").value(500))
                 .andExpect(jsonPath("$.windowSeconds").value(30))
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(0))
                 .andExpect(jsonPath("$.createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.updatedAt").isNotEmpty())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
@@ -224,7 +234,7 @@ class SubscriptionTierControllerTest {
     void updateForwardsOmittedFieldsAsNull() throws Exception {
         when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
                 .thenReturn(new SubscriptionTierResponse(
-                        7L, "Gold", "Description", 500, 60, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+                        7L, "Gold", "Description", 500, 60, 0, SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(patch("/subscription-tiers/7")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -235,7 +245,29 @@ class SubscriptionTierControllerTest {
                                 """))
                 .andExpect(status().isOk());
 
-        verify(subscriptionTierService).update(eq(7L), eq(new UpdateSubscriptionTierRequest(null, null, 500, null)));
+        verify(subscriptionTierService).update(eq(7L), eq(new UpdateSubscriptionTierRequest(null, null, 500, null, null)));
+    }
+
+    @Test
+    void updateForwardsPriceOnlyRequestBody() throws Exception {
+        when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Gold", "Description", 100, 60, 4999, SubscriptionTierStatus.ACTIVE,
+                        TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscription-tiers/7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "priceCentsPerMonth": 4999
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.priceCentsPerMonth").value(4999))
+                .andExpect(jsonPath("$.name").value("Gold"));
+
+        verify(subscriptionTierService).update(
+                eq(7L), eq(new UpdateSubscriptionTierRequest(null, null, null, null, 4999)));
     }
 
     @Test
@@ -278,6 +310,11 @@ class SubscriptionTierControllerTest {
     @Test
     void updateRejectsNonPositiveWindowSeconds() throws Exception {
         assertInvalid("windowSeconds", "-1", "windowSeconds must be greater than 0");
+    }
+
+    @Test
+    void updateRejectsNegativePrice() throws Exception {
+        assertInvalid("priceCentsPerMonth", "-1", "priceCentsPerMonth must not be negative");
     }
 
     @Test
@@ -345,7 +382,8 @@ class SubscriptionTierControllerTest {
     void updateStatusReturns200WithUpdatedStatus() throws Exception {
         when(subscriptionTierService.changeStatus(eq(7L), any(UpdateSubscriptionTierStatusRequest.class)))
                 .thenReturn(new SubscriptionTierResponse(
-                        7L, "Premium", "Premium access", 500, 30, SubscriptionTierStatus.INACTIVE, TIMESTAMP, TIMESTAMP));
+                        7L, "Premium", "Premium access", 500, 30, 0, SubscriptionTierStatus.INACTIVE,
+                        TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(patch("/subscription-tiers/7/status")
                         .contentType(MediaType.APPLICATION_JSON)

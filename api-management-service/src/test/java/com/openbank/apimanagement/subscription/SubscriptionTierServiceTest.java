@@ -54,6 +54,7 @@ class SubscriptionTierServiceTest {
         assertThat(persisted.getDescription()).isEqualTo("Standard access");
         assertThat(persisted.getRequestsPerWindow()).isEqualTo(500);
         assertThat(persisted.getWindowSeconds()).isEqualTo(30);
+        assertThat(persisted.getPriceCentsPerMonth()).isZero();
         assertThat(persisted.getStatus()).isEqualTo(SubscriptionTierStatus.ACTIVE);
         assertThat(persisted.getCreatedAt()).isEqualTo(persisted.getUpdatedAt());
 
@@ -167,6 +168,26 @@ class SubscriptionTierServiceTest {
         verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {-1, -100})
+    void createRejectsNegativePriceCentsPerMonth(int priceCentsPerMonth) {
+        assertThatThrownBy(() -> subscriptionTierService.create(
+                "Developer", "Standard access", 100, 60, priceCentsPerMonth))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("priceCentsPerMonth must not be negative");
+        verify(subscriptionTierRepository, never()).save(any(SubscriptionTier.class));
+    }
+
+    @Test
+    void createAllowsZeroPriceCentsPerMonth() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        SubscriptionTier created = subscriptionTierService.create(
+                "Developer", "Standard access", 100, 60, 0);
+
+        assertThat(created.getPriceCentsPerMonth()).isZero();
+    }
+
     @Test
     void updateChangesSuppliedFieldsAndEvictsTheUpdatedTier() {
         SubscriptionTier stored = tier(7L, "Gold", "Old description", 100, 60);
@@ -174,7 +195,7 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
 
         SubscriptionTierResponse response = subscriptionTierService.update(
-                7L, new UpdateSubscriptionTierRequest("Premium", "New description", 500, 30));
+                7L, new UpdateSubscriptionTierRequest("Premium", "New description", 500, 30, null));
 
         assertThat(response.id()).isEqualTo(7L);
         assertThat(response.name()).isEqualTo("Premium");
@@ -193,18 +214,66 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
 
         SubscriptionTierResponse response = subscriptionTierService.update(
-                7L, new UpdateSubscriptionTierRequest(null, null, 500, null));
+                7L, new UpdateSubscriptionTierRequest(null, null, 500, null, null));
 
         assertThat(response.name()).isEqualTo("Gold");
         assertThat(response.description()).isEqualTo("Keep this");
         assertThat(response.requestsPerWindow()).isEqualTo(500);
         assertThat(response.windowSeconds()).isEqualTo(60);
+        assertThat(response.priceCentsPerMonth()).isZero();
+    }
+
+    @Test
+    void updateAppliesPriceOnlyAndPreservesOtherFields() {
+        SubscriptionTier stored = tier(7L, "Gold", "Keep this", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, 4999));
+
+        assertThat(response.priceCentsPerMonth()).isEqualTo(4999);
+        assertThat(response.name()).isEqualTo("Gold");
+        assertThat(response.description()).isEqualTo("Keep this");
+        assertThat(response.requestsPerWindow()).isEqualTo(100);
+        assertThat(response.windowSeconds()).isEqualTo(60);
+        assertThat(response.updatedAt()).isAfter(stored.getCreatedAt());
+        verify(subscriptionTierRepository).saveAndFlush(stored);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void updateKeepsPriceWhenOmitted() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        stored.update(null, null, null, null, 4999);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, 500, null, null));
+
+        assertThat(response.priceCentsPerMonth()).isEqualTo(4999);
+        assertThat(response.requestsPerWindow()).isEqualTo(500);
+    }
+
+    @Test
+    void updateRejectsNegativePriceBeforePersisting() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest("Gold", null, null, null, -1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("priceCentsPerMonth must not be negative");
+
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
+        verify(cacheInvalidationService, never()).evict(any(), any());
     }
 
     @Test
     void updateRejectsEmptyRequest() {
         assertThatThrownBy(() -> subscriptionTierService.update(
-                7L, new UpdateSubscriptionTierRequest(null, null, null, null)))
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("at least one field");
 
@@ -218,7 +287,7 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
         when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
 
-        subscriptionTierService.update(7L, new UpdateSubscriptionTierRequest("Gold", null, null, null));
+        subscriptionTierService.update(7L, new UpdateSubscriptionTierRequest("Gold", null, null, null, null));
 
         verify(subscriptionTierRepository).existsByNameAndIdNot("Gold", 7L);
         verify(cacheInvalidationService).evict("subscriptionTier", 7L);
@@ -231,7 +300,7 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.existsByNameAndIdNot("Silver", 7L)).thenReturn(true);
 
         assertThatThrownBy(() -> subscriptionTierService.update(
-                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null)))
+                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null, null)))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Silver");
 
@@ -247,7 +316,7 @@ class SubscriptionTierServiceTest {
                 .thenThrow(new DataIntegrityViolationException("could not execute statement; constraint"));
 
         assertThatThrownBy(() -> subscriptionTierService.update(
-                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null)))
+                7L, new UpdateSubscriptionTierRequest("Silver", null, null, null, null)))
                 .isInstanceOf(SubscriptionTierAlreadyExistsException.class)
                 .hasMessageContaining("Silver");
 
@@ -259,7 +328,7 @@ class SubscriptionTierServiceTest {
         when(subscriptionTierRepository.findById(999L)).thenReturn(java.util.Optional.empty());
 
         assertThatThrownBy(() -> subscriptionTierService.update(
-                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null)))
+                999L, new UpdateSubscriptionTierRequest("Gold", null, null, null, null)))
                 .isInstanceOf(SubscriptionTierNotFoundException.class)
                 .hasMessageContaining("999");
 
@@ -386,7 +455,7 @@ class SubscriptionTierServiceTest {
 
     @Test
     void getReturnsTheStoredTierById() {
-        SubscriptionTier expected = new SubscriptionTier("Gold", "Premium access", 1000, 60);
+        SubscriptionTier expected = new SubscriptionTier("Gold", "Premium access", 1000, 60, 0);
         setField(expected, "id", 7L);
         when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(expected));
 
@@ -413,7 +482,7 @@ class SubscriptionTierServiceTest {
         });
 
         SubscriptionTierResponse response = subscriptionTierService.create(
-                new CreateSubscriptionTierRequest("Developer", null, null, null));
+                new CreateSubscriptionTierRequest("Developer", null, null, null, null));
 
         ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
         verify(subscriptionTierRepository).save(captor.capture());
@@ -439,10 +508,44 @@ class SubscriptionTierServiceTest {
         });
 
         SubscriptionTierResponse response = subscriptionTierService.create(
-                new CreateSubscriptionTierRequest("Premium", "Premium access", 1000, 30));
+                new CreateSubscriptionTierRequest("Premium", "Premium access", 1000, 30, null));
 
         assertThat(response.requestsPerWindow()).isEqualTo(1000);
         assertThat(response.windowSeconds()).isEqualTo(30);
+    }
+
+    @Test
+    void createFromRequestDefaultsThePriceToZeroWhenOmitted() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 1L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Developer", null, null, null, null));
+
+        ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
+        verify(subscriptionTierRepository).save(captor.capture());
+        assertThat(captor.getValue().getPriceCentsPerMonth()).isZero();
+        assertThat(response.priceCentsPerMonth()).isZero();
+    }
+
+    @Test
+    void createFromRequestUsesSuppliedPrice() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 2L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Premium", "Premium access", 1000, 30, 4999));
+
+        ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
+        verify(subscriptionTierRepository).save(captor.capture());
+        assertThat(captor.getValue().getPriceCentsPerMonth()).isEqualTo(4999);
+        assertThat(response.priceCentsPerMonth()).isEqualTo(4999);
     }
 
     @Test
@@ -474,7 +577,7 @@ class SubscriptionTierServiceTest {
             String description,
             int requestsPerWindow,
             int windowSeconds) {
-        SubscriptionTier tier = new SubscriptionTier(name, description, requestsPerWindow, windowSeconds);
+        SubscriptionTier tier = new SubscriptionTier(name, description, requestsPerWindow, windowSeconds, 0);
         java.time.Instant timestamp = java.time.Instant.parse("2020-01-01T00:00:00Z");
         setField(tier, "id", id);
         setField(tier, "createdAt", timestamp);

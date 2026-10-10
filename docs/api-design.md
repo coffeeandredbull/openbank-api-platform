@@ -385,17 +385,18 @@ Service stores no user record and no cross-service foreign key.
   Application deletion is intentionally not part of this phase.
 
 **Implemented so far (Phase 24, Slice 8) — subscription tier updates:** an
-existing tier's name, description, and rate-limit policy can be partially
+existing tier's name, description, rate-limit policy, and price can be partially
 updated by an `ADMIN` through `PATCH /subscription-tiers/{tierId}`. The body
-may contain `name`, `description`, `requestsPerWindow`, and/or `windowSeconds`;
+may contain `name`, `description`, `requestsPerWindow`, `windowSeconds`,
+and/or `priceCentsPerMonth`;
 at least one field is required, and omitted fields (including JSON `null`) remain
 unchanged. A `DEVELOPER` receives `403 ACCESS_DENIED`; an unauthenticated caller receives
 `401 UNAUTHENTICATED`. A missing tier returns `404
 SUBSCRIPTION_TIER_NOT_FOUND`, a conflicting name returns `409
 SUBSCRIPTION_TIER_ALREADY_EXISTS`, and invalid values return `400
 VALIDATION_FAILED`. The response is the tier's public fields (`id`, `name`,
-`description`, `requestsPerWindow`, `windowSeconds`, `status`, `createdAt`,
-`updatedAt`).
+`description`, `requestsPerWindow`, `windowSeconds`, `priceCentsPerMonth`,
+`status`, `createdAt`, `updatedAt`).
 PostgreSQL remains the source of truth; after a successful commit, only the
 exact `subscriptionTier::<tierId>` Redis entry is evicted. A failed transaction
 does not evict. Explicit ADMIN tier reassignment is implemented in Phase 24
@@ -405,14 +406,17 @@ Slice 10.
 listing:**
 - `POST /subscription-tiers` — **ADMIN-only** creation of a new subscription
   tier. Body: `{ "name": string, "description"?: string, "requestsPerWindow"?: int,
-  "windowSeconds"?: int }`. `name` is required, ≤ 100 characters, and must not
+  "windowSeconds"?: int, "priceCentsPerMonth"?: int }`. `name` is required, ≤ 100
+  characters, and must not
   be blank or contain leading/trailing whitespace; `description` is optional and
   ≤ 500 characters; when `requestsPerWindow`/`windowSeconds` are omitted they
-  default to `100`/`60` (the same defaults as the table columns), and when
-  supplied they must be positive. Returns `201 Created` with
+  default to `100`/`60` (the same defaults as the table columns), when
+  `priceCentsPerMonth` is omitted it defaults to `0` (free tier), and when
+  supplied the rate-limit fields must be positive and the price must not be
+  negative. Returns `201 Created` with
   `Location: /subscription-tiers/{id}` and the tier's public fields (`id`,
-  `name`, `description`, `requestsPerWindow`, `windowSeconds`, `status`,
-  `createdAt`, `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
+  `name`, `description`, `requestsPerWindow`, `windowSeconds`,
+  `priceCentsPerMonth`, `status`, `createdAt`, `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
   (service check plus unique-constraint race backstop). Invalid input returns
   `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403 ACCESS_DENIED`; an
   unauthenticated caller receives `401 UNAUTHENTICATED`. Creation does not
@@ -423,8 +427,8 @@ listing:**
   same public fields. The list is not cached (only `GET`-by-id via the internal
   `subscriptionTier` cache is). A `DEVELOPER` receives `403 ACCESS_DENIED`; an
   unauthenticated caller receives `401 UNAUTHENTICATED`.
-- Pricing beyond the rate-limit policy remains planned; the tier status
-  lifecycle is implemented in Slice 14 below.
+- Tier pricing (`priceCentsPerMonth`) is implemented in Slice 15 below; the
+  tier status lifecycle is implemented in Slice 14 below.
 
 **Implemented so far (Phase 24, Slice 14) — subscription tier status
 lifecycle:**
@@ -452,6 +456,28 @@ lifecycle:**
   `tier_id`, status, and rate-limit policy, and the gateway's enforcement is
   unchanged — existing traffic continues under the same policy. Reactivating
   the tier simply re-enables new assignments.
+
+**Implemented so far (Phase 24, Slice 15) — subscription tier pricing:** every
+tier carries a `priceCentsPerMonth` (integer cents per month) that is part of
+the public tier fields, exposed in create, list, read, and both PATCH
+responses after `windowSeconds`. `POST /subscription-tiers` accepts an
+optional `priceCentsPerMonth`; when omitted it defaults to `0` (a free tier)
+and is persisted as `price_cents_per_month integer NOT NULL DEFAULT 0`.
+`PATCH /subscription-tiers/{tierId}` accepts it like any other partial field:
+an omitted/`null` value leaves the price unchanged, a supplied value replaces
+it, and a price-only body satisfies the at-least-one-field rule. A negative
+value returns `400 VALIDATION_FAILED` (`priceCentsPerMonth must not be
+negative`) on both endpoints, and the service rejects a negative price with an
+`IllegalArgumentException` as a backstop for direct callers. A missing tier on
+update still returns `404 SUBSCRIPTION_TIER_NOT_FOUND`. The gateway and the
+internal subscription/credential checks are unchanged: the price is carried
+and stored only — it is never charged and is not part of the internal
+rate-limit policy payload. A successful price change participates in the
+same post-commit exact-key eviction as every other tier update (only
+`subscriptionTier::<tierId>`); PostgreSQL remains the source of truth, and
+rows that existed before the column was added read back as `0` through the
+column default. Hard limits/burst, currency handling, and billing remain
+planned.
 
 **Implemented so far (Phase 24, Slice 9) — safe subscription tier deletion:**
 an `ADMIN` can remove an unreferenced tier with
@@ -532,9 +558,10 @@ the request body.
   enforces per active subscription; Slice 8 adds ADMIN-only partial tier
   updates, Slice 9 adds safe deletion of unreferenced tiers, and Slice 10 adds
   explicit ADMIN tier reassignment for existing subscriptions; tier
-  creation/listing (Slice 13) and the ACTIVE/INACTIVE tier status lifecycle
-  (Slice 14) are implemented, while pricing beyond the rate-limit policy
-  remains planned.
+  creation/listing (Slice 13), the ACTIVE/INACTIVE tier status lifecycle
+  (Slice 14), and tier pricing (`priceCentsPerMonth`, integer cents per month,
+  default `0`, Slice 15) are implemented, while billing/burst/hard limits
+  remain planned.
 - **Subscription lifecycle/status (Phase 24, Slice 2):** every subscription has
   a `status` (`PENDING`, `ACTIVE`, `DENIED`, `REVOKED`) persisted as a string
   and a nullable `revokedAt` timestamp (set when a subscription is revoked).

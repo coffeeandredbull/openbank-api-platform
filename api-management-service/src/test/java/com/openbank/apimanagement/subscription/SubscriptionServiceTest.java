@@ -615,7 +615,7 @@ class SubscriptionServiceTest {
     }
 
     private SubscriptionTier tier(Long id, String name) {
-        SubscriptionTier tier = new SubscriptionTier(name, "Standard access", 100, 60);
+        SubscriptionTier tier = new SubscriptionTier(name, "Standard access", 100, 60, 0);
         setField(tier, "id", id);
         setField(tier, "createdAt", TIMESTAMP);
         setField(tier, "updatedAt", TIMESTAMP);

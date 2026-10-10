@@ -2,6 +2,7 @@ package com.openbank.apimanagement.subscription;
 
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
 @AtLeastOneFieldPresent
@@ -21,6 +22,9 @@ public record UpdateSubscriptionTierRequest(
         Integer requestsPerWindow,
 
         @Positive(message = "windowSeconds must be greater than 0")
-        Integer windowSeconds
+        Integer windowSeconds,
+
+        @PositiveOrZero(message = "priceCentsPerMonth must not be negative")
+        Integer priceCentsPerMonth
 ) {
 }

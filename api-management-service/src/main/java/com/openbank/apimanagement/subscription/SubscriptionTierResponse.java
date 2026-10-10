@@ -8,6 +8,7 @@ public record SubscriptionTierResponse(
         String description,
         int requestsPerWindow,
         int windowSeconds,
+        int priceCentsPerMonth,
         SubscriptionTierStatus status,
         Instant createdAt,
         Instant updatedAt
@@ -20,6 +21,7 @@ public record SubscriptionTierResponse(
                 tier.getDescription(),
                 tier.getRequestsPerWindow(),
                 tier.getWindowSeconds(),
+                tier.getPriceCentsPerMonth(),
                 tier.getStatus(),
                 tier.getCreatedAt(),
                 tier.getUpdatedAt()

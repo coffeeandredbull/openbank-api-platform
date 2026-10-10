@@ -38,6 +38,9 @@ public class SubscriptionTier {
     @Column(name = "window_seconds", nullable = false, columnDefinition = "integer not null default 60")
     private int windowSeconds;
 
+    @Column(name = "price_cents_per_month", nullable = false, columnDefinition = "integer not null default 0")
+    private int priceCentsPerMonth;
+
     @Enumerated(EnumType.STRING)
     @Column(
             name = "status",
@@ -56,11 +59,13 @@ public class SubscriptionTier {
     protected SubscriptionTier() {
     }
 
-    public SubscriptionTier(String name, String description, int requestsPerWindow, int windowSeconds) {
+    public SubscriptionTier(
+            String name, String description, int requestsPerWindow, int windowSeconds, int priceCentsPerMonth) {
         this.name = name;
         this.description = description;
         this.requestsPerWindow = requestsPerWindow;
         this.windowSeconds = windowSeconds;
+        this.priceCentsPerMonth = priceCentsPerMonth;
         this.status = SubscriptionTierStatus.ACTIVE;
         Instant now = Instant.now();
         this.createdAt = now;
@@ -71,7 +76,8 @@ public class SubscriptionTier {
             String newName,
             String newDescription,
             Integer newRequestsPerWindow,
-            Integer newWindowSeconds) {
+            Integer newWindowSeconds,
+            Integer newPriceCentsPerMonth) {
         if (newName != null) {
             this.name = newName;
         }
@@ -83,6 +89,9 @@ public class SubscriptionTier {
         }
         if (newWindowSeconds != null) {
             this.windowSeconds = newWindowSeconds;
+        }
+        if (newPriceCentsPerMonth != null) {
+            this.priceCentsPerMonth = newPriceCentsPerMonth;
         }
         this.updatedAt = Instant.now();
     }
@@ -110,6 +119,10 @@ public class SubscriptionTier {
 
     public int getWindowSeconds() {
         return windowSeconds;
+    }
+
+    public int getPriceCentsPerMonth() {
+        return priceCentsPerMonth;
     }
 
     public SubscriptionTierStatus getStatus() {

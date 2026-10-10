@@ -18,6 +18,7 @@ public class SubscriptionTierService {
     static final int MAX_DESCRIPTION_LENGTH = 500;
     static final int DEFAULT_REQUESTS_PER_WINDOW = 100;
     static final int DEFAULT_WINDOW_SECONDS = 60;
+    static final int DEFAULT_PRICE_CENTS_PER_MONTH = 0;
 
     private static final String NO_LEADING_OR_TRAILING_WHITESPACE = "\\S(?:.*\\S)?";
 
@@ -50,7 +51,11 @@ public class SubscriptionTierService {
         int windowSeconds = request.windowSeconds() != null
                 ? request.windowSeconds()
                 : DEFAULT_WINDOW_SECONDS;
-        SubscriptionTier created = create(request.name(), request.description(), requestsPerWindow, windowSeconds);
+        int priceCentsPerMonth = request.priceCentsPerMonth() != null
+                ? request.priceCentsPerMonth()
+                : DEFAULT_PRICE_CENTS_PER_MONTH;
+        SubscriptionTier created = create(
+                request.name(), request.description(), requestsPerWindow, windowSeconds, priceCentsPerMonth);
         return SubscriptionTierResponse.from(created);
     }
 
@@ -62,13 +67,19 @@ public class SubscriptionTierService {
      */
     @Transactional
     public SubscriptionTier create(String name, String description, int requestsPerWindow, int windowSeconds) {
-        validate(name, description, requestsPerWindow, windowSeconds);
+        return create(name, description, requestsPerWindow, windowSeconds, DEFAULT_PRICE_CENTS_PER_MONTH);
+    }
+
+    @Transactional
+    public SubscriptionTier create(
+            String name, String description, int requestsPerWindow, int windowSeconds, int priceCentsPerMonth) {
+        validate(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth);
         if (subscriptionTierRepository.existsByName(name)) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
         try {
             return subscriptionTierRepository.save(
-                    new SubscriptionTier(name, description, requestsPerWindow, windowSeconds));
+                    new SubscriptionTier(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth));
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
@@ -86,13 +97,17 @@ public class SubscriptionTierService {
                 ? request.requestsPerWindow() : tier.getRequestsPerWindow();
         int updatedWindowSeconds = request.windowSeconds() != null
                 ? request.windowSeconds() : tier.getWindowSeconds();
-        validate(updatedName, updatedDescription, updatedRequestsPerWindow, updatedWindowSeconds);
+        int updatedPriceCentsPerMonth = request.priceCentsPerMonth() != null
+                ? request.priceCentsPerMonth() : tier.getPriceCentsPerMonth();
+        validate(updatedName, updatedDescription, updatedRequestsPerWindow, updatedWindowSeconds,
+                updatedPriceCentsPerMonth);
         if (request.name() != null
                 && subscriptionTierRepository.existsByNameAndIdNot(request.name(), tierId)) {
             throw new SubscriptionTierAlreadyExistsException(request.name());
         }
 
-        tier.update(request.name(), request.description(), request.requestsPerWindow(), request.windowSeconds());
+        tier.update(request.name(), request.description(), request.requestsPerWindow(), request.windowSeconds(),
+                request.priceCentsPerMonth());
         try {
             SubscriptionTier saved = subscriptionTierRepository.saveAndFlush(tier);
             cacheInvalidationService.evict("subscriptionTier", tierId);
@@ -161,12 +176,18 @@ public class SubscriptionTierService {
                 || (request.name() == null
                 && request.description() == null
                 && request.requestsPerWindow() == null
-                && request.windowSeconds() == null)) {
+                && request.windowSeconds() == null
+                && request.priceCentsPerMonth() == null)) {
             throw new IllegalArgumentException("at least one field must be supplied");
         }
     }
 
-    private void validate(String name, String description, int requestsPerWindow, int windowSeconds) {
+    private void validate(
+            String name,
+            String description,
+            int requestsPerWindow,
+            int windowSeconds,
+            int priceCentsPerMonth) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("name is required");
         }
@@ -184,6 +205,9 @@ public class SubscriptionTierService {
         }
         if (windowSeconds <= 0) {
             throw new IllegalArgumentException("windowSeconds must be greater than 0");
+        }
+        if (priceCentsPerMonth < 0) {
+            throw new IllegalArgumentException("priceCentsPerMonth must not be negative");
         }
     }
 }
