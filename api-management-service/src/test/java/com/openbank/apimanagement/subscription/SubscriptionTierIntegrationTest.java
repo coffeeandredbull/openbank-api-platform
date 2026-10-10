@@ -14,11 +14,14 @@ import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -27,9 +30,15 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @Testcontainers
 @SpringBootTest
+@AutoConfigureMockMvc
 @TestPropertySource(properties = "app.jwt.secret=integration-test-jwt-secret-value-0123456789-ab")
 class SubscriptionTierIntegrationTest {
 
@@ -45,6 +54,9 @@ class SubscriptionTierIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private MockMvc mockMvc;
 
     @Autowired
     private SubscriptionTierService subscriptionTierService;
@@ -82,6 +94,125 @@ class SubscriptionTierIntegrationTest {
         assertThat(stored.getRequestsPerWindow()).isEqualTo(1000);
         assertThat(stored.getWindowSeconds()).isEqualTo(60);
         assertThat(stored.getCreatedAt()).isEqualTo(stored.getUpdatedAt());
+    }
+
+    @Test
+    void createEndpointPersistsTierWithDefaultsAndReturnsSafeBody() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Bronze",
+                                  "description": "Basic access"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", org.hamcrest.Matchers.startsWith("/subscription-tiers/")))
+                .andExpect(jsonPath("$.id").isNumber())
+                .andExpect(jsonPath("$.name").value("Bronze"))
+                .andExpect(jsonPath("$.description").value("Basic access"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(100))
+                .andExpect(jsonPath("$.windowSeconds").value(60))
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.updatedAt").isNotEmpty())
+                .andExpect(jsonPath("$.status").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select requests_per_window from subscription_tiers where name = 'Bronze'", Integer.class))
+                .isEqualTo(100);
+        assertThat(jdbcTemplate.queryForObject(
+                "select window_seconds from subscription_tiers where name = 'Bronze'", Integer.class))
+                .isEqualTo(60);
+    }
+
+    @Test
+    void createEndpointPersistsExplicitRateLimitPolicy() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Gold",
+                                  "description": "Premium access",
+                                  "requestsPerWindow": 1000,
+                                  "windowSeconds": 30
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.requestsPerWindow").value(1000))
+                .andExpect(jsonPath("$.windowSeconds").value(30));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select requests_per_window from subscription_tiers where name = 'Gold'", Integer.class))
+                .isEqualTo(1000);
+        assertThat(jdbcTemplate.queryForObject(
+                "select window_seconds from subscription_tiers where name = 'Gold'", Integer.class))
+                .isEqualTo(30);
+    }
+
+    @Test
+    void createEndpointRejectsDuplicateNameWith409() throws Exception {
+        subscriptionTierService.create("Gold", "First", 100, 60);
+
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Gold",
+                                  "description": "Second"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_ALREADY_EXISTS"))
+                .andExpect(jsonPath("$.message").value(
+                        "A subscription tier with name 'Gold' already exists"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers where name = 'Gold'", Long.class)).isEqualTo(1L);
+    }
+
+    @Test
+    void createEndpointRejectsMissingNameWith400() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "description": "No name"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.name").value("name is required"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers", Long.class)).isZero();
+    }
+
+    @Test
+    void listEndpointReturnsTiersOrderedByIdAsc() throws Exception {
+        subscriptionTierService.create("Silver", "Second", 200, 60);
+        subscriptionTierService.create("Gold", "First", 1000, 60);
+
+        mockMvc.perform(get("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].name").value("Silver"))
+                .andExpect(jsonPath("$[0].requestsPerWindow").value(200))
+                .andExpect(jsonPath("$[1].name").value("Gold"))
+                .andExpect(jsonPath("$[1].requestsPerWindow").value(1000))
+                .andExpect(jsonPath("$[0].status").doesNotExist());
+    }
+
+    @Test
+    void listEndpointReturnsEmptyArrayWhenNoTiersExist() throws Exception {
+        mockMvc.perform(get("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
@@ -291,6 +422,23 @@ class SubscriptionTierIntegrationTest {
                 "Test App " + System.nanoTime(), "Integration test", 42L));
         SubscriptionTier managedTier = subscriptionTierRepository.findById(created.getId()).orElseThrow();
         return subscriptionRepository.saveAndFlush(new Subscription(application, version, managedTier));
+    }
+
+    private String token(String subject, String role, long expiresInSeconds) throws Exception {
+        java.time.Instant now = java.time.Instant.now();
+        com.nimbusds.jwt.JWTClaimsSet claims = new com.nimbusds.jwt.JWTClaimsSet.Builder()
+                .subject(subject)
+                .claim("role", role)
+                .issueTime(java.util.Date.from(now))
+                .expirationTime(java.util.Date.from(now.plusSeconds(expiresInSeconds)))
+                .build();
+        com.nimbusds.jwt.SignedJWT jwt = new com.nimbusds.jwt.SignedJWT(
+                new com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.HS256).build(),
+                claims);
+        jwt.sign(new com.nimbusds.jose.crypto.MACSigner(
+                "integration-test-jwt-secret-value-0123456789-ab"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        return jwt.serialize();
     }
 
     @Test

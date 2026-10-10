@@ -343,6 +343,70 @@ class SubscriptionTierServiceTest {
                 .hasMessageContaining("999");
     }
 
+    @Test
+    void createFromRequestAppliesDefaultRateLimitPolicyWhenOmitted() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 1L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Developer", null, null, null));
+
+        ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
+        verify(subscriptionTierRepository).save(captor.capture());
+        SubscriptionTier persisted = captor.getValue();
+        assertThat(persisted.getName()).isEqualTo("Developer");
+        assertThat(persisted.getDescription()).isNull();
+        assertThat(persisted.getRequestsPerWindow()).isEqualTo(100);
+        assertThat(persisted.getWindowSeconds()).isEqualTo(60);
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.name()).isEqualTo("Developer");
+        assertThat(response.description()).isNull();
+        assertThat(response.requestsPerWindow()).isEqualTo(100);
+        assertThat(response.windowSeconds()).isEqualTo(60);
+    }
+
+    @Test
+    void createFromRequestUsesSuppliedRateLimitPolicy() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 2L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Premium", "Premium access", 1000, 30));
+
+        assertThat(response.requestsPerWindow()).isEqualTo(1000);
+        assertThat(response.windowSeconds()).isEqualTo(30);
+    }
+
+    @Test
+    void listReturnsAllTiersOrderedByIdAsc() {
+        SubscriptionTier first = tier(1L, "Bronze", "Basic", 100, 60);
+        SubscriptionTier second = tier(2L, "Gold", "Premium", 1000, 60);
+        when(subscriptionTierRepository.findAllByOrderByIdAsc())
+                .thenReturn(java.util.List.of(first, second));
+
+        java.util.List<SubscriptionTierResponse> tiers = subscriptionTierService.list();
+
+        assertThat(tiers).hasSize(2);
+        assertThat(tiers.get(0).id()).isEqualTo(1L);
+        assertThat(tiers.get(0).name()).isEqualTo("Bronze");
+        assertThat(tiers.get(1).id()).isEqualTo(2L);
+        assertThat(tiers.get(1).name()).isEqualTo("Gold");
+    }
+
+    @Test
+    void listReturnsEmptyListWhenNoTiersExist() {
+        when(subscriptionTierRepository.findAllByOrderByIdAsc()).thenReturn(java.util.List.of());
+
+        assertThat(subscriptionTierService.list()).isEmpty();
+    }
+
     private SubscriptionTier tier(
             Long id,
             String name,

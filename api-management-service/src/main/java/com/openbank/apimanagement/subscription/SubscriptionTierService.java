@@ -9,11 +9,15 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Service
 public class SubscriptionTierService {
 
     static final int MAX_NAME_LENGTH = 100;
     static final int MAX_DESCRIPTION_LENGTH = 500;
+    static final int DEFAULT_REQUESTS_PER_WINDOW = 100;
+    static final int DEFAULT_WINDOW_SECONDS = 60;
 
     private static final String NO_LEADING_OR_TRAILING_WHITESPACE = "\\S(?:.*\\S)?";
 
@@ -28,6 +32,26 @@ public class SubscriptionTierService {
         this.subscriptionTierRepository = subscriptionTierRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.cacheInvalidationService = cacheInvalidationService;
+    }
+
+    /**
+     * Creates a subscription tier from an HTTP request body, applying the
+     * documented default rate-limit policy when the optional fields are
+     * omitted. The {@code subscriptionTier} cache is keyed by the tier's
+     * database id and a create only introduces a fresh id that was never
+     * resolvable (therefore never cached), so no existing cache entry can
+     * become stale and no eviction is needed.
+     */
+    @Transactional
+    public SubscriptionTierResponse create(CreateSubscriptionTierRequest request) {
+        int requestsPerWindow = request.requestsPerWindow() != null
+                ? request.requestsPerWindow()
+                : DEFAULT_REQUESTS_PER_WINDOW;
+        int windowSeconds = request.windowSeconds() != null
+                ? request.windowSeconds()
+                : DEFAULT_WINDOW_SECONDS;
+        SubscriptionTier created = create(request.name(), request.description(), requestsPerWindow, windowSeconds);
+        return SubscriptionTierResponse.from(created);
     }
 
     /**
@@ -99,6 +123,13 @@ public class SubscriptionTierService {
     public SubscriptionTier get(Long id) {
         return subscriptionTierRepository.findById(id)
                 .orElseThrow(() -> new SubscriptionTierNotFoundException(id));
+    }
+
+    @Transactional(readOnly = true)
+    public List<SubscriptionTierResponse> list() {
+        return subscriptionTierRepository.findAllByOrderByIdAsc().stream()
+                .map(SubscriptionTierResponse::from)
+                .toList();
     }
 
     private void requireUpdateField(UpdateSubscriptionTierRequest request) {

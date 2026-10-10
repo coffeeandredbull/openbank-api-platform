@@ -539,8 +539,19 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     extended into the future (the internal check requires `ACTIVE` and an
     unset-or-future expiry). A `DEVELOPER` receives `403 ACCESS_DENIED` and an
     unauthenticated caller receives `401 UNAUTHENTICATED`.
-  - **Planned phases (subject to change):** tier creation/listing and
-    lifecycle/pricing, credential scopes, the remaining services, the
+  - **Phase 24, Slice 13 — ADMIN-only subscription tier creation and
+    listing:** an authenticated `ADMIN` can create a tier with
+    `POST /subscription-tiers` (body `{ "name", "description"?,
+    "requestsPerWindow"?, "windowSeconds"? }`; omitted rate-limit fields
+    default to `100`/`60`) and list all tiers with `GET /subscription-tiers`
+    (ordered by `id` ascending). Both endpoints return the safe public tier
+    fields only. Duplicate names return `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`;
+    invalid input returns `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403
+    ACCESS_DENIED` and an unauthenticated caller receives `401
+    UNAUTHENTICATED`. Creation does not evict Redis (a new id was never
+    cached). Tier lifecycle and pricing remain planned.
+  - **Planned phases (subject to change):** tier lifecycle/pricing,
+    credential scopes, the remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,
    explicitly requested phases and verified (compile + tests) at each step.

@@ -397,7 +397,32 @@ VALIDATION_FAILED`. The response is the tier's public fields (`id`, `name`,
 `description`, `requestsPerWindow`, `windowSeconds`, `createdAt`, `updatedAt`).
 PostgreSQL remains the source of truth; after a successful commit, only the
 exact `subscriptionTier::<tierId>` Redis entry is evicted. A failed transaction
-does not evict. Tier creation, listing, lifecycle, and pricing remain planned.
+does not evict. Explicit ADMIN tier reassignment is implemented in Phase 24
+Slice 10.
+
+**Implemented so far (Phase 24, Slice 13) — subscription tier creation and
+listing:**
+- `POST /subscription-tiers` — **ADMIN-only** creation of a new subscription
+  tier. Body: `{ "name": string, "description"?: string, "requestsPerWindow"?: int,
+  "windowSeconds"?: int }`. `name` is required, ≤ 100 characters, and must not
+  be blank or contain leading/trailing whitespace; `description` is optional and
+  ≤ 500 characters; when `requestsPerWindow`/`windowSeconds` are omitted they
+  default to `100`/`60` (the same defaults as the table columns), and when
+  supplied they must be positive. Returns `201 Created` with
+  `Location: /subscription-tiers/{id}` and the tier's public fields (`id`,
+  `name`, `description`, `requestsPerWindow`, `windowSeconds`, `createdAt`,
+  `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
+  (service check plus unique-constraint race backstop). Invalid input returns
+  `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403 ACCESS_DENIED`; an
+  unauthenticated caller receives `401 UNAUTHENTICATED`. Creation does not
+  evict Redis: a new database id was never cacheable, so no existing
+  `subscriptionTier` entry can be stale.
+- `GET /subscription-tiers` — **ADMIN-only** listing of every tier ordered by
+  `id` ascending (empty array when none exist). The response is an array of the
+  same public fields. The list is not cached (only `GET`-by-id via the internal
+  `subscriptionTier` cache is). A `DEVELOPER` receives `403 ACCESS_DENIED`; an
+  unauthenticated caller receives `401 UNAUTHENTICATED`.
+- Tier lifecycle states and pricing beyond the rate-limit policy remain planned.
 
 **Implemented so far (Phase 24, Slice 9) — safe subscription tier deletion:**
 an `ADMIN` can remove an unreferenced tier with

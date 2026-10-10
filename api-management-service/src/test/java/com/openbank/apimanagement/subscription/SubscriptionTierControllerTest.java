@@ -21,8 +21,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -37,6 +40,153 @@ class SubscriptionTierControllerTest {
 
     @MockitoBean
     private SubscriptionTierService subscriptionTierService;
+
+    @Test
+    void createReturns201WithLocationAndPublicTierFields() throws Exception {
+        when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(7L, "Premium", "Premium access", 500, 30, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Premium",
+                                  "description": "Premium access",
+                                  "requestsPerWindow": 500,
+                                  "windowSeconds": 30
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/subscription-tiers/7"))
+                .andExpect(jsonPath("$.id").value(7))
+                .andExpect(jsonPath("$.name").value("Premium"))
+                .andExpect(jsonPath("$.description").value("Premium access"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(500))
+                .andExpect(jsonPath("$.windowSeconds").value(30))
+                .andExpect(jsonPath("$.createdAt").isNotEmpty())
+                .andExpect(jsonPath("$.updatedAt").isNotEmpty())
+                .andExpect(jsonPath("$.status").doesNotExist())
+                .andExpect(jsonPath("$.ownerUserId").doesNotExist());
+
+        verify(subscriptionTierService).create(any(CreateSubscriptionTierRequest.class));
+    }
+
+    @Test
+    void createForwardsTheRequestBody() throws Exception {
+        when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(7L, "Developer", null, 100, 60, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Developer"
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        verify(subscriptionTierService).create(eq(new CreateSubscriptionTierRequest("Developer", null, null, null)));
+    }
+
+    @Test
+    void createRejectsMissingName() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "description": "No name"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.name").value("name is required"));
+
+        verify(subscriptionTierService, never()).create(any(CreateSubscriptionTierRequest.class));
+    }
+
+    @Test
+    void createRejectsBlankName() throws Exception {
+        assertCreateInvalid("name", "\"   \"", "name must not be blank or contain leading or trailing whitespace");
+    }
+
+    @Test
+    void createRejectsNameWithLeadingOrTrailingWhitespace() throws Exception {
+        assertCreateInvalid("name", "\" Gold \"", "name must not be blank or contain leading or trailing whitespace");
+    }
+
+    @Test
+    void createRejectsNameLongerThan100Characters() throws Exception {
+        assertCreateInvalid("name", "\"" + "n".repeat(101) + "\"", "name must not exceed 100 characters");
+    }
+
+    @Test
+    void createRejectsDescriptionLongerThan500Characters() throws Exception {
+        assertCreateInvalid("description", "\"" + "d".repeat(501) + "\"", "description must not exceed 500 characters");
+    }
+
+    @Test
+    void createRejectsNonPositiveRequestsPerWindow() throws Exception {
+        assertCreateInvalid("requestsPerWindow", "0", "requestsPerWindow must be greater than 0");
+    }
+
+    @Test
+    void createRejectsNonPositiveWindowSeconds() throws Exception {
+        assertCreateInvalid("windowSeconds", "-1", "windowSeconds must be greater than 0");
+    }
+
+    @Test
+    void createReturns409WhenTierNameAlreadyExists() throws Exception {
+        when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
+                .thenThrow(new SubscriptionTierAlreadyExistsException("Silver"));
+
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Silver\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("SUBSCRIPTION_TIER_ALREADY_EXISTS"))
+                .andExpect(r -> assertThat(r.getResponse().getContentAsString())
+                        .doesNotContain("DataIntegrityViolation")
+                        .doesNotContain("unique constraint"));
+    }
+
+    @Test
+    void listReturnsPublicTierFieldsInIdOrder() throws Exception {
+        when(subscriptionTierService.list()).thenReturn(java.util.List.of(
+                new SubscriptionTierResponse(1L, "Bronze", "Basic", 100, 60, TIMESTAMP, TIMESTAMP),
+                new SubscriptionTierResponse(2L, "Gold", "Premium", 1000, 60, TIMESTAMP, TIMESTAMP)));
+
+        mockMvc.perform(get("/subscription-tiers"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].id").value(1))
+                .andExpect(jsonPath("$[0].name").value("Bronze"))
+                .andExpect(jsonPath("$[0].requestsPerWindow").value(100))
+                .andExpect(jsonPath("$[0].windowSeconds").value(60))
+                .andExpect(jsonPath("$[1].id").value(2))
+                .andExpect(jsonPath("$[1].name").value("Gold"))
+                .andExpect(jsonPath("$[0].status").doesNotExist())
+                .andExpect(jsonPath("$[0].ownerUserId").doesNotExist());
+    }
+
+    @Test
+    void listReturnsEmptyArrayWhenNoTiersExist() throws Exception {
+        when(subscriptionTierService.list()).thenReturn(java.util.List.of());
+
+        mockMvc.perform(get("/subscription-tiers"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    private void assertCreateInvalid(String field, String value, String message) throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"" + field + "\":" + value + "}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors." + field).value(message));
+
+        verify(subscriptionTierService, never()).create(any(CreateSubscriptionTierRequest.class));
+    }
 
     @Test
     void updateReturns200WithPublicTierFields() throws Exception {
