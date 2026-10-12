@@ -28,7 +28,7 @@ public class ApplicationCredentialController {
             @PathVariable Long applicationId,
             @Valid @RequestBody CreateApplicationCredentialRequest request) {
         CredentialCreatedResponse created = credentialService.create(
-                identity.userId(), applicationId, request.expiresAt());
+                identity.userId(), applicationId, request.expiresAt(), request.scopes());
         return ResponseEntity.created(URI.create("/credentials/" + created.id())).body(created);
     }
 }

@@ -389,6 +389,109 @@ class CredentialServiceTest {
     }
 
     @Test
+    void createCanonicalizesScopesAndPersistsTheSpaceDelimitedValue() {
+        Application application = application(10L, 42L);
+        when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> {
+            Credential saved = invocation.getArgument(0);
+            setField(saved, "id", 1L);
+            return saved;
+        });
+
+        CredentialCreatedResponse response = credentialService.create(
+                42L, 10L, null, java.util.List.of("payments:read", "orders:write"));
+
+        assertThat(response.scopes()).isEqualTo("payments:read orders:write");
+        assertThat(capturedCredential().getScopes()).isEqualTo("payments:read orders:write");
+    }
+
+    @Test
+    void createWithoutScopesStoresTheUnrestrictedEmptyString() {
+        Application application = application(10L, 42L);
+        when(applicationRepository.findByIdAndOwnerUserId(10L, 42L)).thenReturn(Optional.of(application));
+        when(credentialRepository.existsByClientId(anyString())).thenReturn(false);
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> {
+            Credential saved = invocation.getArgument(0);
+            setField(saved, "id", 1L);
+            return saved;
+        });
+
+        CredentialCreatedResponse response = credentialService.create(42L, new CreateCredentialRequest(10L));
+
+        assertThat(response.scopes()).isEmpty();
+        assertThat(capturedCredential().getScopes()).isEmpty();
+    }
+
+    @Test
+    void changeScopesCanonicalizesAndPersistsTheSpaceDelimitedValue() {
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        Instant createdAt = stored.getCreatedAt();
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialResponse response = credentialService.changeScopes(
+                1L, new UpdateCredentialScopesRequest(java.util.List.of("orders:write", "payments:read")));
+
+        assertThat(response.id()).isEqualTo(1L);
+        assertThat(response.scopes()).isEqualTo("orders:write payments:read");
+        assertThat(response.clientId()).isEqualTo("client-123");
+        assertThat(response.status()).isEqualTo(CredentialStatus.ACTIVE);
+        assertThat(response.createdAt()).isEqualTo(createdAt);
+
+        Credential persisted = capturedSaved();
+        assertThat(persisted.getScopes()).isEqualTo("orders:write payments:read");
+        assertThat(persisted.getClientSecretHash()).isEqualTo("$2a$10$hashvalue");
+        assertThat(persisted.getUpdatedAt()).isAfterOrEqualTo(createdAt);
+    }
+
+    @Test
+    void changeScopesKeepsRevokedStatusAndStillUpdatesScopes() {
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        setField(stored, "status", CredentialStatus.REVOKED);
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+        when(credentialRepository.save(any(Credential.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CredentialResponse response = credentialService.changeScopes(
+                1L, new UpdateCredentialScopesRequest(java.util.List.of("payments:read")));
+
+        assertThat(response.status()).isEqualTo(CredentialStatus.REVOKED);
+        assertThat(response.scopes()).isEqualTo("payments:read");
+        assertThat(capturedSaved().getStatus()).isEqualTo(CredentialStatus.REVOKED);
+    }
+
+    @Test
+    void changeScopesThrowsNotFoundWhenCredentialMissing() {
+        when(credentialRepository.findById(999L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> credentialService.changeScopes(
+                999L, new UpdateCredentialScopesRequest(java.util.List.of("payments:read"))))
+                .isInstanceOf(CredentialNotFoundException.class)
+                .hasMessageContaining("999");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void changeScopesRejectsMalformedScopesBeforePersisting() {
+        Credential stored = credential(1L, 10L, "client-123", "$2a$10$hashvalue");
+        when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));
+
+        assertThatThrownBy(() -> credentialService.changeScopes(
+                1L, new UpdateCredentialScopesRequest(java.util.List.of("INVALID SCOPE"))))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
+    void changeScopesRejectsNullScopesInsteadOfSilentlyClearingThem() {
+        assertThatThrownBy(() -> credentialService.changeScopes(
+                1L, new UpdateCredentialScopesRequest(null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("scopes");
+        verify(credentialRepository, never()).save(any(Credential.class));
+    }
+
+    @Test
     void rotateActiveCredentialReturnsNewClientIdAndSecretKeepingIdAndApplication() {
         Credential stored = credential(1L, 10L, "old-client-id", "$2a$10$old-hash-value");
         when(credentialRepository.findById(1L)).thenReturn(Optional.of(stored));

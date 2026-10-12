@@ -9,6 +9,7 @@ public record CredentialCreatedResponse(
         String clientSecret,
         CredentialStatus status,
         Instant expiresAt,
+        String scopes,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -19,9 +20,21 @@ public record CredentialCreatedResponse(
             String clientId,
             String clientSecret,
             CredentialStatus status,
+            Instant expiresAt,
             Instant createdAt,
             Instant updatedAt) {
-        this(id, applicationId, clientId, clientSecret, status, null, createdAt, updatedAt);
+        this(id, applicationId, clientId, clientSecret, status, expiresAt, null, createdAt, updatedAt);
+    }
+
+    public CredentialCreatedResponse(
+            Long id,
+            Long applicationId,
+            String clientId,
+            String clientSecret,
+            CredentialStatus status,
+            Instant createdAt,
+            Instant updatedAt) {
+        this(id, applicationId, clientId, clientSecret, status, null, null, createdAt, updatedAt);
     }
 
     public static CredentialCreatedResponse from(Credential credential, String plaintextClientSecret) {
@@ -32,6 +45,7 @@ public record CredentialCreatedResponse(
                 plaintextClientSecret,
                 credential.getStatus(),
                 credential.getExpiresAt(),
+                credential.getScopes(),
                 credential.getCreatedAt(),
                 credential.getUpdatedAt()
         );

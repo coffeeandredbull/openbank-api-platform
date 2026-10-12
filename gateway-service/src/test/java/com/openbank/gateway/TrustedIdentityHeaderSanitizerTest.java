@@ -23,23 +23,25 @@ class TrustedIdentityHeaderSanitizerTest {
     private final TrustedIdentityHeaderSanitizer sanitizer = new TrustedIdentityHeaderSanitizer();
 
     @Test
-    void headerNameConstantsMatchThePhase22Specification() {
+    void headerNameConstantsMatchTheTrustedIdentityHeaderSet() {
         assertThat(TrustedIdentityHeaders.USER_ID).isEqualTo("X-User-Id");
         assertThat(TrustedIdentityHeaders.ROLES).isEqualTo("X-Roles");
         assertThat(TrustedIdentityHeaders.APPLICATION_ID).isEqualTo("X-Application-Id");
         assertThat(TrustedIdentityHeaders.CLIENT_ID).isEqualTo("X-Client-Id");
+        assertThat(TrustedIdentityHeaders.SCOPES).isEqualTo("X-Scopes");
         assertThat(TrustedIdentityHeaders.allHeaderNames())
-                .containsExactly("X-User-Id", "X-Roles", "X-Application-Id", "X-Client-Id");
+                .containsExactly("X-User-Id", "X-Roles", "X-Application-Id", "X-Client-Id", "X-Scopes");
     }
 
     @Test
-    void allFourTrustedHeadersAreRemoved() {
+    void allTrustedIdentityHeadersAreRemoved() {
         ServerWebExchange exchange = exchangeWith(
                 "/runtime/apis/payments/v1/accounts",
                 header("X-User-Id", "999"),
                 header("X-Roles", "DEVELOPER"),
                 header("X-Application-Id", "7"),
                 header("X-Client-Id", "client-abc"),
+                header("X-Scopes", "admin:*"),
                 header("X-Normal", "kept"));
 
         ServerWebExchange sanitized = sanitizer.sanitize(exchange);
@@ -49,7 +51,8 @@ class TrustedIdentityHeaderSanitizerTest {
                         TrustedIdentityHeaders.USER_ID,
                         TrustedIdentityHeaders.ROLES,
                         TrustedIdentityHeaders.APPLICATION_ID,
-                        TrustedIdentityHeaders.CLIENT_ID)
+                        TrustedIdentityHeaders.CLIENT_ID,
+                        TrustedIdentityHeaders.SCOPES)
                 .containsEntry("X-Normal", List.of("kept"));
     }
 
@@ -127,7 +130,8 @@ class TrustedIdentityHeaderSanitizerTest {
                         TrustedIdentityHeaders.USER_ID,
                         TrustedIdentityHeaders.ROLES,
                         TrustedIdentityHeaders.APPLICATION_ID,
-                        TrustedIdentityHeaders.CLIENT_ID)
+                        TrustedIdentityHeaders.CLIENT_ID,
+                        TrustedIdentityHeaders.SCOPES)
                 .containsEntry("X-Normal", List.of("kept"));
     }
 

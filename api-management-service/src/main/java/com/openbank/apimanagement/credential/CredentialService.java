@@ -5,6 +5,7 @@ import com.openbank.apimanagement.application.ApplicationRepository;
 import com.openbank.apimanagement.exception.ApplicationNotFoundException;
 import com.openbank.apimanagement.exception.CredentialNotFoundException;
 import com.openbank.apimanagement.exception.InvalidCredentialStatusTransitionException;
+import com.openbank.apimanagement.scope.Scopes;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -39,15 +40,17 @@ public class CredentialService {
 
     @Transactional
     public CredentialCreatedResponse create(Long ownerUserId, CreateCredentialRequest request) {
-        return create(ownerUserId, request.applicationId(), request.expiresAt());
+        return create(ownerUserId, request.applicationId(), request.expiresAt(), request.scopes());
     }
 
     @Transactional
-    public CredentialCreatedResponse create(Long ownerUserId, Long applicationId, Instant expiresAt) {
+    public CredentialCreatedResponse create(
+            Long ownerUserId, Long applicationId, Instant expiresAt, List<String> scopes) {
         Application application = applicationRepository
                 .findByIdAndOwnerUserId(applicationId, ownerUserId)
                 .orElseThrow(() -> new ApplicationNotFoundException(applicationId));
 
+        String canonicalScopes = Scopes.canonicalize(scopes);
         String plaintextClientSecret = generateClientSecret();
         for (int attempt = 0; attempt < MAX_CLIENT_ID_ATTEMPTS; attempt++) {
             String clientId = UUID.randomUUID().toString();
@@ -56,7 +59,8 @@ public class CredentialService {
             }
             try {
                 Credential saved = credentialRepository.save(new Credential(
-                        application, clientId, passwordEncoder.encode(plaintextClientSecret), expiresAt));
+                        application, clientId, passwordEncoder.encode(plaintextClientSecret), expiresAt,
+                        canonicalScopes));
                 return CredentialCreatedResponse.from(saved, plaintextClientSecret);
             } catch (DataIntegrityViolationException e) {
                 // Concurrent insert won the unique(client_id) race: regenerate and retry.
@@ -97,6 +101,17 @@ public class CredentialService {
         Credential credential = credentialRepository.findById(credentialId)
                 .orElseThrow(() -> new CredentialNotFoundException(credentialId));
         credential.changeExpiration(request.expiresAt());
+        return CredentialResponse.from(credentialRepository.save(credential));
+    }
+
+    @Transactional
+    public CredentialResponse changeScopes(Long credentialId, UpdateCredentialScopesRequest request) {
+        if (request.scopes() == null) {
+            throw new IllegalArgumentException("scopes must not be null");
+        }
+        Credential credential = credentialRepository.findById(credentialId)
+                .orElseThrow(() -> new CredentialNotFoundException(credentialId));
+        credential.changeScopes(Scopes.canonicalize(request.scopes()));
         return CredentialResponse.from(credentialRepository.save(credential));
     }
 

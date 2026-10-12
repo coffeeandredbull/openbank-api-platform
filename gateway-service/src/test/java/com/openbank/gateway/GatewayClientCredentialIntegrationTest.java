@@ -45,7 +45,7 @@ class GatewayClientCredentialIntegrationTest {
 
     private static final String AUTHENTICATED_BODY = "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
             + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
-            + "\"requestsPerWindow\":3,\"windowSeconds\":60}";
+            + "\"requestsPerWindow\":3,\"windowSeconds\":60,\"scopes\":\"payments:read\"}";
 
     private static final AtomicReference<String> CREDENTIAL_BODY = new AtomicReference<>(
             AUTHENTICATED_BODY);
@@ -197,7 +197,7 @@ class GatewayClientCredentialIntegrationTest {
     @Test
     void unsubscribedApplicationReturns403AndIsNotForwarded() {
         CREDENTIAL_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":false}");
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":false,\"scopes\":\"\"}");
 
         webTestClient.get()
                 .uri("/runtime/apis/payments/v1/accounts")
@@ -331,7 +331,7 @@ class GatewayClientCredentialIntegrationTest {
 
         CREDENTIAL_STATUS.set(200);
         CREDENTIAL_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":false}");
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":false,\"scopes\":\"\"}");
         assertLeakFreeSecret(webTestClient.get()
                 .uri("/runtime/apis/payments/v1/accounts")
                 .header(HttpHeaders.AUTHORIZATION, basicHeader())

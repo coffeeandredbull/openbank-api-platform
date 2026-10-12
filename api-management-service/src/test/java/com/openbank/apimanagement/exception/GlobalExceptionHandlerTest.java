@@ -278,6 +278,31 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void malformedPersistedScopesProduceGeneric500WithoutScopeValuesOrInternals() {
+        MalformedPersistedScopesException ex = new MalformedPersistedScopesException(
+                new IllegalArgumentException("invalid scope token"));
+
+        ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
+                handler.handleMalformedPersistedScopes(ex, request("GET", "/internal/credential-check"));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(500);
+        GlobalExceptionHandler.ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(500);
+        assertThat(body.error()).isEqualTo("Internal Server Error");
+        assertThat(body.code()).isEqualTo("INTERNAL_ERROR");
+        assertThat(body.message()).isEqualTo("An unexpected error occurred");
+        assertThat(body.fieldErrors()).isEmpty();
+        assertThat(body.toString())
+                .doesNotContain("invalid scope token")
+                .doesNotContain("scope")
+                .doesNotContain("Persisted scope data")
+                .doesNotContain("IllegalArgumentException")
+                .doesNotContain("at com.openbank")
+                .doesNotContain("Caused by");
+    }
+
+    @Test
     void subscriptionNotFoundProducesStructured404() {
         ResponseEntity<GlobalExceptionHandler.ErrorResponse> response =
                 handler.handleSubscriptionNotFound(

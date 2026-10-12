@@ -130,25 +130,27 @@ class CredentialControllerTest {
     @Test
     void applicationScopedCreateReturnsExpirationAndUsesPathApplication() throws Exception {
         Instant expiresAt = Instant.parse("2030-01-01T00:00:00Z");
-        when(credentialService.create(42L, 10L, expiresAt))
+        when(credentialService.create(42L, 10L, expiresAt, List.of("payments:read")))
                 .thenReturn(new CredentialCreatedResponse(
                         1L, 10L, "client-abc", "plain-secret-xyz",
-                        CredentialStatus.ACTIVE, expiresAt, TIMESTAMP, TIMESTAMP));
+                        CredentialStatus.ACTIVE, expiresAt, "payments:read", TIMESTAMP, TIMESTAMP));
 
         mockMvc.perform(post("/applications/10/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "expiresAt": "2030-01-01T00:00:00Z"
+                                  "expiresAt": "2030-01-01T00:00:00Z",
+                                  "scopes": ["payments:read"]
                                 }
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "/credentials/1"))
                 .andExpect(jsonPath("$.applicationId").value(10))
                 .andExpect(jsonPath("$.expiresAt").value("2030-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$.scopes").value("payments:read"))
                 .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
 
-        verify(credentialService).create(42L, 10L, expiresAt);
+        verify(credentialService).create(42L, 10L, expiresAt, List.of("payments:read"));
     }
 
     @Test
@@ -194,7 +196,7 @@ class CredentialControllerTest {
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.fieldErrors.expiresAt").value("expiresAt must be in the future"));
 
-        verify(credentialService, never()).create(eq(42L), eq(10L), any(Instant.class));
+        verify(credentialService, never()).create(eq(42L), eq(10L), any(Instant.class), any());
     }
 
     @Test
@@ -491,6 +493,117 @@ class CredentialControllerTest {
                 .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
                 .andExpect(jsonPath("$.path").value("/credentials/999/expiration"))
                 .andExpect(jsonPath("$.message").value("Credential with id 999 does not exist"));
+    }
+
+    @Test
+    void patchScopesReturns200WithCanonicalScopesAndNoSecret() throws Exception {
+        when(credentialService.changeScopes(eq(1L), any(UpdateCredentialScopesRequest.class)))
+                .thenReturn(new CredentialResponse(
+                        1L, 10L, "client-abc", CredentialStatus.ACTIVE, TIMESTAMP,
+                        "payments:read orders:write", TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/credentials/1/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read", "orders:write"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.clientId").value("client-abc"))
+                .andExpect(jsonPath("$.scopes").value("payments:read orders:write"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        verify(credentialService).changeScopes(eq(1L),
+                org.mockito.ArgumentMatchers.argThat(request ->
+                        request.scopes().equals(List.of("payments:read", "orders:write"))));
+    }
+
+    @Test
+    void patchScopesRequiresScopesField() throws Exception {
+        mockMvc.perform(patch("/credentials/1/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.scopes").value("scopes is required"));
+
+        verify(credentialService, never()).changeScopes(any(), any());
+    }
+
+    @Test
+    void patchScopesRejectsInvalidScopeToken() throws Exception {
+        mockMvc.perform(patch("/credentials/1/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.scopes")
+                        .value("scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        verify(credentialService, never()).changeScopes(any(), any());
+    }
+
+    @Test
+    void patchScopesRejectsDuplicateScopeTokens() throws Exception {
+        mockMvc.perform(patch("/credentials/1/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read", "payments:read"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.scopes")
+                        .value("scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        verify(credentialService, never()).changeScopes(any(), any());
+    }
+
+    @Test
+    void patchScopesMissingCredentialProducesStructured404() throws Exception {
+        when(credentialService.changeScopes(eq(999L), any(UpdateCredentialScopesRequest.class)))
+                .thenThrow(new CredentialNotFoundException(999L));
+
+        mockMvc.perform(patch("/credentials/999/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read"]
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/credentials/999/scopes"))
+                .andExpect(jsonPath("$.message").value("Credential with id 999 does not exist"));
+    }
+
+    @Test
+    void createRejectsInvalidScopeTokenWith400() throws Exception {
+        mockMvc.perform(post("/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": 10,
+                                  "scopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.scopes")
+                        .value("scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        verify(credentialService, never()).create(eq(42L), any(CreateCredentialRequest.class));
     }
 
     @Test

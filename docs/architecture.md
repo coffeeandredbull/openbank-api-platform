@@ -80,7 +80,7 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
 | Service | Responsibility |
 | --- | --- |
 | **Identity Service** | Owns users, roles, and credentials. Handles registration, login, JWT access-token issuance and validation, OAuth2-style concepts (client registry, grant-type flows), password hashing, and — since Phase 24 Slice 6 — **token revocation**: an authenticated `POST /auth/revoke` derives the token's `jti` server-side from the signed JWT and persists it in Shared Redis (`token_revocation:jti:{jti}`, TTL bounded by the token's remaining lifetime). The gateway consults it (directly or via pre-issued tokens) when validating tokens. |
-| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Credentials carry their own **status lifecycle** (Phase 24, Slice 3): `ACTIVE`/`REVOKED` (varchar, `ACTIVE` on creation), with ADMIN-only `PATCH /credentials/{id}/status` (revocation, terminal) and `POST /credentials/{id}/rotate` (rotates `clientId` + hash **in place**, new plaintext secret shown once) — and the internal `GET /internal/credential-check` authenticates **only `ACTIVE`** credentials. Since Phase 24 Slice 4, subscription tiers carry their rate-limit policy (`requestsPerWindow` default `100` / `windowSeconds` default `60`, both validated) and the internal subscription/credential checks surface it to the gateway, which enforces it per request. Since Phase 24 Slice 8, an ADMIN-only `PATCH /subscription-tiers/{tierId}` partially updates tier policy fields and invalidates the exact post-commit cache entry. Since Phase 24 Slice 9, an ADMIN-only `DELETE /subscription-tiers/{tierId}` is implemented for unreferenced tiers and refuses referenced tiers with `409 SUBSCRIPTION_TIER_IN_USE`; since Phase 24 Slice 13, ADMIN-only `POST /subscription-tiers` and `GET /subscription-tiers` create and list tiers (creation defaults omitted rate-limit fields to 100/60 and rejects duplicate names with 409; listing is uncached and ordered by id); since Phase 24 Slice 14, tiers carry an **`ACTIVE`/`INACTIVE` status lifecycle** (default `ACTIVE`) with an ADMIN-only `PATCH /subscription-tiers/{tierId}/status` that evicts only its own post-commit cache entry and rejects `INACTIVE` tiers as targets for new subscriptions/reassignments with `409 SUBSCRIPTION_TIER_INACTIVE` (existing subscriptions are never modified); since Phase 24 Slice 15, tiers carry an optional **`priceCentsPerMonth`** price (integer cents per month, `price_cents_per_month integer NOT NULL DEFAULT 0`, negative values rejected with `400`, exposed in tier responses only — carried and stored, never charged, and not part of the internal rate-limit policy payload); auto-approval policy, credential expiry/scopes, and Redis caching of the checks remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
+| **API Management Service** | Owns the API catalog: published APIs, versions, endpoint metadata, documentation, and lifecycle state (published / deprecated / retired). It is the source of truth for "which API versions exist". Also owns the **developer application registry** (Phase 11), the **subscription registry** (Phase 12), and **application credentials** (Phase 13): for each owned application it issues a `clientId` + `clientSecret` (BCrypt-hashed at rest) that the gateway authenticates (Phase 21) and rate-limits against. Each subscription references a **subscription tier** (Phase 24) and carries a **status lifecycle** (`PENDING`/`ACTIVE`/`DENIED`/`REVOKED`, Phase 24 Slice 2): new subscriptions start `PENDING`, an ADMIN-only `PATCH /subscriptions/{id}/status` moves them through a strict state machine, and only `ACTIVE` subscriptions satisfy the gateway-facing internal subscription/credential checks. Credentials carry their own **status lifecycle** (Phase 24, Slice 3): `ACTIVE`/`REVOKED` (varchar, `ACTIVE` on creation), with ADMIN-only `PATCH /credentials/{id}/status` (revocation, terminal) and `POST /credentials/{id}/rotate` (rotates `clientId` + hash **in place**, new plaintext secret shown once) — and the internal `GET /internal/credential-check` authenticates **only `ACTIVE`** credentials. Since Phase 24 Slice 4, subscription tiers carry their rate-limit policy (`requestsPerWindow` default `100` / `windowSeconds` default `60`, both validated) and the internal subscription/credential checks surface it to the gateway, which enforces it per request. Since Phase 24 Slice 8, an ADMIN-only `PATCH /subscription-tiers/{tierId}` partially updates tier policy fields and invalidates the exact post-commit cache entry. Since Phase 24 Slice 9, an ADMIN-only `DELETE /subscription-tiers/{tierId}` is implemented for unreferenced tiers and refuses referenced tiers with `409 SUBSCRIPTION_TIER_IN_USE`; since Phase 24 Slice 13, ADMIN-only `POST /subscription-tiers` and `GET /subscription-tiers` create and list tiers (creation defaults omitted rate-limit fields to 100/60 and rejects duplicate names with 409; listing is uncached and ordered by id); since Phase 24 Slice 14, tiers carry an **`ACTIVE`/`INACTIVE` status lifecycle** (default `ACTIVE`) with an ADMIN-only `PATCH /subscription-tiers/{tierId}/status` that evicts only its own post-commit cache entry and rejects `INACTIVE` tiers as targets for new subscriptions/reassignments with `409 SUBSCRIPTION_TIER_INACTIVE` (existing subscriptions are never modified); since Phase 24 Slice 15, tiers carry an optional **`priceCentsPerMonth`** price (integer cents per month, `price_cents_per_month integer NOT NULL DEFAULT 0`, negative values rejected with `400`, exposed in tier responses only — carried and stored, never charged, and not part of the internal rate-limit policy payload); since Phase 24 Slice 16 credentials and tiers carry **scopes** (`credentials.scopes` / `subscription_tiers.allowed_scopes`, canonical space-delimited strings with `''` = unrestricted) with shared validation on create, an ADMIN-only `PATCH /credentials/{id}/scopes`, and the server-computed **effective scopes** (credential ∩ tier) returned by `GET /internal/credential-check` and forwarded by the gateway as `X-Scopes`; auto-approval policy, per-operation scope enforcement, and Redis caching of the checks remain future work on top of this registry. Ownership of everything is enforced from JWT claims — the service never trusts a client-supplied owner. |
 | **Payment Service** | Hosts the **Account**, **Payment**, and **Transaction** domains (Phase 14). An account belongs to exactly one user (no balance), a payment is created against an owned account and always starts `PENDING`, and a transaction records a payment for the caller's account. Ownership is always derived from the JWT `sub` claim; the service keeps no user rows. Real payment processing, balances, refunds, and settlement are future work. |
 | **Analytics Service** | Owns the **runtime analytics events** (Phase 23): a PostgreSQL-backed service (port `8083`) that persists one record per managed API invocation — timestamp, API context/version, HTTP method, status code, latency, authentication type, and the caller's `userId` / `applicationId` (plain identifiers, nullable for JWT callers). Enum values are stored as strings, and no request/response bodies, tokens, or secrets are ever stored. Events are ingested only on the internal `POST /internal/analytics/events` endpoint (since Phase 23 Slice 4), authenticated with a shared internal token (`X-Internal-Service-Token`, compared in constant time) and answered `202 Accepted` without a body. Since Phase 23 Slice 5 there is one public endpoint: `GET /analytics/events`, protected by an `ADMIN`/`DEVELOPER` JWT, returning paged events newest-first (`event_timestamp DESC, id DESC`) with exact-match filters, inclusive time bounds, and a 100-row page cap; filtering, sorting, and pagination run in PostgreSQL. Since Phase 23 Slice 6 there is also `GET /analytics/usage` — an `ADMIN`/`DEVELOPER`-protected single-row usage summary (`totalRequests`, 2xx/4xx/5xx counts, `averageLatencyMs`) computed entirely in PostgreSQL, honoring the same `from`/`to` (inclusive) + `apiContext`/`apiVersion` filters and returning zeros for empty windows. Grouped/bucketed aggregations for the Developer Portal remain planned. |
 
@@ -117,7 +117,8 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   `GET /internal/subscription-check` (Phase 17, JWT callers) and
   `GET /internal/credential-check` (Phase 21, application client credentials;
   returns credential + subscription verdict in one call; since Phase 24 Slice 3
-  it authenticates **only `ACTIVE`** credentials). These are the only
+  it authenticates **only `ACTIVE`** credentials; since Phase 24 Slice 16 it
+  also returns the server-computed **effective scopes**). These are the only
   internal service-to-service calls today.
 - **No message broker** (Kafka / RabbitMQ) is used. Any asynchronous need will
   be addressed with Redis or direct calls unless explicitly requested
@@ -220,7 +221,9 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
   - treats the response `{"authenticated":bool,"applicationId":N,
     "ownerUserId":N,"subscribed":bool}` plus, when subscribed, the active
     subscription's tier policy (`tierId`, `tierName`, `requestsPerWindow`,
-    `windowSeconds`) as both the **credential verdict** and
+    `windowSeconds`) and the **effective scopes** `scopes` (space-delimited
+    canonical string, `""` = unrestricted, credential ∩ tier — Phase 24 Slice
+    16) as both the **credential verdict** and
     the **subscription verdict** for the authenticated application (identity =
     application, never a user), decided against PostgreSQL directly (no cache);
   - **strips the Basic header** (decorated request) before forwarding, so the
@@ -229,6 +232,8 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     check unreachable/failed/malformed → `503 CREDENTIAL_SERVICE_UNAVAILABLE`;
     confirmed subscription without a valid tier policy → `503
     CREDENTIAL_SERVICE_UNAVAILABLE` (Phase 24 Slice 4);
+    an authenticated outcome with a missing/non-textual/malformed `scopes`
+    value → `503 CREDENTIAL_SERVICE_UNAVAILABLE` (Phase 24 Slice 16);
     valid credentials but unsubscribed application (or malformed runtime path)
     → `403 SUBSCRIPTION_REQUIRED`. Management routes remain Bearer-only (Basic
     on `/apis/**` → `401 UNAUTHENTICATED`); a request with both Bearer and
@@ -241,13 +246,16 @@ credentials), Payment (Account + Payment + Transaction domains), and Analytics.
     JWT `role`, e.g. `ADMIN`/`DEVELOPER`); `Authorization: Bearer <jwt>` is
     still forwarded unchanged.
   - **Client-credential (application) flow** → `X-User-Id` (the credential's
-    `ownerUserId`), `X-Application-Id` (the credential's `applicationId`), and
-    `X-Client-Id` (the credential's `clientId`); no `X-Roles` is set, and the
+    `ownerUserId`), `X-Application-Id` (the credential's `applicationId`),
+    `X-Client-Id` (the credential's `clientId`), and `X-Scopes` (the
+    gateway-parsed effective scope string, only when non-empty — Phase 24
+    Slice 16); no `X-Roles` is set, and the
     `Authorization: Basic ...` header remains stripped before forwarding.
   - The values are always **gateway-derived after authentication** (from JWT
     claims or the credential-check response) and are **never trusted from the
     client**: a reusable `TrustedIdentityHeaderSanitizer` strips any
-    client-supplied `X-User-Id`, `X-Roles`, `X-Application-Id`, or `X-Client-Id`
+    client-supplied `X-User-Id`, `X-Roles`, `X-Application-Id`, `X-Client-Id`,
+    or `X-Scopes`
     values from the inbound request before trusted values are added, so a
     spoofed identity can never reach the consumed API or influence it.
   - **Runtime path only**: the headers are added exclusively on
@@ -430,7 +438,10 @@ separate (the management service does not read the gateway's shared Redis).
 > `/internal/credential-check` call), 4 (Redis-backed rate limiting), and 5 —
 > which since Phase 22 also passes the caller's verified identity to managed
 > APIs as gateway-generated `X-User-Id`/`X-Roles` (user flow) and
-> `X-User-Id`/`X-Application-Id`/`X-Client-Id` (application flow) headers — 6,
+> `X-User-Id`/`X-Application-Id`/`X-Client-Id`/`X-Scopes` (application flow;
+> `X-Scopes` since Phase 24 Slice 16, only when non-empty — absence covers
+> both unrestricted and an empty intersection, so it is never an authorization
+> grant) headers — 6,
 > and 7 (telemetry: since Phase 23 Slice 4 the gateway captures a runtime
 > analytics event per managed invocation and delivers it to the Analytics
 > Service asynchronously and best-effort, isolated from the request). Since

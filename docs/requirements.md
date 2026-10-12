@@ -311,8 +311,13 @@
 - Credentials are bound to an application, not a user — implemented (Phase 13);
   credential **status / revocation / rotation** are implemented (Phase 24,
   Slice 3), and optional **credential expiry** is implemented (Phase 24, Slice
-  11, see the API Management section above). Per-credential scopes remain
-  planned.
+  11, see the API Management section above). Per-credential **scopes** are
+  implemented (Phase 24, Slice 16): a canonical space-delimited scope string on
+  the credential and `allowed_scopes` on the tier, validated on create and an
+  ADMIN-only `PATCH /credentials/{id}/scopes`, intersected server-side into
+  the internal credential-check `scopes` field and propagated by the gateway
+  as `X-Scopes` — informational only; per-operation scope **enforcement**
+  remains planned.
 
 ## Rate Limiting Requirements
 

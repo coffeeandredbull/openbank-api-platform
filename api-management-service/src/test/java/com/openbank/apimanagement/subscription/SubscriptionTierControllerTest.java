@@ -93,6 +93,47 @@ class SubscriptionTierControllerTest {
     }
 
     @Test
+    void createForwardsAllowedScopesAndReturnsTheCanonicalValue() throws Exception {
+        when(subscriptionTierService.create(any(CreateSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Premium", null, 100, 60, 0, "payments:read orders:write",
+                        SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Premium",
+                                  "allowedScopes": ["payments:read", "orders:write"]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowedScopes").value("payments:read orders:write"));
+
+        verify(subscriptionTierService).create(eq(new CreateSubscriptionTierRequest(
+                "Premium", null, null, null, null,
+                java.util.List.of("payments:read", "orders:write"))));
+    }
+
+    @Test
+    void createRejectsInvalidAllowedScopeTokensWith400() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Premium",
+                                  "allowedScopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.allowedScopes")
+                        .value("scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        verify(subscriptionTierService, never()).create(any(CreateSubscriptionTierRequest.class));
+    }
+
+    @Test
     void createRejectsMissingName() throws Exception {
         mockMvc.perform(post("/subscription-tiers")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -268,6 +309,46 @@ class SubscriptionTierControllerTest {
 
         verify(subscriptionTierService).update(
                 eq(7L), eq(new UpdateSubscriptionTierRequest(null, null, null, null, 4999)));
+    }
+
+    @Test
+    void updateForwardsAllowedScopesOnlyRequestBody() throws Exception {
+        when(subscriptionTierService.update(eq(7L), any(UpdateSubscriptionTierRequest.class)))
+                .thenReturn(new SubscriptionTierResponse(
+                        7L, "Gold", "Description", 100, 60, 0, "payments:read",
+                        SubscriptionTierStatus.ACTIVE, TIMESTAMP, TIMESTAMP));
+
+        mockMvc.perform(patch("/subscription-tiers/7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "allowedScopes": ["payments:read"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.allowedScopes").value("payments:read"))
+                .andExpect(jsonPath("$.name").value("Gold"));
+
+        verify(subscriptionTierService).update(
+                eq(7L), eq(new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("payments:read"))));
+    }
+
+    @Test
+    void updateRejectsInvalidAllowedScopeTokensWith400() throws Exception {
+        mockMvc.perform(patch("/subscription-tiers/7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "allowedScopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.allowedScopes")
+                        .value("scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        verify(subscriptionTierService, never()).update(any(), any());
     }
 
     @Test

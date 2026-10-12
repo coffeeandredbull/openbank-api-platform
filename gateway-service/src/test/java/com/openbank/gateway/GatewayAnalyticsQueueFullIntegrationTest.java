@@ -76,7 +76,7 @@ class GatewayAnalyticsQueueFullIntegrationTest {
             respond(exchange, 200,
                     "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true,"
                             + "\"tierId\":1,\"tierName\":\"Gold\","
-                            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}");
+                            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600,\"scopes\":\"payments:read\"}");
             return;
         }
         if ("api-management".equals(name) && "/internal/subscription-check".equals(path)) {

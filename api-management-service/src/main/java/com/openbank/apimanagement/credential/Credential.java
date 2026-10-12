@@ -47,6 +47,9 @@ public class Credential {
     @Column(nullable = false, length = 32)
     private CredentialStatus status;
 
+    @Column(name = "scopes", nullable = false, columnDefinition = "text not null default ''")
+    private String scopes;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -61,11 +64,21 @@ public class Credential {
     }
 
     public Credential(Application application, String clientId, String clientSecretHash, Instant expiresAt) {
+        this(application, clientId, clientSecretHash, expiresAt, "");
+    }
+
+    public Credential(
+            Application application,
+            String clientId,
+            String clientSecretHash,
+            Instant expiresAt,
+            String scopes) {
         this.application = application;
         this.clientId = clientId;
         this.clientSecretHash = clientSecretHash;
         this.expiresAt = expiresAt;
         this.status = CredentialStatus.ACTIVE;
+        this.scopes = scopes;
         Instant now = Instant.now();
         this.createdAt = now;
         this.updatedAt = now;
@@ -95,6 +108,10 @@ public class Credential {
         return status;
     }
 
+    public String getScopes() {
+        return scopes;
+    }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -110,6 +127,11 @@ public class Credential {
 
     public void changeExpiration(Instant newExpiresAt) {
         this.expiresAt = newExpiresAt;
+        this.updatedAt = Instant.now();
+    }
+
+    public void changeScopes(String newScopes) {
+        this.scopes = newScopes;
         this.updatedAt = Instant.now();
     }
 

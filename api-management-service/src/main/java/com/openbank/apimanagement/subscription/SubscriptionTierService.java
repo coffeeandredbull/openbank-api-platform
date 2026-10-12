@@ -4,6 +4,7 @@ import com.openbank.apimanagement.cache.CacheInvalidationService;
 import com.openbank.apimanagement.exception.SubscriptionTierAlreadyExistsException;
 import com.openbank.apimanagement.exception.SubscriptionTierInUseException;
 import com.openbank.apimanagement.exception.SubscriptionTierNotFoundException;
+import com.openbank.apimanagement.scope.Scopes;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -55,7 +56,8 @@ public class SubscriptionTierService {
                 ? request.priceCentsPerMonth()
                 : DEFAULT_PRICE_CENTS_PER_MONTH;
         SubscriptionTier created = create(
-                request.name(), request.description(), requestsPerWindow, windowSeconds, priceCentsPerMonth);
+                request.name(), request.description(), requestsPerWindow, windowSeconds, priceCentsPerMonth,
+                Scopes.canonicalize(request.allowedScopes()));
         return SubscriptionTierResponse.from(created);
     }
 
@@ -73,13 +75,24 @@ public class SubscriptionTierService {
     @Transactional
     public SubscriptionTier create(
             String name, String description, int requestsPerWindow, int windowSeconds, int priceCentsPerMonth) {
+        return create(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth, Scopes.UNRESTRICTED);
+    }
+
+    @Transactional
+    public SubscriptionTier create(
+            String name,
+            String description,
+            int requestsPerWindow,
+            int windowSeconds,
+            int priceCentsPerMonth,
+            String allowedScopes) {
         validate(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth);
         if (subscriptionTierRepository.existsByName(name)) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
         try {
-            return subscriptionTierRepository.save(
-                    new SubscriptionTier(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth));
+            return subscriptionTierRepository.save(new SubscriptionTier(
+                    name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth, allowedScopes));
         } catch (DataIntegrityViolationException ex) {
             throw new SubscriptionTierAlreadyExistsException(name);
         }
@@ -99,15 +112,28 @@ public class SubscriptionTierService {
                 ? request.windowSeconds() : tier.getWindowSeconds();
         int updatedPriceCentsPerMonth = request.priceCentsPerMonth() != null
                 ? request.priceCentsPerMonth() : tier.getPriceCentsPerMonth();
+        String requestedAllowedScopes = request.allowedScopes() != null
+                ? Scopes.canonicalize(request.allowedScopes()) : null;
+        String updatedAllowedScopes = requestedAllowedScopes != null
+                ? requestedAllowedScopes : tier.getAllowedScopes();
         validate(updatedName, updatedDescription, updatedRequestsPerWindow, updatedWindowSeconds,
                 updatedPriceCentsPerMonth);
         if (request.name() != null
                 && subscriptionTierRepository.existsByNameAndIdNot(request.name(), tierId)) {
             throw new SubscriptionTierAlreadyExistsException(request.name());
         }
+        if (requestedAllowedScopes != null
+                && request.name() == null
+                && request.description() == null
+                && request.requestsPerWindow() == null
+                && request.windowSeconds() == null
+                && request.priceCentsPerMonth() == null
+                && updatedAllowedScopes.equals(tier.getAllowedScopes())) {
+            return SubscriptionTierResponse.from(tier);
+        }
 
         tier.update(request.name(), request.description(), request.requestsPerWindow(), request.windowSeconds(),
-                request.priceCentsPerMonth());
+                request.priceCentsPerMonth(), requestedAllowedScopes);
         try {
             SubscriptionTier saved = subscriptionTierRepository.saveAndFlush(tier);
             cacheInvalidationService.evict("subscriptionTier", tierId);
@@ -177,7 +203,8 @@ public class SubscriptionTierService {
                 && request.description() == null
                 && request.requestsPerWindow() == null
                 && request.windowSeconds() == null
-                && request.priceCentsPerMonth() == null)) {
+                && request.priceCentsPerMonth() == null
+                && request.allowedScopes() == null)) {
             throw new IllegalArgumentException("at least one field must be supplied");
         }
     }

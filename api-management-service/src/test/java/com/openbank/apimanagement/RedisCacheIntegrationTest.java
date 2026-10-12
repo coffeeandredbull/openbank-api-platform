@@ -254,6 +254,86 @@ class RedisCacheIntegrationTest {
     }
 
     @Test
+    void subscriptionTierScopesUpdateEvictsOnlyThatTier() {
+        SubscriptionTier first = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60, 0, "payments:read");
+        SubscriptionTier second = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "second tier", 200, 60, 0, "orders:read");
+        subscriptionTierService.get(first.getId());
+        subscriptionTierService.get(second.getId());
+
+        String firstKey = "subscriptionTier::" + first.getId();
+        String secondKey = "subscriptionTier::" + second.getId();
+        assertThat(stringRedisTemplate.hasKey(firstKey)).isTrue();
+        assertThat(stringRedisTemplate.hasKey(secondKey)).isTrue();
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                first.getId(), new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("payments:read", "payments:write")));
+
+        assertThat(response.allowedScopes()).isEqualTo("payments:read payments:write");
+        assertThat(stringRedisTemplate.hasKey(firstKey))
+                .as("a scopes-only update must evict the changed tier after commit")
+                .isFalse();
+        assertThat(stringRedisTemplate.hasKey(secondKey))
+                .as("a scopes-only update must not evict another tier's cache entry")
+                .isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where id = ?", String.class, first.getId()))
+                .isEqualTo("payments:read payments:write");
+
+        SubscriptionTier rehydrated = subscriptionTierService.get(first.getId());
+        assertThat(rehydrated.getAllowedScopes()).isEqualTo("payments:read payments:write");
+        assertThat(stringRedisTemplate.opsForValue().get(firstKey)).contains("payments:read payments:write");
+    }
+
+    @Test
+    void scopesOnlyUpdateWithTheSameValueKeepsTheCachedTier() {
+        SubscriptionTier tier = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "scoped tier", 100, 60, 0, "payments:read");
+        subscriptionTierService.get(tier.getId());
+        String key = "subscriptionTier::" + tier.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                tier.getId(), new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("payments:read")));
+
+        assertThat(response.allowedScopes()).isEqualTo("payments:read");
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a no-op scopes update must not evict the still-valid cache entry")
+                .isTrue();
+        assertThat(stringRedisTemplate.opsForValue().get(key)).contains("payments:read");
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where id = ?", String.class, tier.getId()))
+                .isEqualTo("payments:read");
+    }
+
+    @Test
+    void rolledBackSubscriptionTierScopesUpdateDoesNotEvictCachedTier() {
+        SubscriptionTier tier = subscriptionTierService.create(
+                "cache-tier-" + SEQUENCE.incrementAndGet(), "original tier", 100, 60, 0, "payments:read");
+        subscriptionTierService.get(tier.getId());
+        String key = "subscriptionTier::" + tier.getId();
+        assertThat(stringRedisTemplate.hasKey(key)).isTrue();
+
+        assertThatThrownBy(() -> transactionTemplate.executeWithoutResult(status -> {
+            subscriptionTierService.update(
+                    tier.getId(), new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                            java.util.List.of("orders:read")));
+            throw new IllegalStateException("force rollback after a successful tier scopes update");
+        })).isInstanceOf(IllegalStateException.class);
+
+        assertThat(stringRedisTemplate.hasKey(key))
+                .as("a rolled-back scopes update must not evict the still-valid cache entry")
+                .isTrue();
+        assertThat(stringRedisTemplate.opsForValue().get(key)).contains("payments:read");
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT allowed_scopes FROM subscription_tiers WHERE id = ?", String.class, tier.getId()))
+                .isEqualTo("payments:read");
+    }
+
+    @Test
     void subscriptionTierDeleteEvictsOnlyTheDeletedTier() {
         SubscriptionTier first = subscriptionTierService.create(
                 "cache-tier-" + SEQUENCE.incrementAndGet(), "first tier", 100, 60);

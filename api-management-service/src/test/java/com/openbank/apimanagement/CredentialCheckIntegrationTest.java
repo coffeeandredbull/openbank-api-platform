@@ -90,7 +90,8 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.subscribed").value(true))
                 .andExpect(jsonPath("$.tierId").isNumber())
                 .andExpect(jsonPath("$.requestsPerWindow").value(100))
-                .andExpect(jsonPath("$.windowSeconds").value(60));
+                .andExpect(jsonPath("$.windowSeconds").value(60))
+                .andExpect(jsonPath("$.scopes").value(""));
     }
 
     @Test
@@ -410,9 +411,9 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.authenticated").value(false));
 
         mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(rotated))
                         .param("contextPath", "/payments")
-                        .param("version", "v1")
-                        .header("Authorization", basicHeader(rotated)))
+                        .param("version", "v1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.authenticated").value(true))
                 .andExpect(jsonPath("$.applicationId").value(applicationId))
@@ -420,7 +421,108 @@ class CredentialCheckIntegrationTest {
                 .andExpect(jsonPath("$.subscribed").value(true))
                 .andExpect(jsonPath("$.tierId").isNumber())
                 .andExpect(jsonPath("$.requestsPerWindow").value(100))
-                .andExpect(jsonPath("$.windowSeconds").value(60));
+                .andExpect(jsonPath("$.windowSeconds").value(60))
+                .andExpect(jsonPath("$.scopes").value(""));
+    }
+
+    @Test
+    void effectiveScopesAreTheIntersectionOfCredentialAndTierScopes() throws Exception {
+        Long versionId = createApiWithVersion("/scopecheck", "v1");
+        Long applicationId = createApplication("42", "Scoped App");
+        activateSubscription(createSubscription(
+                applicationId, versionId, createTier("payments:read payments:write")));
+        CredentialCreatedResponse credential =
+                createCredential(applicationId, null, "orders:write payments:read");
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(credential))
+                        .param("contextPath", "/scopecheck")
+                        .param("version", "v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.scopes").value("payments:read"));
+    }
+
+    @Test
+    void credentialScopesApplyWhenTheSubscriptionTierIsUnrestricted() throws Exception {
+        Long versionId = createApiWithVersion("/scopecheck2", "v1");
+        Long applicationId = createApplication("42", "Scoped App");
+        activateSubscription(createSubscription(applicationId, versionId));
+        CredentialCreatedResponse credential =
+                createCredential(applicationId, null, "payments:read");
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(credential))
+                        .param("contextPath", "/scopecheck2")
+                        .param("version", "v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.scopes").value("payments:read"));
+    }
+
+    @Test
+    void tierScopesApplyWhenTheCredentialIsUnrestricted() throws Exception {
+        Long versionId = createApiWithVersion("/scopecheck3", "v1");
+        Long applicationId = createApplication("42", "Scoped App");
+        activateSubscription(createSubscription(
+                applicationId, versionId, createTier("payments:read")));
+        CredentialCreatedResponse credential = createCredential(applicationId);
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(credential))
+                        .param("contextPath", "/scopecheck3")
+                        .param("version", "v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.scopes").value("payments:read"));
+    }
+
+    @Test
+    void emptyScopeIntersectionStillAuthenticatesWithAnEmptyScopesString() throws Exception {
+        Long versionId = createApiWithVersion("/scopecheck4", "v1");
+        Long applicationId = createApplication("42", "Scoped App");
+        activateSubscription(createSubscription(
+                applicationId, versionId, createTier("payments:read")));
+        CredentialCreatedResponse credential =
+                createCredential(applicationId, null, "orders:read");
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(credential))
+                        .param("contextPath", "/scopecheck4")
+                        .param("version", "v1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.authenticated").value(true))
+                .andExpect(jsonPath("$.subscribed").value(true))
+                .andExpect(jsonPath("$.scopes").value(""));
+    }
+
+    @Test
+    void malformedPersistedCredentialScopesReturnControlled500WithoutLeakingDetails() throws Exception {
+        Long versionId = createApiWithVersion("/scopecheck5", "v1");
+        Long applicationId = createApplication("42", "Scoped App");
+        activateSubscription(createSubscription(
+                applicationId, versionId, createTier("payments:read")));
+        CredentialCreatedResponse credential =
+                createCredential(applicationId, null, "orders:read");
+        jdbcTemplate.update(
+                "update credentials set scopes = ? where id = ?",
+                "INVALID SCOPE", credential.id());
+
+        mockMvc.perform(get("/internal/credential-check")
+                        .header("Authorization", basicHeader(credential))
+                        .param("contextPath", "/scopecheck5")
+                        .param("version", "v1"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
+                .andExpect(jsonPath("$.message").value("An unexpected error occurred"))
+                .andExpect(jsonPath("$.fieldErrors.scopes").doesNotExist())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain("INVALID SCOPE")
+                        .doesNotContain("invalid scope token")
+                        .doesNotContain("IllegalArgumentException"));
     }
 
     private Long createApiWithVersion(String contextPath, String version) throws Exception {
@@ -479,6 +581,10 @@ class CredentialCheckIntegrationTest {
     }
 
     private Long createSubscription(Long applicationId, Long apiVersionId) throws Exception {
+        return createSubscription(applicationId, apiVersionId, createTier());
+    }
+
+    private Long createSubscription(Long applicationId, Long apiVersionId, Long tierId) throws Exception {
         String ownerUserId = jdbcTemplate.queryForObject(
                 "SELECT owner_user_id FROM applications WHERE id = ?", Long.class, applicationId).toString();
         String body = mockMvc.perform(post("/subscriptions")
@@ -490,7 +596,7 @@ class CredentialCheckIntegrationTest {
                                   "apiVersionId": %d,
                                   "tierId": %d
                                 }
-                                """.formatted(applicationId, apiVersionId, createTier())))
+                                """.formatted(applicationId, apiVersionId, tierId)))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()
@@ -511,34 +617,53 @@ class CredentialCheckIntegrationTest {
     }
 
     private Long createTier() {
+        return createTier(null);
+    }
+
+    private Long createTier(String allowedScopes) {
         String name = "tier-" + System.nanoTime();
-        jdbcTemplate.update(
-                "INSERT INTO subscription_tiers "
-                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
-                        + "VALUES (?, ?, 100, 60, now(), now())",
-                name, "Credential check tier");
+        if (allowedScopes == null) {
+            jdbcTemplate.update(
+                    "INSERT INTO subscription_tiers "
+                            + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                            + "VALUES (?, ?, 100, 60, now(), now())",
+                    name, "Credential check tier");
+        } else {
+            jdbcTemplate.update(
+                    "INSERT INTO subscription_tiers "
+                            + "(name, description, requests_per_window, window_seconds, allowed_scopes, "
+                            + "created_at, updated_at) "
+                            + "VALUES (?, ?, 100, 60, ?, now(), now())",
+                    name, "Credential check tier", allowedScopes);
+        }
         return jdbcTemplate.queryForObject(
                 "select id from subscription_tiers where name = ?", Long.class, name);
     }
 
     private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(Long applicationId)
             throws Exception {
-        return createCredential(applicationId, null);
+        return createCredential(applicationId, null, null);
     }
 
     private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(
             Long applicationId, String expiresAt) throws Exception {
+        return createCredential(applicationId, expiresAt, null);
+    }
+
+    private com.openbank.apimanagement.credential.CredentialCreatedResponse createCredential(
+            Long applicationId, String expiresAt, String scopes) throws Exception {
         String ownerUserId = jdbcTemplate.queryForObject(
                 "SELECT owner_user_id FROM applications WHERE id = ?", Long.class, applicationId).toString();
         String expirationField = expiresAt == null ? "" : ", \"expiresAt\": \"%s\"".formatted(expiresAt);
+        String scopesField = scopes == null ? "" : ", \"scopes\": [\"%s\"]".formatted(scopes.replace(" ", "\", \""));
         String body = mockMvc.perform(post("/credentials")
                         .header("Authorization", "Bearer " + token(ownerUserId, "DEVELOPER", 3600))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
-                                  "applicationId": %d%s
+                                  "applicationId": %d%s%s
                                 }
-                                """.formatted(applicationId, expirationField)))
+                                """.formatted(applicationId, expirationField, scopesField)))
                 .andExpect(status().isCreated())
                 .andReturn()
                 .getResponse()

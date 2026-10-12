@@ -103,8 +103,11 @@
   - Forwarded/internal headers (gateway → managed APIs, **implemented for
     `/runtime/apis/**` since Phase 22**), carrying only verified claims:
     `X-User-Id`, `X-Roles` (user flow) and `X-User-Id`, `X-Application-Id`,
-    `X-Client-Id` (application flow). `X-Scopes` remains planned. See the Phase
-    22 note below.
+    `X-Client-Id`, `X-Scopes` (application flow; `X-Scopes` carries the
+    gateway-verified effective scopes since Phase 24 Slice 16 and is present
+    only when the effective string is non-empty — absence means *either*
+    unrestricted *or* an empty credential ∩ tier intersection, never an
+    authorization grant). See the Phase 22 note below.
   - Note: services treat these headers as **enriched context from the
     gateway**, not as standalone trust; they still check ownership.
   - **Phase 16 note:** the gateway authenticates presenters itself: it
@@ -125,10 +128,12 @@
     authentication of a `/runtime/apis/**` request, the gateway supplies the
     verified caller identity as gateway-generated request headers — `X-User-Id`
     + `X-Roles` for the JWT/user flow, `X-User-Id` + `X-Application-Id` +
-    `X-Client-Id` for the client-credential/application flow — on top of the
+    `X-Client-Id` (+ `X-Scopes`, the validated effective-scope string, when
+    non-empty) for the client-credential/application flow — on top of the
     unchanged `Authorization` behavior (Bearer forwarded, Basic stripped). These
     headers are **never trusted from the client**: any client-supplied
-    `X-User-Id`, `X-Roles`, `X-Application-Id`, or `X-Client-Id` value is
+    `X-User-Id`, `X-Roles`, `X-Application-Id`, `X-Client-Id`, or `X-Scopes`
+    value is
     stripped before trusted values are added. Platform-management routes receive
     none of them.
 - Application credentials (client id/secret or API key) may be presented at
@@ -217,6 +222,9 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
   `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool}`
   plus, when subscribed, the active subscription's tier policy
   (`tierId`, `tierName`, `requestsPerWindow`, `windowSeconds`)
+  and the **effective scopes** `scopes` — a space-delimited canonical string
+  (`""` = unrestricted) computed server-side as credential ∩ tier
+  allowedScopes (Phase 24 Slice 16)
   (any failure returns `{"authenticated":false}`). Decision table:
   - credential not found / secret mismatch / inactive or expired credential /
     malformed credential → `401` + code `CLIENT_CREDENTIAL_INVALID`; stable shape
@@ -237,6 +245,10 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
     (missing/malformed `requestsPerWindow`/`windowSeconds`) in the check
     response → `503` + code `CREDENTIAL_SERVICE_UNAVAILABLE` /
     `SUBSCRIPTION_SERVICE_UNAVAILABLE` (fail closed, Phase 24 Slice 4);
+  - an authenticated check outcome whose `scopes` value is missing, not a JSON
+    string, or not a valid canonical scope string (token grammar, length, or
+    duplicate violation) → `503` + code `CREDENTIAL_SERVICE_UNAVAILABLE`
+    (fail closed, Phase 24 Slice 16; an empty `""` value is valid);
   - malformed runtime path with Basic → `403` + code `SUBSCRIPTION_REQUIRED`
     (mirrors the JWT flow, no check call).
   The Basic header is then **stripped before forwarding**, so the consumed
@@ -252,10 +264,13 @@ adds one managed-API invocation route (`/runtime/apis/**`, Phase 17):
     still forwarded unchanged.
   - **Client-credential/application flow** → `X-User-Id` (the credential's
     `ownerUserId`) + `X-Application-Id` (the credential's `applicationId`) +
-    `X-Client-Id` (the credential's `clientId`); **no `X-Roles`**; `Authorization`
+    `X-Client-Id` (the credential's `clientId`) + `X-Scopes` (the
+    gateway-parsed effective scope string, added only when non-empty since
+    Phase 24 Slice 16); **no `X-Roles`**; `Authorization`
     remains stripped.
   - **Spoof-safe:** the gateway strips any client-supplied `X-User-Id`,
-    `X-Roles`, `X-Application-Id`, or `X-Client-Id` from the inbound request
+    `X-Roles`, `X-Application-Id`, `X-Client-Id`, or `X-Scopes` from the inbound
+    request
     (a reusable sanitizer) before trusted values are added — these headers are
     never accepted from the client (end-to-end tests assert a managed upstream
     receives only gateway-derived values).
@@ -385,10 +400,11 @@ Service stores no user record and no cross-service foreign key.
   Application deletion is intentionally not part of this phase.
 
 **Implemented so far (Phase 24, Slice 8) — subscription tier updates:** an
-existing tier's name, description, rate-limit policy, and price can be partially
+existing tier's name, description, rate-limit policy, price, and allowed
+scopes can be partially
 updated by an `ADMIN` through `PATCH /subscription-tiers/{tierId}`. The body
 may contain `name`, `description`, `requestsPerWindow`, `windowSeconds`,
-and/or `priceCentsPerMonth`;
+`priceCentsPerMonth`, and/or `allowedScopes`;
 at least one field is required, and omitted fields (including JSON `null`) remain
 unchanged. A `DEVELOPER` receives `403 ACCESS_DENIED`; an unauthenticated caller receives
 `401 UNAUTHENTICATED`. A missing tier returns `404
@@ -396,6 +412,7 @@ SUBSCRIPTION_TIER_NOT_FOUND`, a conflicting name returns `409
 SUBSCRIPTION_TIER_ALREADY_EXISTS`, and invalid values return `400
 VALIDATION_FAILED`. The response is the tier's public fields (`id`, `name`,
 `description`, `requestsPerWindow`, `windowSeconds`, `priceCentsPerMonth`,
+`allowedScopes`,
 `status`, `createdAt`, `updatedAt`).
 PostgreSQL remains the source of truth; after a successful commit, only the
 exact `subscriptionTier::<tierId>` Redis entry is evicted. A failed transaction
@@ -406,17 +423,19 @@ Slice 10.
 listing:**
 - `POST /subscription-tiers` — **ADMIN-only** creation of a new subscription
   tier. Body: `{ "name": string, "description"?: string, "requestsPerWindow"?: int,
-  "windowSeconds"?: int, "priceCentsPerMonth"?: int }`. `name` is required, ≤ 100
+  "windowSeconds"?: int, "priceCentsPerMonth"?: int, "allowedScopes"?:
+  string[] }`. `name` is required, ≤ 100
   characters, and must not
   be blank or contain leading/trailing whitespace; `description` is optional and
   ≤ 500 characters; when `requestsPerWindow`/`windowSeconds` are omitted they
   default to `100`/`60` (the same defaults as the table columns), when
   `priceCentsPerMonth` is omitted it defaults to `0` (free tier), and when
   supplied the rate-limit fields must be positive and the price must not be
-  negative. Returns `201 Created` with
+  negative. `allowedScopes` follows the scope grammar below (omitted → `""`,
+  unrestricted). Returns `201 Created` with
   `Location: /subscription-tiers/{id}` and the tier's public fields (`id`,
   `name`, `description`, `requestsPerWindow`, `windowSeconds`,
-  `priceCentsPerMonth`, `status`, `createdAt`, `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
+  `priceCentsPerMonth`, `allowedScopes`, `status`, `createdAt`, `updatedAt`). A duplicate name returns `409 SUBSCRIPTION_TIER_ALREADY_EXISTS`
   (service check plus unique-constraint race backstop). Invalid input returns
   `400 VALIDATION_FAILED`; a `DEVELOPER` receives `403 ACCESS_DENIED`; an
   unauthenticated caller receives `401 UNAUTHENTICATED`. Creation does not
@@ -478,6 +497,48 @@ same post-commit exact-key eviction as every other tier update (only
 rows that existed before the column was added read back as `0` through the
 column default. Hard limits/burst, currency handling, and billing remain
 planned.
+
+**Implemented so far (Phase 24, Slice 16) — credential scopes and tier
+`allowedScopes`:** credentials and subscription tiers carry **scopes**,
+persisted as a space-delimited canonical string in `text NOT NULL DEFAULT ''`
+columns (`credentials.scopes`, `subscription_tiers.allowed_scopes`), with `""`
+meaning unrestricted.
+- **Scope grammar** (shared `@ValidScopes` constraint + service backstop):
+  a JSON array of at most 20 **unique** tokens, each ≤ 64 characters, matching
+  `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?::[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)?$`
+  (lowercase start, at most one `:` separator, e.g. `accounts:read`). Invalid
+  or duplicate tokens → `400 VALIDATION_FAILED` (`fieldErrors.scopes`);
+  canonicalization preserves the caller's input order.
+- `POST /credentials` and `POST /applications/{applicationId}/credentials`
+  accept an optional `"scopes": string[]` (omitted/`null` → `""`); creation,
+  rotation, GET, and list responses expose the canonical `scopes` string after
+  `expiresAt`.
+- `PATCH /credentials/{credentialId}/scopes` — **ADMIN-only** scope update
+  (global management operation keyed by credential id, not owner-scoped,
+  mirroring the expiration PATCH). Body: `{ "scopes": string[] }` (`scopes` is
+  required, `null` → `400 VALIDATION_FAILED`). The update changes only
+  `scopes` (and `updatedAt`): no rotation, status untouched, a `REVOKED`
+  credential is updated **without** being reactivated. Response is the same
+  `CredentialResponse` with the new `scopes`. A missing credential → `404
+  CREDENTIAL_NOT_FOUND`; invalid/duplicate tokens → `400 VALIDATION_FAILED`; a
+  `DEVELOPER` → `403 ACCESS_DENIED`; an unauthenticated caller → `401
+  UNAUTHENTICATED`.
+- Tier create/PATCH accept an optional `allowedScopes` with the same grammar;
+  a scopes-only PATCH whose canonical value is unchanged is a **no-op** (no
+  save, `updatedAt` untouched, no cache eviction), while a real change evicts
+  only `subscriptionTier::<tierId>` after commit.
+- The internal `GET /internal/credential-check` response now includes
+  `scopes`, the **effective scopes** computed server-side as credential ∩
+  tier (in credential order; either side `""` → unrestricted; empty
+  intersection → `""` while `authenticated` stays `true`). The gateway
+  **parses and validates** this value on every authenticated outcome (missing,
+  non-textual, or malformed → `503 CREDENTIAL_SERVICE_UNAVAILABLE`, fail
+  closed), forwards `X-Scopes` only when non-empty (after stripping any
+  client-supplied `X-Scopes`), and never sets it on the JWT flow. Because an
+  empty intersection and an unrestricted pair both encode as `""`, an absent
+  `X-Scopes` means *either* case — consumers must never treat its absence as
+  an authorization grant. There is still **no per-API/per-operation scope
+  enforcement** — an empty intersection is not a `403`.
 
 **Implemented so far (Phase 24, Slice 9) — safe subscription tier deletion:**
 an `ADMIN` can remove an unreferenced tier with
@@ -593,22 +654,25 @@ Gateway uses to authenticate an application. The existing creation body carries
 its path. The **owner is always derived from the authenticated user's JWT `sub`
 claim** and is never taken from the request body.
 - `POST /credentials` — create a credential for an owned application. Body:
-  `{ "applicationId": long, "expiresAt": ISO-8601 Instant? }`. `applicationId` is
+  `{ "applicationId": long, "expiresAt": ISO-8601 Instant?, "scopes"?:
+  string[] }`. `applicationId` is
   required; `expiresAt` is optional, and omitted/`null` means the credential does
-  not expire. A supplied expiry must be in the future. `clientId` and
+  not expire. A supplied expiry must be in the future. `scopes` is optional
+  (omitted/`null` → unrestricted `""`; see the scope grammar above). `clientId` and
   `clientSecret` are generated **server-side** and are not accepted from the
   client (extra body fields are ignored). Returns `201 Created` with a
   `Location: /credentials/{id}` header and body (`id`, `applicationId`,
-  `clientId`, `clientSecret`, `status`, `expiresAt`, `createdAt`, `updatedAt`).
+  `clientId`, `clientSecret`, `status`, `expiresAt`, `scopes`, `createdAt`, `updatedAt`).
   The plaintext `clientSecret` is returned **exactly once**, in this creation
   response only. New credentials start with `status: "ACTIVE"`.
 - `POST /applications/{applicationId}/credentials` — the application-scoped
-  creation route. Body: `{ "expiresAt": ISO-8601 Instant? }`; the application id
+  creation route. Body: `{ "expiresAt": ISO-8601 Instant?, "scopes"?:
+  string[] }`; the application id
   comes from the path. It follows the same generation, validation, one-time
   secret, and `201` response contract as `POST /credentials`.
 - `GET /credentials/{credentialId}` — the caller's **own** credential
   (applications the caller owns). Returns `CredentialResponse` (`id`,
-  `applicationId`, `clientId`, `status`, `expiresAt`, `createdAt`, `updatedAt`)
+  `applicationId`, `clientId`, `status`, `expiresAt`, `scopes`, `createdAt`, `updatedAt`)
   — **never** the `clientSecret` or `clientSecretHash`.
 - `GET /credentials` — list the caller's **own** credentials in ascending `id`
   order (owner-scoped; other users' credentials never appear, no secrets).
@@ -653,10 +717,22 @@ claim** and is never taken from the request body.
   an unparseable `expiresAt` or malformed JSON → `400 MALFORMED_REQUEST`; a
   `DEVELOPER` → `403 ACCESS_DENIED`; an unauthenticated caller → `401
   UNAUTHENTICATED`.
+- `PATCH /credentials/{credentialId}/scopes` — **ADMIN-only** credential scope
+  update (Phase 24, Slice 16; global management operation keyed by credential
+  id, not owner-scoped). Body: `{ "scopes": string[] }` — `scopes` is required
+  and a `null`/missing value returns `400 VALIDATION_FAILED`
+  (`fieldErrors.scopes`); the grammar is the scope grammar above. The update
+  changes **only** `scopes` (and `updatedAt`) — no rotation, `status`
+  untouched — and a `REVOKED` credential is updated without being
+  reactivated. Response is the same `CredentialResponse` with the new
+  canonical `scopes`. A missing credential → `404 CREDENTIAL_NOT_FOUND`; a
+  `DEVELOPER` → `403 ACCESS_DENIED`; an unauthenticated caller → `401
+  UNAUTHENTICATED` (unparseable/malformed JSON → `400 MALFORMED_REQUEST`).
 - Authorization is uniform for `ADMIN` and `DEVELOPER` with owner-based
   semantics, exactly like applications/subscriptions: `ADMIN` owns what it
   creates and has **no** global access for reads — but **lifecycle management
-  (PATCH status, PATCH expiration, rotate) is an ADMIN-only global operation**
+  (PATCH status, PATCH expiration, PATCH scopes, rotate) is an ADMIN-only
+  global operation**
   by credential id, exactly like the subscription lifecycle endpoint.
   Credential ownership is derived through Credential → Application →
   ownerUserId. Accessing a credential that does not exist **or belongs to an
@@ -677,10 +753,13 @@ claim** and is never taken from the request body.
   return `400 VALIDATION_FAILED`, malformed JSON or an unparseable timestamp
   returns `400 MALFORMED_REQUEST`.
 - Credential **status/revocation/rotation** are implemented (Phase 24, Slice 3),
-  optional **credential expiry** is implemented (Phase 24, Slice 11), and the
-  **ADMIN-only expiration update** is implemented (Phase 24, Slice 12).
-  Scopes and permissions remain planned (rate limits are enforced per
-  subscription tier, not per credential). The runtime consumer is the internal
+  optional **credential expiry** is implemented (Phase 24, Slice 11), the
+  **ADMIN-only expiration update** is implemented (Phase 24, Slice 12), and
+  **credential scopes with the ADMIN-only scope update** are implemented
+  (Phase 24, Slice 16). Per-operation scope **enforcement** and permissions
+  remain planned (rate limits are enforced per
+  subscription tier, not per credential; effective scopes are surfaced
+  informationally to downstream services via `X-Scopes`). The runtime consumer is the internal
   `GET /internal/credential-check` (see the Gateway section), which authenticates
   only `ACTIVE` credentials with `expiresAt` absent or strictly in the future.
 
@@ -697,13 +776,14 @@ claim** and is never taken from the request body.
 > /subscriptions/{id}/status`, Phase 24 Slice 2; see the subscriptions section
 > above). An `ADMIN` can also explicitly reassign an existing subscription's
 > tier with `PATCH /subscriptions/{id}/tier` (Phase 24 Slice 10). Application
-> credentials carry a **status lifecycle with revocation and rotation** and an
-> optional **expiry** (`expiresAt`), both enforced by the internal credential
-> check; secret exposure remains one-time. Subscription deletion and credential
-> scopes remain planned.
+> credentials carry a **status lifecycle with revocation and rotation**, an
+> optional **expiry** (`expiresAt`), and **scopes** (Phase 24 Slice 16, with
+> the ADMIN-only `PATCH /credentials/{id}/scopes`), all enforced by the internal
+> credential check; secret exposure remains one-time. Subscription deletion
+> remains planned.
 > They are repeated here as the planned contract for the gateway/portal view.
-- `POST   /applications/{id}/credentials` — (implemented; optional `expiresAt`,
-  secret shown once).
+- `POST   /applications/{id}/credentials` — (implemented; optional `expiresAt`
+  and `scopes`, secret shown once).
 - `POST   /applications/{id}/subscriptions` — (planned) subscribe app to API
   version + tier; the tiered link already exists via Phase 12 `POST
   /subscriptions` and the Phase 24 tier binding.

@@ -4,7 +4,8 @@ public record SubscriptionPolicy(
         Long tierId,
         String tierName,
         int requestsPerWindow,
-        int windowSeconds
+        int windowSeconds,
+        String allowedScopes
 ) {
 
     public static SubscriptionPolicy from(Subscription subscription) {
@@ -12,7 +13,8 @@ public record SubscriptionPolicy(
                 subscription.getTier().getId(),
                 subscription.getTier().getName(),
                 subscription.getTier().getRequestsPerWindow(),
-                subscription.getTier().getWindowSeconds()
+                subscription.getTier().getWindowSeconds(),
+                subscription.getTier().getAllowedScopes()
         );
     }
 }

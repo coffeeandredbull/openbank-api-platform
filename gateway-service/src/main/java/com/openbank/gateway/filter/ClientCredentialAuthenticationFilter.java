@@ -117,7 +117,8 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                                 path,
                                 routeId(exchange),
                                 System.currentTimeMillis() - startTime);
-                        yield chain.filter(withTrustedClientCredentialIdentity(exchange, identity));
+                        yield chain.filter(withTrustedClientCredentialIdentity(
+                                exchange, identity, outcome.scopes()));
                     }
                     case INVALID -> writeError(exchange, path, HttpStatus.UNAUTHORIZED,
                             CODE_INVALID, MESSAGE_INVALID, startTime);
@@ -177,11 +178,20 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                     return CheckOutcome.unavailable();
                 }
             }
+            JsonNode scopesNode = node.path("scopes");
+            if (!scopesNode.isTextual()) {
+                return CheckOutcome.unavailable();
+            }
+            String scopes = scopesNode.asText();
+            if (ScopePolicyParser.parse(scopes) == null) {
+                return CheckOutcome.unavailable();
+            }
             return new CheckOutcome(
                     CheckState.AUTHENTICATED,
                     node.path("applicationId").asLong(),
                     node.path("ownerUserId").asLong(),
-                    policy);
+                    policy,
+                    scopes);
         } catch (JsonProcessingException e) {
             return CheckOutcome.unavailable();
         }
@@ -205,7 +215,7 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
     }
 
     private ServerWebExchange withTrustedClientCredentialIdentity(
-            ServerWebExchange exchange, ClientCredentialIdentity identity) {
+            ServerWebExchange exchange, ClientCredentialIdentity identity, String scopes) {
         ServerWebExchange sanitized = trustedIdentityHeaderSanitizer.sanitize(exchange);
         ServerHttpRequestDecorator decorated = new ServerHttpRequestDecorator(sanitized.getRequest()) {
             @Override
@@ -216,6 +226,9 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
                 headers.set(TrustedIdentityHeaders.USER_ID, String.valueOf(identity.ownerUserId()));
                 headers.set(TrustedIdentityHeaders.APPLICATION_ID, String.valueOf(identity.applicationId()));
                 headers.set(TrustedIdentityHeaders.CLIENT_ID, identity.clientId());
+                if (scopes != null && !scopes.isEmpty()) {
+                    headers.set(TrustedIdentityHeaders.SCOPES, scopes);
+                }
                 return HttpHeaders.readOnlyHttpHeaders(headers);
             }
         };
@@ -278,14 +291,14 @@ public class ClientCredentialAuthenticationFilter implements GlobalFilter, Order
     }
 
     private record CheckOutcome(
-            CheckState state, long applicationId, long ownerUserId, RateLimitPolicy policy) {
+            CheckState state, long applicationId, long ownerUserId, RateLimitPolicy policy, String scopes) {
 
         static CheckOutcome invalid() {
-            return new CheckOutcome(CheckState.INVALID, 0, 0, null);
+            return new CheckOutcome(CheckState.INVALID, 0, 0, null, null);
         }
 
         static CheckOutcome unavailable() {
-            return new CheckOutcome(CheckState.UNAVAILABLE, 0, 0, null);
+            return new CheckOutcome(CheckState.UNAVAILABLE, 0, 0, null, null);
         }
     }
 

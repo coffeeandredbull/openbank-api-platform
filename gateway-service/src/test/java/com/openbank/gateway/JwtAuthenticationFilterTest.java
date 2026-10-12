@@ -288,7 +288,8 @@ class JwtAuthenticationFilterTest {
         assertThat(forward.status()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(forward.downstream().getRequest().getHeaders())
                 .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("1"))
-                .containsEntry(TrustedIdentityHeaders.ROLES, List.of("ADMIN"));
+                .containsEntry(TrustedIdentityHeaders.ROLES, List.of("ADMIN"))
+                .doesNotContainKey(TrustedIdentityHeaders.SCOPES);
     }
 
     @Test
@@ -298,14 +299,16 @@ class JwtAuthenticationFilterTest {
                 .header(TrustedIdentityHeaders.USER_ID, "attacker")
                 .header(TrustedIdentityHeaders.ROLES, "ADMIN")
                 .header(TrustedIdentityHeaders.APPLICATION_ID, "attacker-app")
-                .header(TrustedIdentityHeaders.CLIENT_ID, "attacker-client"));
+                .header(TrustedIdentityHeaders.CLIENT_ID, "attacker-client")
+                .header(TrustedIdentityHeaders.SCOPES, "admin:*"));
 
         assertThat(forward.forwarded()).isTrue();
         assertThat(forward.downstream().getRequest().getHeaders())
                 .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("2"))
                 .containsEntry(TrustedIdentityHeaders.ROLES, List.of("DEVELOPER"))
                 .doesNotContainKey(TrustedIdentityHeaders.APPLICATION_ID)
-                .doesNotContainKey(TrustedIdentityHeaders.CLIENT_ID);
+                .doesNotContainKey(TrustedIdentityHeaders.CLIENT_ID)
+                .doesNotContainKey(TrustedIdentityHeaders.SCOPES);
     }
 
     @Test

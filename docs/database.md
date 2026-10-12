@@ -117,6 +117,8 @@ now a real table in the **API Management Service**. Actual implemented columns:
 `requests_per_window` (`integer`, `NOT NULL`, default `100`), `window_seconds`
 (`integer`, `NOT NULL`, default `60`), `price_cents_per_month` (`integer`,
 `NOT NULL`, default `0`, Phase 24 Slice 15),
+`allowed_scopes` (`text`, `NOT NULL`, default `''` — canonical space-delimited
+scope string, `''` = unrestricted, Phase 24 Slice 16),
 `status` (`varchar(32)`, `NOT NULL`, default `'ACTIVE'`, Phase 24 Slice 14),
 `created_at`, `updated_at`. Tiers are created through the service layer
 (`SubscriptionTierService`), which validates that the name is non-blank, has no
@@ -128,10 +130,12 @@ SUBSCRIPTION_TIER_ALREADY_EXISTS` and the unique constraint backs that up for
 race conditions. Subscriptions reference tiers via the `tier_id` foreign key
 above, and the internal subscription/credential checks return the tier's
 `requests_per_window`/`window_seconds` policy to the gateway for rate limiting
-(the price is not part of that internal payload). Slice 8 adds an ADMIN-only
+(the price is not part of that internal payload; the effective scopes computed
+from `allowed_scopes` ∩ `credentials.scopes` are, since Phase 24 Slice 16).
+Slice 8 adds an ADMIN-only
 `PATCH /subscription-tiers/{tierId}` that partially
-updates `name`, `description`, `requests_per_window`, `window_seconds`, and
-`price_cents_per_month`; at
+updates `name`, `description`, `requests_per_window`, `window_seconds`,
+`price_cents_per_month`, and `allowed_scopes`; at
 least one field is required, omitted fields remain unchanged, and a successful
 transaction evicts only that tier's post-commit cache key. Slice 9 adds an
 ADMIN-only `DELETE /subscription-tiers/{tierId}` for unreferenced tiers: the
@@ -173,9 +177,12 @@ are implemented (Phase 24, Slice 3): `PATCH /credentials/{id}/status` moves
 `POST /credentials/{id}/rotate` replaces `client_id`/`client_secret_hash` **in
 place** — same row, same `application_id`, status stays `ACTIVE`, new plaintext
 secret shown once — so the count of `credentials` rows never changes on
-rotation. Expiry, scopes, permissions, rate limit, and gateway-facing status
-defaults remain planned. `created_at` is write-once; `updated_at` is set on
-creation and on every status/rotation change. Ownership is logical: Credential →
+rotation. Credential **scopes** are implemented (Phase 24, Slice 16):
+`scopes` (`text NOT NULL DEFAULT ''`, canonical space-delimited string, `''` =
+unrestricted) with shared validation on create and the ADMIN-only
+`PATCH /credentials/{id}/scopes`; permissions, rate limit, and gateway-facing
+status defaults remain planned. `created_at` is write-once; `updated_at` is set on
+creation and on every status/rotation/scopes change. Ownership is logical: Credential →
 Application → `owner_user_id`, with no user table and no cross-service foreign
 key.
 
@@ -183,12 +190,13 @@ key.
 
 | Entity | Key fields (planned) | Notes |
 | --- | --- | --- |
-| `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3) — see above; `api_key_hash`, scopes, and expiry remain planned |
+| `credentials` | id, application_id, api_key_hash / client_id, client_secret_hash, scopes, created_at, revoked | one per application; only hashes of secrets stored. **Note:** the base credential (`id`/`application_id`/`client_id`/`client_secret_hash`/timestamps) is already **implemented** in the API Management Service (Phase 13), and its **status** (`status` `varchar`, `ACTIVE`/`REVOKED`) with **revocation and rotation** is already **implemented** (Phase 24, Slice 3), its **expiry** (`expires_at`, Phase 24, Slice 11), and its **scopes** (`scopes` `text NOT NULL DEFAULT ''`, Phase 24, Slice 16) — see above; `api_key_hash` and permissions remain planned |
 | `api_versions_tiers` | id, tier_key, name, rate_limit (requests/period), burst | tier definitions (may live with API Mgmt). **Note:** the tier table is already **implemented** as `subscription_tiers` in the API Management Service (Phase 24) — name + description plus the rate-limit policy columns `requests_per_window`/`window_seconds` (Phase 24, Slice 4), with ADMIN-only partial updates (Phase 24, Slice 8), safe deletion of unreferenced tiers (Phase 24, Slice 9), and ADMIN-only creation/listing endpoints (Phase 24, Slice 13), and an
 `ACTIVE`/`INACTIVE` `status` column (default `'ACTIVE'`) with an ADMIN-only
 status endpoint that blocks inactive-tier assignment to subscriptions (Phase
 24, Slice 14), a `price_cents_per_month` (`integer NOT NULL DEFAULT 0`, Phase
-24, Slice 15); burst remains planned |
+24, Slice 15), and an `allowed_scopes` (`text NOT NULL DEFAULT ''`, Phase 24,
+Slice 16); burst remains planned |
 | `subscriptions` | id, application_id, api_version_id, status (PENDING/ACTIVE/DENIED/REVOKED), tier_id, subscribed_at, revoked_at | the link that grants access; references applications (API Mgmt) and api versions by ID. **Note:** the base link (`id`/`application_id`/`api_version_id`/timestamps), the `tier_id` binding (Phase 24), and the **status lifecycle + `revoked_at`** (Phase 24, Slice 2) are already **implemented** in the API Management Service — see above; `subscribed_at`, automatic approval/revocation flows, and global (Subscription Service) management remain planned |
 
 > The `applications` entity is **implemented** in the API Management Service

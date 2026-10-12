@@ -183,6 +183,65 @@ class SubscriptionTierIntegrationTest {
     }
 
     @Test
+    void createEndpointPersistsAllowedScopesAndReturnsTheCanonicalValue() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Scoped",
+                                  "description": "Scoped access",
+                                  "allowedScopes": ["payments:read", "orders:write"]
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowedScopes").value("payments:read orders:write"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where name = 'Scoped'", String.class))
+                .isEqualTo("payments:read orders:write");
+    }
+
+    @Test
+    void createEndpointWithoutAllowedScopesStoresTheUnrestrictedEmptyString() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Unscoped",
+                                  "description": "Unrestricted access"
+                                }
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowedScopes").value(""));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where name = 'Unscoped'", String.class))
+                .isEmpty();
+    }
+
+    @Test
+    void createEndpointRejectsInvalidAllowedScopeTokensWith400() throws Exception {
+        mockMvc.perform(post("/subscription-tiers")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Invalid",
+                                  "allowedScopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.allowedScopes").value(
+                        "scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select count(*) from subscription_tiers", Long.class)).isZero();
+    }
+
+    @Test
     void createEndpointRejectsNegativePriceWith400() throws Exception {
         mockMvc.perform(post("/subscription-tiers")
                         .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
@@ -307,6 +366,54 @@ class SubscriptionTierIntegrationTest {
     }
 
     @Test
+    void updateEndpointAppliesAllowedScopesOnlyPatchAndPersistsIt() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create(
+                "Scoped Patch", "Premium access", 1000, 60, 0, "orders:read");
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId())
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "allowedScopes": ["payments:read", "payments:write"]
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Scoped Patch"))
+                .andExpect(jsonPath("$.requestsPerWindow").value(1000))
+                .andExpect(jsonPath("$.allowedScopes").value("payments:read payments:write"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("payments:read payments:write");
+        SubscriptionTier rehydrated = subscriptionTierService.get(created.getId());
+        assertThat(rehydrated.getAllowedScopes()).isEqualTo("payments:read payments:write");
+    }
+
+    @Test
+    void updateEndpointRejectsInvalidAllowedScopeTokensWith400() throws Exception {
+        SubscriptionTier created = subscriptionTierService.create(
+                "Scoped Invalid", "Premium access", 1000, 60, 0, "payments:read");
+
+        mockMvc.perform(patch("/subscription-tiers/" + created.getId())
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "allowedScopes": ["INVALID SCOPE"]
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.fieldErrors.allowedScopes").value(
+                        "scopes must be unique tokens of at most 64 characters like 'accounts:read'"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where id = ?", String.class, created.getId()))
+                .isEqualTo("payments:read");
+    }
+
+    @Test
     void updateEndpointRejectsUnknownTierWith404() throws Exception {
         mockMvc.perform(patch("/subscription-tiers/999")
                         .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
@@ -330,6 +437,18 @@ class SubscriptionTierIntegrationTest {
         assertThat(jdbcTemplate.queryForObject(
                 "select price_cents_per_month from subscription_tiers where name = 'Legacy'", Integer.class))
                 .isZero();
+    }
+
+    @Test
+    void tiersInsertedWithoutTheAllowedScopesColumnDefaultToEmptyString() {
+        jdbcTemplate.update(
+                "INSERT INTO subscription_tiers "
+                        + "(name, description, requests_per_window, window_seconds, created_at, updated_at) "
+                        + "VALUES ('Legacy Scopes', 'Existing row', 100, 60, now(), now())");
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select allowed_scopes from subscription_tiers where name = 'Legacy Scopes'", String.class))
+                .isEmpty();
     }
 
     @Test
@@ -681,7 +800,7 @@ class SubscriptionTierIntegrationTest {
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
                 "id", "name", "description", "requests_per_window", "window_seconds", "price_cents_per_month",
-                "status", "created_at", "updated_at");
+                "allowed_scopes", "status", "created_at", "updated_at");
 
         List<String> nullableColumns = jdbcTemplate.queryForList(
                 "select column_name from information_schema.columns "
@@ -724,6 +843,13 @@ class SubscriptionTierIntegrationTest {
                         + "and column_name = 'price_cents_per_month'",
                 String.class);
         assertThat(defaultPriceCentsPerMonth).isEqualTo("0");
+
+        String defaultAllowedScopes = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'subscription_tiers' "
+                        + "and column_name = 'allowed_scopes'",
+                String.class);
+        assertThat(defaultAllowedScopes).isEqualTo("''::text");
 
         String defaultStatus = jdbcTemplate.queryForObject(
                 "select column_default from information_schema.columns "

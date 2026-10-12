@@ -336,6 +336,116 @@ class SubscriptionTierServiceTest {
     }
 
     @Test
+    void createFromRequestCanonicalizesAllowedScopes() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 1L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Developer", null, null, null, null,
+                        java.util.List.of("payments:read", "orders:write")));
+
+        ArgumentCaptor<SubscriptionTier> captor = ArgumentCaptor.forClass(SubscriptionTier.class);
+        verify(subscriptionTierRepository).save(captor.capture());
+        assertThat(captor.getValue().getAllowedScopes()).isEqualTo("payments:read orders:write");
+        assertThat(response.allowedScopes()).isEqualTo("payments:read orders:write");
+    }
+
+    @Test
+    void createFromRequestWithoutAllowedScopesStoresTheUnrestrictedEmptyString() {
+        when(subscriptionTierRepository.save(any(SubscriptionTier.class))).thenAnswer(invocation -> {
+            SubscriptionTier tier = invocation.getArgument(0);
+            setField(tier, "id", 1L);
+            return tier;
+        });
+
+        SubscriptionTierResponse response = subscriptionTierService.create(
+                new CreateSubscriptionTierRequest("Developer", null, null, null, null));
+
+        assertThat(response.allowedScopes()).isEmpty();
+    }
+
+    @Test
+    void updatePersistsAllowedScopesAndEvictsTheUpdatedTier() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("orders:write", "payments:read")));
+
+        assertThat(response.allowedScopes()).isEqualTo("orders:write payments:read");
+        assertThat(stored.getAllowedScopes()).isEqualTo("orders:write payments:read");
+        assertThat(response.updatedAt()).isAfter(stored.getCreatedAt());
+        verify(subscriptionTierRepository).saveAndFlush(stored);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void scopesOnlyUpdateWithTheSameValueSkipsPersistenceAndEviction() {
+        SubscriptionTier stored = tierWithScopes(7L, "Gold", "Description", 100, 60, "payments:read");
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("payments:read")));
+
+        assertThat(response.allowedScopes()).isEqualTo("payments:read");
+        assertThat(stored.getUpdatedAt()).isEqualTo(stored.getCreatedAt());
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void scopesOnlyUpdateWithADifferentValuePersistsAndEvicts() {
+        SubscriptionTier stored = tierWithScopes(7L, "Gold", "Description", 100, 60, "payments:read");
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("payments:read", "orders:write")));
+
+        assertThat(response.allowedScopes()).isEqualTo("payments:read orders:write");
+        assertThat(response.updatedAt()).isAfter(stored.getCreatedAt());
+        verify(subscriptionTierRepository).saveAndFlush(stored);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
+    void updateRejectsInvalidAllowedScopesBeforePersisting() {
+        SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+
+        assertThatThrownBy(() -> subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, null, null, null, null,
+                        java.util.List.of("INVALID SCOPE"))))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(subscriptionTierRepository, never()).saveAndFlush(any(SubscriptionTier.class));
+        verify(cacheInvalidationService, never()).evict(any(), any());
+    }
+
+    @Test
+    void updateAppliesDescriptionAndAllowedScopesTogether() {
+        SubscriptionTier stored = tierWithScopes(7L, "Gold", "Description", 100, 60, "payments:read");
+        when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
+        when(subscriptionTierRepository.saveAndFlush(stored)).thenReturn(stored);
+
+        SubscriptionTierResponse response = subscriptionTierService.update(
+                7L, new UpdateSubscriptionTierRequest(null, "New description", null, null, null,
+                        java.util.List.of("orders:write")));
+
+        assertThat(response.description()).isEqualTo("New description");
+        assertThat(response.allowedScopes()).isEqualTo("orders:write");
+        verify(subscriptionTierRepository).saveAndFlush(stored);
+        verify(cacheInvalidationService).evict("subscriptionTier", 7L);
+    }
+
+    @Test
     void deleteRemovesUnreferencedTierAndEvictsExactCacheKey() {
         SubscriptionTier stored = tier(7L, "Gold", "Description", 100, 60);
         when(subscriptionTierRepository.findById(7L)).thenReturn(java.util.Optional.of(stored));
@@ -578,6 +688,22 @@ class SubscriptionTierServiceTest {
             int requestsPerWindow,
             int windowSeconds) {
         SubscriptionTier tier = new SubscriptionTier(name, description, requestsPerWindow, windowSeconds, 0);
+        java.time.Instant timestamp = java.time.Instant.parse("2020-01-01T00:00:00Z");
+        setField(tier, "id", id);
+        setField(tier, "createdAt", timestamp);
+        setField(tier, "updatedAt", timestamp);
+        return tier;
+    }
+
+    private SubscriptionTier tierWithScopes(
+            Long id,
+            String name,
+            String description,
+            int requestsPerWindow,
+            int windowSeconds,
+            String allowedScopes) {
+        SubscriptionTier tier = new SubscriptionTier(
+                name, description, requestsPerWindow, windowSeconds, 0, allowedScopes);
         java.time.Instant timestamp = java.time.Instant.parse("2020-01-01T00:00:00Z");
         setField(tier, "id", id);
         setField(tier, "createdAt", timestamp);

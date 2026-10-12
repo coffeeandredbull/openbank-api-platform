@@ -321,7 +321,8 @@ class CredentialIntegrationTest {
                         + "order by ordinal_position",
                 String.class);
         assertThat(columns).containsExactlyInAnyOrder(
-                "id", "application_id", "client_id", "client_secret_hash", "status", "expires_at", "created_at", "updated_at");
+                "id", "application_id", "client_id", "client_secret_hash", "status", "expires_at", "scopes",
+                "created_at", "updated_at");
 
         Integer nullableCount = jdbcTemplate.queryForObject(
                 "select count(*) from information_schema.columns "
@@ -342,6 +343,13 @@ class CredentialIntegrationTest {
                         + "where table_schema = current_schema() and table_name = 'credentials' "
                         + "and column_name = 'status'",
                 String.class)).isEqualTo("character varying");
+
+        String defaultScopes = jdbcTemplate.queryForObject(
+                "select column_default from information_schema.columns "
+                        + "where table_schema = current_schema() and table_name = 'credentials' "
+                        + "and column_name = 'scopes'",
+                String.class);
+        assertThat(defaultScopes).isEqualTo("''::text");
 
         List<String> uniqueConstraintNames = jdbcTemplate.queryForList(
                 "select con.conname from pg_constraint con "
@@ -1021,5 +1029,214 @@ class CredentialIntegrationTest {
                 "select expires_at from credentials where id = ?", Timestamp.class, credentialId)
                 .toInstant())
                 .isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
+    }
+
+    @Test
+    void createPersistsScopesAndExposesTheSpaceDelimitedValue() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+
+        String body = mockMvc.perform(post("/credentials")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "applicationId": %d,
+                                  "scopes": ["payments:read", "orders:write"]
+                                }
+                                """.formatted(applicationId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.scopes").value("payments:read orders:write"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        long credentialId = objectMapper.readTree(body).get("id").asLong();
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select scopes from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("payments:read orders:write");
+
+        mockMvc.perform(get("/credentials/" + credentialId)
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scopes").value("payments:read orders:write"));
+    }
+
+    @Test
+    void createWithoutScopesStoresTheUnrestrictedEmptyString() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select scopes from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("");
+    }
+
+    @Test
+    void adminCanUpdateCredentialScopesAndPersistIt() throws Exception {
+        String adminToken = "Bearer " + token("1", "ADMIN", 3600);
+
+        long applicationId = createApplication("1", "ADMIN", "Test Application");
+        long credentialId = createCredentialAndReadId("1", applicationId);
+
+        mockMvc.perform(patch("/credentials/{credentialId}/scopes", credentialId)
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"scopes":["payments:read","payments:write"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(credentialId))
+                .andExpect(jsonPath("$.scopes").value("payments:read payments:write"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select scopes from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("payments:read payments:write");
+    }
+
+    @Test
+    void developerCannotChangeCredentialScopes() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/scopes")
+                        .header("Authorization", "Bearer " + token("42", "DEVELOPER", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read"]
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select scopes from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("");
+    }
+
+    @Test
+    void unauthenticatedScopesUpdateReturns401() throws Exception {
+        mockMvc.perform(patch("/credentials/1/scopes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read"]
+                                }
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void scopesUpdateForMissingCredentialReturns404() throws Exception {
+        mockMvc.perform(patch("/credentials/98765/scopes")
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "scopes": ["payments:read"]
+                                }
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CREDENTIAL_NOT_FOUND"))
+                .andExpect(jsonPath("$.path").value("/credentials/98765/scopes"));
+    }
+
+    @Test
+    void scopesUpdateRejectsInvalidTokensWith400() throws Exception {
+        long applicationId = createApplication("1", "ADMIN", "Test Application");
+        long credentialId = createCredentialAndReadId("1", applicationId);
+
+        mockMvc.perform(patch("/credentials/{credentialId}/scopes", credentialId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"scopes":["INVALID SCOPE"]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select scopes from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("");
+    }
+
+    @Test
+    void scopesUpdatePreservesClientIdStatusAndSecretHashAndAdvancesUpdatedAt() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+
+        String clientIdBefore = jdbcTemplate.queryForObject(
+                "select client_id from credentials where id = ?", String.class, credentialId);
+        String secretHashBefore = jdbcTemplate.queryForObject(
+                "select client_secret_hash from credentials where id = ?", String.class, credentialId);
+        String statusBefore = jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId);
+        Instant updatedAtBefore = jdbcTemplate.queryForObject(
+                "select updated_at from credentials where id = ?", Timestamp.class, credentialId)
+                .toInstant();
+
+        mockMvc.perform(patch("/credentials/{credentialId}/scopes", credentialId)
+                        .header("Authorization", "Bearer " + token("1", "ADMIN", 3600))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"scopes":["payments:read"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.clientId").value(clientIdBefore))
+                .andExpect(jsonPath("$.status").value(statusBefore))
+                .andExpect(jsonPath("$.scopes").value("payments:read"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist())
+                .andExpect(jsonPath("$.clientSecretHash").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select client_id from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(clientIdBefore);
+        assertThat(jdbcTemplate.queryForObject(
+                "select client_secret_hash from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(secretHashBefore)
+                .isNotNull();
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId))
+                .isEqualTo(statusBefore);
+
+        Instant updatedAtAfter = jdbcTemplate.queryForObject(
+                "select updated_at from credentials where id = ?", Timestamp.class, credentialId)
+                .toInstant();
+        assertThat(updatedAtAfter).isAfter(updatedAtBefore);
+    }
+
+    @Test
+    void revokedCredentialScopesUpdateDoesNotReactivateStatus() throws Exception {
+        Long applicationId = createApplication("42", "DEVELOPER", "Anna's App");
+        Long credentialId = createCredentialAndReadId("42", applicationId);
+        String adminToken = "Bearer " + token("1", "ADMIN", 3600);
+
+        mockMvc.perform(patch("/credentials/" + credentialId + "/status")
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "REVOKED"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/credentials/{credentialId}/scopes", credentialId)
+                        .header("Authorization", adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"scopes":["payments:read"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REVOKED"))
+                .andExpect(jsonPath("$.scopes").value("payments:read"))
+                .andExpect(jsonPath("$.clientSecret").doesNotExist());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select status from credentials where id = ?", String.class, credentialId))
+                .isEqualTo("REVOKED");
     }
 }

@@ -10,16 +10,18 @@ public record CredentialCheckResponse(
         Long tierId,
         String tierName,
         Integer requestsPerWindow,
-        Integer windowSeconds) {
+        Integer windowSeconds,
+        String scopes) {
 
     public static CredentialCheckResponse unauthorized() {
-        return new CredentialCheckResponse(false, null, null, false, null, null, null, null);
+        return new CredentialCheckResponse(false, null, null, false, null, null, null, null, null);
     }
 
     public static CredentialCheckResponse authenticated(
-            Long applicationId, Long ownerUserId, SubscriptionPolicy policy) {
+            Long applicationId, Long ownerUserId, SubscriptionPolicy policy, String scopes) {
         if (policy == null) {
-            return new CredentialCheckResponse(true, applicationId, ownerUserId, false, null, null, null, null);
+            return new CredentialCheckResponse(
+                    true, applicationId, ownerUserId, false, null, null, null, null, scopes);
         }
         return new CredentialCheckResponse(
                 true,
@@ -29,6 +31,7 @@ public record CredentialCheckResponse(
                 policy.tierId(),
                 policy.tierName(),
                 policy.requestsPerWindow(),
-                policy.windowSeconds());
+                policy.windowSeconds(),
+                scopes);
     }
 }

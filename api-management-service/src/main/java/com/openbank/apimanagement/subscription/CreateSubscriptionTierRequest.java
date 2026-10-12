@@ -1,10 +1,13 @@
 package com.openbank.apimanagement.subscription;
 
+import com.openbank.apimanagement.scope.ValidScopes;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
+
+import java.util.List;
 
 public record CreateSubscriptionTierRequest(
 
@@ -26,6 +29,15 @@ public record CreateSubscriptionTierRequest(
         Integer windowSeconds,
 
         @PositiveOrZero(message = "priceCentsPerMonth must not be negative")
-        Integer priceCentsPerMonth
+        Integer priceCentsPerMonth,
+
+        @ValidScopes
+        List<String> allowedScopes
 ) {
+
+    public CreateSubscriptionTierRequest(
+            String name, String description, Integer requestsPerWindow, Integer windowSeconds,
+            Integer priceCentsPerMonth) {
+        this(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth, null);
+    }
 }

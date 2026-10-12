@@ -1,6 +1,8 @@
 package com.openbank.apimanagement.credential;
 
 import com.openbank.apimanagement.application.Application;
+import com.openbank.apimanagement.exception.MalformedPersistedScopesException;
+import com.openbank.apimanagement.scope.Scopes;
 import com.openbank.apimanagement.subscription.SubscriptionPolicy;
 import com.openbank.apimanagement.subscription.SubscriptionService;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -53,8 +55,15 @@ public class CredentialCheckService {
         Application application = credential.getApplication();
         SubscriptionPolicy policy = subscriptionService.findActivePolicyByApplication(
                 application.getId(), contextPath, version);
+        String tierScopes = policy != null ? policy.allowedScopes() : Scopes.UNRESTRICTED;
+        String effectiveScopes;
+        try {
+            effectiveScopes = Scopes.effective(credential.getScopes(), tierScopes);
+        } catch (IllegalArgumentException ex) {
+            throw new MalformedPersistedScopesException(ex);
+        }
         return CredentialCheckResponse.authenticated(
-                application.getId(), application.getOwnerUserId(), policy);
+                application.getId(), application.getOwnerUserId(), policy, effectiveScopes);
     }
 
     private ClientCredentials parseBasic(String authorization) {

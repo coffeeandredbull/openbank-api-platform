@@ -41,6 +41,9 @@ public class SubscriptionTier {
     @Column(name = "price_cents_per_month", nullable = false, columnDefinition = "integer not null default 0")
     private int priceCentsPerMonth;
 
+    @Column(name = "allowed_scopes", nullable = false, columnDefinition = "text not null default ''")
+    private String allowedScopes;
+
     @Enumerated(EnumType.STRING)
     @Column(
             name = "status",
@@ -61,11 +64,22 @@ public class SubscriptionTier {
 
     public SubscriptionTier(
             String name, String description, int requestsPerWindow, int windowSeconds, int priceCentsPerMonth) {
+        this(name, description, requestsPerWindow, windowSeconds, priceCentsPerMonth, "");
+    }
+
+    public SubscriptionTier(
+            String name,
+            String description,
+            int requestsPerWindow,
+            int windowSeconds,
+            int priceCentsPerMonth,
+            String allowedScopes) {
         this.name = name;
         this.description = description;
         this.requestsPerWindow = requestsPerWindow;
         this.windowSeconds = windowSeconds;
         this.priceCentsPerMonth = priceCentsPerMonth;
+        this.allowedScopes = allowedScopes;
         this.status = SubscriptionTierStatus.ACTIVE;
         Instant now = Instant.now();
         this.createdAt = now;
@@ -78,6 +92,16 @@ public class SubscriptionTier {
             Integer newRequestsPerWindow,
             Integer newWindowSeconds,
             Integer newPriceCentsPerMonth) {
+        update(newName, newDescription, newRequestsPerWindow, newWindowSeconds, newPriceCentsPerMonth, null);
+    }
+
+    public void update(
+            String newName,
+            String newDescription,
+            Integer newRequestsPerWindow,
+            Integer newWindowSeconds,
+            Integer newPriceCentsPerMonth,
+            String newAllowedScopes) {
         if (newName != null) {
             this.name = newName;
         }
@@ -92,6 +116,9 @@ public class SubscriptionTier {
         }
         if (newPriceCentsPerMonth != null) {
             this.priceCentsPerMonth = newPriceCentsPerMonth;
+        }
+        if (newAllowedScopes != null) {
+            this.allowedScopes = newAllowedScopes;
         }
         this.updatedAt = Instant.now();
     }
@@ -123,6 +150,10 @@ public class SubscriptionTier {
 
     public int getPriceCentsPerMonth() {
         return priceCentsPerMonth;
+    }
+
+    public String getAllowedScopes() {
+        return allowedScopes;
     }
 
     public SubscriptionTierStatus getStatus() {

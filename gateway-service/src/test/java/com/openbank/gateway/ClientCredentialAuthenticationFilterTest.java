@@ -48,7 +48,7 @@ class ClientCredentialAuthenticationFilterTest {
 
     private static final String AUTHENTICATED_BODY = "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
             + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
-            + "\"requestsPerWindow\":100,\"windowSeconds\":60}";
+            + "\"requestsPerWindow\":100,\"windowSeconds\":60,\"scopes\":\"payments:read\"}";
 
     private static final AtomicReference<String> RESPONSE_BODY =
             new AtomicReference<>(AUTHENTICATED_BODY);
@@ -194,7 +194,8 @@ class ClientCredentialAuthenticationFilterTest {
     @Test
     void unsubscribedApplicationIsAuthenticatedButTheSubscriptionFlagIsCarried() {
         RESPONSE_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":false}");
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":false,\"scopes\":\"\"}");
 
         Result result = call("/runtime/apis/payments/v1/accounts");
 
@@ -212,7 +213,50 @@ class ClientCredentialAuthenticationFilterTest {
     @Test
     void subscribedResponseWithoutRateLimitPolicyFailsClosedAs503() {
         RESPONSE_BODY.set(
-                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,\"subscribed\":true}");
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":true,\"scopes\":\"\"}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"");
+    }
+
+    @Test
+    void authenticatedResponseWithoutScopesFailsClosedAs503() {
+        RESPONSE_BODY.set(
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":100,\"windowSeconds\":60}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"");
+    }
+
+    @Test
+    void authenticatedResponseWithNonTextualScopesFailsClosedAs503() {
+        RESPONSE_BODY.set(
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":100,\"windowSeconds\":60,\"scopes\":[\"payments:read\"]}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body()).contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"");
+    }
+
+    @Test
+    void authenticatedResponseWithMalformedScopesFailsClosedAs503() {
+        RESPONSE_BODY.set(
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":100,\"windowSeconds\":60,\"scopes\":\"INVALID SCOPE\"}");
 
         Result result = call("/runtime/apis/payments/v1/accounts");
 
@@ -225,7 +269,6 @@ class ClientCredentialAuthenticationFilterTest {
     void rejectedClientCredentialsReturn401AndAreNotForwarded() {
         RESPONSE_STATUS.set(401);
         RESPONSE_BODY.set("{\"authenticated\":false}");
-
         Result result = call("/runtime/apis/payments/v1/accounts");
 
         assertThat(result.forwarded()).isFalse();
@@ -250,6 +293,26 @@ class ClientCredentialAuthenticationFilterTest {
                 .contains("\"status\":503")
                 .contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"")
                 .contains("\"message\":\"Credential verification is temporarily unavailable\"");
+    }
+
+    @Test
+    void controlledInternalServerErrorFromCheckReturns503WithoutLeakingTheUpstreamBody() {
+        RESPONSE_STATUS.set(500);
+        RESPONSE_BODY.set("{\"timestamp\":\"2026-10-11T00:00:00Z\",\"status\":500,"
+                + "\"error\":\"Internal Server Error\",\"path\":\"/internal/credential-check\","
+                + "\"code\":\"INTERNAL_ERROR\",\"message\":\"An unexpected error occurred\","
+                + "\"fieldErrors\":{}}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isFalse();
+        assertThat(result.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(result.body())
+                .contains("\"status\":503")
+                .contains("\"code\":\"CREDENTIAL_SERVICE_UNAVAILABLE\"")
+                .contains("\"message\":\"Credential verification is temporarily unavailable\"")
+                .doesNotContain("INTERNAL_ERROR")
+                .doesNotContain("An unexpected error occurred");
     }
 
     @Test
@@ -387,7 +450,23 @@ class ClientCredentialAuthenticationFilterTest {
                 .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("42"))
                 .containsEntry(TrustedIdentityHeaders.APPLICATION_ID, List.of("7"))
                 .containsEntry(TrustedIdentityHeaders.CLIENT_ID, List.of(CLIENT_ID))
+                .containsEntry(TrustedIdentityHeaders.SCOPES, List.of("payments:read"))
                 .doesNotContainKey(TrustedIdentityHeaders.ROLES);
+    }
+
+    @Test
+    void unrestrictedScopesAreNotInjectedAsAHeader() {
+        RESPONSE_BODY.set(
+                "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                        + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                        + "\"requestsPerWindow\":100,\"windowSeconds\":60,\"scopes\":\"\"}");
+
+        Result result = call("/runtime/apis/payments/v1/accounts");
+
+        assertThat(result.forwarded()).isTrue();
+        assertThat(result.downstream().getRequest().getHeaders())
+                .containsEntry(TrustedIdentityHeaders.CLIENT_ID, List.of(CLIENT_ID))
+                .doesNotContainKey(TrustedIdentityHeaders.SCOPES);
     }
 
     @Test
@@ -405,13 +484,15 @@ class ClientCredentialAuthenticationFilterTest {
                 TrustedIdentityHeaders.USER_ID, "attacker",
                 TrustedIdentityHeaders.ROLES, "ADMIN",
                 TrustedIdentityHeaders.APPLICATION_ID, "attacker-app",
-                TrustedIdentityHeaders.CLIENT_ID, "attacker-client"));
+                TrustedIdentityHeaders.CLIENT_ID, "attacker-client",
+                TrustedIdentityHeaders.SCOPES, "admin:*"));
 
         assertThat(result.forwarded()).isTrue();
         assertThat(result.downstream().getRequest().getHeaders())
                 .containsEntry(TrustedIdentityHeaders.USER_ID, List.of("42"))
                 .containsEntry(TrustedIdentityHeaders.APPLICATION_ID, List.of("7"))
                 .containsEntry(TrustedIdentityHeaders.CLIENT_ID, List.of(CLIENT_ID))
+                .containsEntry(TrustedIdentityHeaders.SCOPES, List.of("payments:read"))
                 .doesNotContainKey(TrustedIdentityHeaders.ROLES);
     }
 
@@ -440,7 +521,8 @@ class ClientCredentialAuthenticationFilterTest {
                         TrustedIdentityHeaders.USER_ID,
                         TrustedIdentityHeaders.ROLES,
                         TrustedIdentityHeaders.APPLICATION_ID,
-                        TrustedIdentityHeaders.CLIENT_ID);
+                        TrustedIdentityHeaders.CLIENT_ID,
+                        TrustedIdentityHeaders.SCOPES);
     }
 
     @Test

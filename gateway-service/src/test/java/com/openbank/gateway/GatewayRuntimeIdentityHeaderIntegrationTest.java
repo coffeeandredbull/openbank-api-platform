@@ -46,7 +46,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
 
     private static final String AUTHENTICATED_BODY = "{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
             + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
-            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}";
+            + "\"requestsPerWindow\":1000,\"windowSeconds\":3600,\"scopes\":\"payments:read\"}";
 
     private static final AtomicReference<String> CREDENTIAL_BODY = new AtomicReference<>(
             AUTHENTICATED_BODY);
@@ -180,6 +180,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.ROLES)).containsExactly("ADMIN");
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.APPLICATION_ID)).isEmpty();
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.CLIENT_ID)).isEmpty();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).isEmpty();
         assertThat(headerValue(captured.headers(), HttpHeaders.AUTHORIZATION))
                 .containsExactly("Bearer " + token);
     }
@@ -201,7 +202,45 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.APPLICATION_ID)).containsExactly("7");
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.CLIENT_ID)).containsExactly(CLIENT_ID);
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.ROLES)).isEmpty();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).containsExactly("payments:read");
         assertThat(headerValue(captured.headers(), HttpHeaders.AUTHORIZATION)).isEmpty();
+    }
+
+    @Test
+    void clientCredentialRuntimeRequestWithoutScopesReturns503AndIsNotForwarded() {
+        CREDENTIAL_BODY.set("{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                + "\"requestsPerWindow\":1000,\"windowSeconds\":3600}");
+
+        webTestClient.get()
+                .uri("/runtime/apis/payments/v1/accounts")
+                .header(HttpHeaders.AUTHORIZATION, basicHeader())
+                .exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody()
+                .jsonPath("$.code").isEqualTo("CREDENTIAL_SERVICE_UNAVAILABLE");
+
+        assertThat(MANAGED.get()).isNull();
+    }
+
+    @Test
+    void clientCredentialRuntimeRequestWithEmptyEffectiveScopesReachesUpstreamWithoutScopesHeader() {
+        CREDENTIAL_BODY.set("{\"authenticated\":true,\"applicationId\":7,\"ownerUserId\":42,"
+                + "\"subscribed\":true,\"tierId\":1,\"tierName\":\"Gold\","
+                + "\"requestsPerWindow\":1000,\"windowSeconds\":3600,\"scopes\":\"\"}");
+
+        webTestClient.get()
+                .uri("/runtime/apis/payments/v1/accounts")
+                .header(HttpHeaders.AUTHORIZATION, basicHeader())
+                .exchange()
+                .expectStatus().isEqualTo(201)
+                .expectBody()
+                .jsonPath("$.upstream").isEqualTo("managed");
+
+        CapturedRequest captured = MANAGED.get();
+        assertThat(captured).isNotNull();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.USER_ID)).containsExactly("42");
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).isEmpty();
     }
 
     @Test
@@ -215,6 +254,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
                 .header(TrustedIdentityHeaders.ROLES, "attacker-role")
                 .header(TrustedIdentityHeaders.APPLICATION_ID, "attacker-app")
                 .header(TrustedIdentityHeaders.CLIENT_ID, "attacker-client")
+                .header(TrustedIdentityHeaders.SCOPES, "admin:*")
                 .exchange()
                 .expectStatus().isEqualTo(201);
 
@@ -224,6 +264,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.ROLES)).containsExactly("ADMIN");
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.APPLICATION_ID)).isEmpty();
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.CLIENT_ID)).isEmpty();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).isEmpty();
     }
 
     @Test
@@ -235,6 +276,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
                 .header(TrustedIdentityHeaders.ROLES, "ADMIN")
                 .header(TrustedIdentityHeaders.APPLICATION_ID, "attacker-app")
                 .header(TrustedIdentityHeaders.CLIENT_ID, "attacker-client")
+                .header(TrustedIdentityHeaders.SCOPES, "admin:*")
                 .exchange()
                 .expectStatus().isEqualTo(201);
 
@@ -244,6 +286,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.APPLICATION_ID)).containsExactly("7");
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.CLIENT_ID)).containsExactly(CLIENT_ID);
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.ROLES)).isEmpty();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).containsExactly("payments:read");
     }
 
     @Test
@@ -304,6 +347,7 @@ class GatewayRuntimeIdentityHeaderIntegrationTest {
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.ROLES)).isEmpty();
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.APPLICATION_ID)).isEmpty();
         assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.CLIENT_ID)).isEmpty();
+        assertThat(headerValue(captured.headers(), TrustedIdentityHeaders.SCOPES)).isEmpty();
     }
 
     @Test

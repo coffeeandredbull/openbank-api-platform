@@ -1,6 +1,7 @@
 package com.openbank.apimanagement.credential;
 
 import com.openbank.apimanagement.application.Application;
+import com.openbank.apimanagement.exception.MalformedPersistedScopesException;
 import com.openbank.apimanagement.subscription.SubscriptionPolicy;
 import com.openbank.apimanagement.subscription.SubscriptionService;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -40,16 +42,98 @@ class CredentialCheckServiceTest {
     @Test
     void validCredentialsReturnTheApplicationAndSubscription() {
         Application application = new Application("Payments App", "desc", 42L);
-        Credential credential = new Credential(application, "client-abc", "hashed-secret");
+        Credential credential = new Credential(
+                application, "client-abc", "hashed-secret", null, "payments:read orders:write");
+        SubscriptionPolicy policy = new SubscriptionPolicy(
+                15L, "Developer", 100, 60, "payments:read payments:write");
         when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
         when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
         when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
-                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60));
+                .thenReturn(policy);
 
         CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
 
         assertThat(response).isEqualTo(CredentialCheckResponse.authenticated(
-                application.getId(), 42L, new SubscriptionPolicy(15L, "Developer", 100, 60)));
+                application.getId(), 42L, policy, "payments:read"));
+    }
+
+    @Test
+    void credentialScopesApplyWhenTheTierIsUnrestricted() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(
+                application, "client-abc", "hashed-secret", null, "payments:read");
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60, ""));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response.authenticated()).isTrue();
+        assertThat(response.scopes()).isEqualTo("payments:read");
+    }
+
+    @Test
+    void tierScopesApplyWhenTheCredentialIsUnrestricted() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(application, "client-abc", "hashed-secret");
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60, "payments:read"));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response.authenticated()).isTrue();
+        assertThat(response.scopes()).isEqualTo("payments:read");
+    }
+
+    @Test
+    void emptyScopeIntersectionStillReportsTheCredentialAsAuthenticated() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(
+                application, "client-abc", "hashed-secret", null, "orders:read");
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60, "payments:read"));
+
+        CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
+
+        assertThat(response.authenticated()).isTrue();
+        assertThat(response.subscribed()).isTrue();
+        assertThat(response.scopes()).isEmpty();
+    }
+
+    @Test
+    void malformedPersistedCredentialScopesFailClosedAsAControlledServerError() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(
+                application, "client-abc", "hashed-secret", null, "INVALID SCOPE");
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60, "payments:read"));
+
+        assertThatThrownBy(() -> credentialCheckService.check(AUTHORIZATION, "/payments", "v1"))
+                .isInstanceOf(MalformedPersistedScopesException.class)
+                .hasMessageContaining("Persisted scope data")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void malformedPersistedTierScopesFailClosedAsAControlledServerError() {
+        Application application = new Application("Payments App", "desc", 42L);
+        Credential credential = new Credential(
+                application, "client-abc", "hashed-secret", null, "payments:read");
+        when(credentialRepository.findByClientId("client-abc")).thenReturn(Optional.of(credential));
+        when(passwordEncoder.matches("super-secret", "hashed-secret")).thenReturn(true);
+        when(subscriptionService.findActivePolicyByApplication(application.getId(), "/payments", "v1"))
+                .thenReturn(new SubscriptionPolicy(15L, "Developer", 100, 60, "INVALID SCOPE"));
+
+        assertThatThrownBy(() -> credentialCheckService.check(AUTHORIZATION, "/payments", "v1"))
+                .isInstanceOf(MalformedPersistedScopesException.class)
+                .hasCauseInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -111,7 +195,7 @@ class CredentialCheckServiceTest {
 
         CredentialCheckResponse response = credentialCheckService.check(AUTHORIZATION, "/payments", "v1");
 
-        assertThat(response).isEqualTo(CredentialCheckResponse.authenticated(application.getId(), 42L, null));
+        assertThat(response).isEqualTo(CredentialCheckResponse.authenticated(application.getId(), 42L, null, ""));
         assertThat(response.subscribed()).isFalse();
         assertThat(response.tierId()).isNull();
     }

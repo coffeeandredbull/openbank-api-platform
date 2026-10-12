@@ -315,8 +315,9 @@ infrastructure, and AI features are explicitly out of scope unless requested.
   service looks the credential up by `clientId`, verifies the secret with
   BCrypt `matches` against the stored hash, and returns, from a **direct
   PostgreSQL query** (the system of record — no cache),
-  `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool}`
-  (failures return `{"authenticated":false}`); the plaintext secret or its hash
+  `{"authenticated":true,"applicationId":N,"ownerUserId":N,"subscribed":bool,
+  "scopes":"..."}` (failures return `{"authenticated":false}`); the plaintext
+  secret or its hash
   is never stored, returned, forwarded, or logged anywhere in the exchange.
   Outcomes: unknown/malformed credentials → `401` + code
   `CLIENT_CREDENTIAL_INVALID`; the check is unreachable, returns 5xx, or a
@@ -351,11 +352,14 @@ the same application identity, and platform-management routes still require a
   (from the `sub` claim) and `X-Roles` (from the `role` claim) while continuing
   to forward `Authorization: Bearer <jwt>` unchanged; the client-credential/
   application flow adds `X-User-Id` (the credential's `ownerUserId`),
-  `X-Application-Id` (the credential's `applicationId`), and `X-Client-Id` (the
-  credential's `clientId`) while continuing to strip the Basic header. These
+  `X-Application-Id` (the credential's `applicationId`), `X-Client-Id` (the
+  credential's `clientId`), and — when the computed effective scope string is
+  non-empty — `X-Scopes` (the space-delimited effective scope string), while
+  continuing to strip the Basic header. These
   headers are **never trusted from the client**: a reusable
   `TrustedIdentityHeaderSanitizer` strips any client-supplied `X-User-Id`,
-  `X-Roles`, `X-Application-Id`, or `X-Client-Id` values before trusted values
+  `X-Roles`, `X-Application-Id`, `X-Client-Id`, or `X-Scopes` values before
+  trusted values
   are added, so a spoofed identity can never reach the managed API. The headers
   are applied **only** on `/runtime/apis/**` (platform-management routes receive
   none), the filter order is unchanged, and each backend still validates the
@@ -534,7 +538,7 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     `REVOKED` credential, and does not extend an expiring credential. Expiry does
     not mutate the stored status automatically, and the gateway is unchanged:
     `authenticated:false` already maps to the generic `CLIENT_CREDENTIAL_INVALID`
-    response. Credential scopes remain planned.
+    response. Credential scopes arrived in Slice 16 below.
   - **Phase 24, Slice 12 — ADMIN-only credential expiration update:** an
     authenticated `ADMIN` can change a credential's expiration with
     `PATCH /credentials/{credentialId}/expiration` and body
@@ -594,8 +598,42 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
     `subscriptionTier::<tierId>` after commit. Existing rows written before
     this column existed read back as `0` via the column default. Hard
     limits/burst and actual billing remain planned.
-  - **Planned phases (subject to change):** credential scopes,
-    the remaining services, the
+  - **Phase 24, Slice 16 — credential scopes and effective-scope
+    propagation:** credentials and subscription tiers carry **scopes**, stored
+    as a space-delimited canonical string (`"accounts:read payments:write"`,
+    `""` meaning unrestricted) in `text NOT NULL DEFAULT ''` columns
+    (`credentials.scopes`, `subscription_tiers.allowed_scopes`). Credential
+    creation (`POST /credentials` and
+    `POST /applications/{applicationId}/credentials`) accepts an optional
+    `"scopes"` JSON array validated by a shared `@ValidScopes` constraint —
+    at most 20 unique tokens, at most 64 characters each, one optional `:`
+    separator, strict lowercase grammar — and canonicalized in input order;
+    invalid or duplicate tokens return `400 VALIDATION_FAILED`. An
+    **ADMIN-only** `PATCH /credentials/{credentialId}/scopes` with body
+    `{ "scopes": [...] }` replaces the value (mirrors the expiration PATCH:
+    `400` on a missing/invalid body, `404` for a missing credential, `403`/
+    `401` for a `DEVELOPER`/anonymous caller, works on a `REVOKED` credential
+    without reactivating it, and bumps `updatedAt`). Tier
+    creation/`PATCH /subscription-tiers/{tierId}` accept optional
+    `allowedScopes` with the same validation, and a scopes-only PATCH whose
+    canonical value is unchanged is a no-op (no save, no cache eviction,
+    `updatedAt` untouched). The internal `GET /internal/credential-check`
+    response now carries `scopes`, the **effective scopes** computed
+    server-side as credential ∩ tier in credential order, with `""` on either
+    side meaning unrestricted and an empty intersection still returning
+    `authenticated:true` — scope results are informational (there is still no
+    per-API/per-operation scope enforcement and no `403 INSUFFICIENT_SCOPE`).
+    The gateway parses and validates `scopes` on **every authenticated** check
+    outcome (missing, non-textual, or malformed → `503
+    CREDENTIAL_SERVICE_UNAVAILABLE`, fail closed) and forwards `X-Scopes`
+    downstream only when the effective value is non-empty, always after
+    stripping any client-supplied `X-Scopes` — a present `X-Scopes` is
+    therefore always gateway-verified, while an absent header means *either*
+    unrestricted *or* an empty intersection, so it must never be treated as an
+    authorization grant (the signal is advisory). Existing rows read back as
+    unrestricted (`''`) via the column default.
+  - **Planned phases (subject to change):** the
+    remaining services, the
    Developer Portal, shared infrastructure (PostgreSQL/Redis via Docker Compose),
    CI/CD (GitHub Actions) and Kubernetes manifests will be built in small,
    explicitly requested phases and verified (compile + tests) at each step.
@@ -630,8 +668,11 @@ dedicated Testcontainers tests (populate/hit/evict/key TTL + no-secrets,
   implemented (per-user and per-application, Phase 21)**, **trusted identity
   headers supplied to managed APIs are implemented (Phase 22 — gateway-derived
   `X-User-Id`/`X-Roles` for users and `X-User-Id`/`X-Application-Id`/
-  `X-Client-Id` for applications, runtime routes only, never trusted from the
-  client)**, and **Redis
+  `X-Client-Id`/`X-Scopes` for applications, runtime routes only, never trusted
+  from the client; `X-Scopes` carries the validated effective scopes since
+  Phase 24 Slice 16 and is added only when the effective string is
+  non-empty — absence means unrestricted *or* an empty intersection, never an
+  authorization grant)**, and **Redis
   connectivity is plumbed (Phase 18) and now used for rate-limit counters**,
   and the gateway publishes request observability to the Analytics Service
   (Phase 23).

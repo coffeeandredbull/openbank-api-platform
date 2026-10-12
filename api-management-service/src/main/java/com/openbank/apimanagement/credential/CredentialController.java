@@ -59,6 +59,13 @@ public class CredentialController {
         return credentialService.changeExpiration(credentialId, request);
     }
 
+    @PatchMapping("/{credentialId}/scopes")
+    public CredentialResponse updateScopes(
+            @PathVariable Long credentialId,
+            @Valid @RequestBody UpdateCredentialScopesRequest request) {
+        return credentialService.changeScopes(credentialId, request);
+    }
+
     @PostMapping("/{credentialId}/rotate")
     public CredentialRotatedResponse rotate(@PathVariable Long credentialId) {
         return credentialService.rotate(credentialId);

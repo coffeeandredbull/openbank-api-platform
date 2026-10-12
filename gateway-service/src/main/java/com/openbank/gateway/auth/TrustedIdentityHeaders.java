@@ -4,9 +4,10 @@ import java.util.List;
 
 /**
  * Gateway-generated headers that will carry verified caller identity to managed
- * APIs (Phase 22). These values are produced by the gateway after successful
- * authentication and must never be accepted from clients — the gateway strips
- * any client-supplied values before trusted ones are added.
+ * APIs (Phase 22) and the verified effective credential scopes (Phase 24).
+ * These values are produced by the gateway after successful authentication and
+ * must never be accepted from clients — the gateway strips any client-supplied
+ * values before trusted ones are added.
  */
 public final class TrustedIdentityHeaders {
 
@@ -14,9 +15,10 @@ public final class TrustedIdentityHeaders {
     public static final String ROLES = "X-Roles";
     public static final String APPLICATION_ID = "X-Application-Id";
     public static final String CLIENT_ID = "X-Client-Id";
+    public static final String SCOPES = "X-Scopes";
 
     private static final List<String> ALL_HEADER_NAMES =
-            List.of(USER_ID, ROLES, APPLICATION_ID, CLIENT_ID);
+            List.of(USER_ID, ROLES, APPLICATION_ID, CLIENT_ID, SCOPES);
 
     private TrustedIdentityHeaders() {
     }
